@@ -1,23 +1,47 @@
 #include "pet.h"
 
 // ---------------------------------------------------------------------------
-// Radial profiles — exact port of profiles.ts.
-// 64 samples, theta = 0 points right, grows clockwise (y-down screen coords).
+// utils/math.ts
 // ---------------------------------------------------------------------------
 
-static float gRadii[PET_STATE_COUNT][FinagotchiPet::NRAD];
-static bool  gTablesReady = false;
-
-static inline float clampf(float v, float lo, float hi) {
+static inline float clampf(float v, float lo = 0.0f, float hi = 1.0f) {
   return v < lo ? lo : (v > hi ? hi : v);
 }
 static inline float lerpf(float a, float b, float t) { return a + (b - a) * t; }
-
-// easeOutQuint, same as the web engine
 static inline float easeOutQuint(float t) {
   float u = 1.0f - t;
   return 1.0f - u * u * u * u * u;
 }
+static inline float easeOutCubic(float t) {
+  float u = 1.0f - t;
+  return 1.0f - u * u * u;
+}
+
+static float loopNoise(float t, float period, float seed) {
+  float p = (t / period) * TWO_PI;
+  return 0.55f * sinf(p + seed)
+       + 0.30f * sinf(2.0f * p + seed * 1.7f + 1.1f)
+       + 0.15f * sinf(3.0f * p + seed * 2.3f + 2.4f);
+}
+
+// createRng — mulberry32-style, bit-exact port
+static uint32_t rngState;
+static float rngNext() {
+  rngState += 0x6D2B79F5u;
+  uint32_t t = rngState;
+  t = (t ^ (t >> 15)) * (1u | t);
+  uint32_t prod = (t ^ (t >> 7)) * (61u | t);
+  t = (t + prod) ^ t;
+  return (float)(t ^ (t >> 14)) / 4294967296.0f;
+}
+
+// ---------------------------------------------------------------------------
+// profiles.ts — exact radial profiles, 64 samples.
+// theta = 0 points right, grows clockwise (y-down screen coords).
+// ---------------------------------------------------------------------------
+
+static float gRadii[PET_STATE_COUNT][FinagotchiPet::NRAD];
+static bool  gTablesReady = false;
 
 static void buildTables() {
   if (gTablesReady) return;
@@ -29,81 +53,220 @@ static void buildTables() {
     float c = fabsf(cosf(theta));
     float s = fabsf(sinf(theta));
 
-    // egg: superellipse, n = 2.5 bottom half / 1.8 top half, + wobble
-    {
+    {   // egg: superellipse, n 2.5 bottom / 1.8 top, wobble sin(3t)
       float n = degrees < 180.0f ? 2.5f : 1.8f;
       float se = powf(powf(c, n) + powf(s, n), -1.0f / n);
-      float wobble = 0.015f * sinf(3.0f * theta);
-      gRadii[PET_EGG][i] = clampf(0.45f * se + wobble, 0.0f, 1.0f);
+      gRadii[PET_EGG][i] = clampf(0.45f * se + 0.015f * sinf(3.0f * theta));
     }
-
-    // coinling: n = 4 squircle + wobble
-    {
+    {   // coinling: n=4 squircle, wobble sin(5t)
       float sq = powf(powf(c, 4.0f) + powf(s, 4.0f), -0.25f);
-      float wobble = 0.01f * sinf(5.0f * theta);
-      gRadii[PET_COINLING][i] = clampf(0.48f * sq + wobble, 0.0f, 1.0f);
+      gRadii[PET_COINLING][i] = clampf(0.48f * sq + 0.01f * sinf(5.0f * theta));
     }
-
-    // hodler: (0.38 + 0.22|cos 2t|)^0.4
-    {
+    {   // hodler: (0.38 + 0.22|cos 2t|)^0.4
       float base = 0.38f + 0.22f * fabsf(cosf(theta * 2.0f));
-      gRadii[PET_HODLER][i] = clampf(powf(base, 0.4f), 0.0f, 1.0f);
+      gRadii[PET_HODLER][i] = clampf(powf(base, 0.4f));
     }
-
-    // whale: ellipse a = 0.58, b = 0.36
-    {
+    {   // whale: ellipse a=0.58 b=0.36
       const float a = 0.58f, b = 0.36f;
       float cw = cosf(theta), sw = sinf(theta);
       float den = sqrtf((b * cw) * (b * cw) + (a * sw) * (a * sw));
-      gRadii[PET_WHALE][i] = clampf(a * b / (den > 0.0f ? den : 1.0f), 0.0f, 1.0f);
+      gRadii[PET_WHALE][i] = clampf(a * b / (den > 0.0f ? den : 1.0f));
     }
   }
 }
 
+// shape.ts radiusAtAngle: linear interpolation between nearest samples.
+float FinagotchiPet::radiusAt(const float* radii, float theta) const {
+  float t = theta * ((float)NRAD / TWO_PI);
+  float tf = floorf(t);
+  int i0 = ((int)tf % NRAD + NRAD) % NRAD;
+  int i1 = (i0 + 1) % NRAD;
+  return lerpf(radii[i0], radii[i1], t - tf);
+}
+
 // ---------------------------------------------------------------------------
-// State definitions — pose/eyes/colors straight from engine.ts STATE_DEFS.
+// face.ts — blink schedule, blinkScale, eyePoses.
+// ---------------------------------------------------------------------------
+
+static float gBlinks[512];
+static int   gBlinkCount = 0;
+static const float BLINK_DUR = 0.18f;
+
+static void buildBlinks() {
+  rngState = 0x5eedu;
+  gBlinkCount = 0;
+  float t = 1.4f;
+  while (t < 900.0f && gBlinkCount < 510) {
+    gBlinks[gBlinkCount++] = t;
+    t += 1.9f + rngNext() * 2.7f;
+    if (rngNext() < 0.18f) {           // occasional double blink
+      gBlinks[gBlinkCount++] = t;
+      t += 0.24f;
+    }
+  }
+}
+
+static float blinkLid(float t) {
+  t = fmodf(t, 900.0f);   // wrap: the web schedule ends at 900 s; loop it
+  for (int i = 0; i < gBlinkCount; i++) {
+    float start = gBlinks[i];
+    if (t < start) break;
+    float k = (t - start) / BLINK_DUR;
+    if (k >= 0.0f && k <= 1.0f) {
+      return k < 0.45f ? 1.0f - k / 0.45f : (k - 0.45f) / 0.55f;
+    }
+  }
+  return 1.0f;
+}
+
+static inline float blinkScale(float lid) { return 0.06f + 0.94f * clampf(lid); }
+
+// Rotate two vectors in their common plane (face.ts spin).
+static void spin3(const float u[3], const float v[3], float angle,
+                  float outU[3], float outV[3]) {
+  float c = cosf(angle), s = sinf(angle);
+  for (int i = 0; i < 3; i++) {
+    outU[i] = u[i] * c + v[i] * s;
+    outV[i] = v[i] * c - u[i] * s;
+  }
+}
+
+// face.ts eyePoses. Screen coords: x right, y down, z toward viewer.
+// Index 0 = inner eye, index 1 = outer eye.
+static void eyePoses(float yawDeg, float pitchDeg, float rollDeg,
+                     float scale, float splitDeg, FinagotchiPet::EyePose out[2]) {
+  float fwd[3] = {0, 0, 1}, rgt[3] = {1, 0, 0}, dwn[3] = {0, 1, 0};
+  float t1[3], t2[3];
+
+  spin3(fwd, rgt, yawDeg * DEG_TO_RAD, t1, t2);
+  memcpy(fwd, t1, sizeof(t1)); memcpy(rgt, t2, sizeof(t2));
+  spin3(dwn, fwd, pitchDeg * DEG_TO_RAD, t1, t2);
+  memcpy(dwn, t1, sizeof(t1)); memcpy(fwd, t2, sizeof(t2));
+  spin3(rgt, dwn, rollDeg * DEG_TO_RAD, t1, t2);
+  memcpy(rgt, t1, sizeof(t1)); memcpy(dwn, t2, sizeof(t2));
+
+  for (int i = 0; i < 2; i++) {
+    float side = (i == 0) ? -1.0f : 1.0f;
+    float ef[3], er[3];
+    spin3(fwd, rgt, splitDeg * side * DEG_TO_RAD, ef, er);
+    out[i].x = ef[0] * scale;
+    out[i].y = ef[1] * scale;
+    out[i].a = er[0]; out[i].b = er[1];
+    out[i].c = dwn[0]; out[i].d = dwn[1];
+    out[i].depth = ef[2];
+  }
+}
+
+// shape.ts capsulePath sampled: stadium boundary, axis along the longer side.
+static int capsulePoints(float w, float h, float* xs, float* ys, int maxN) {
+  float r = fminf(w, h) * 0.5f;
+  float L = fabsf(w - h) * 0.5f;
+  bool horizontal = w >= h;
+  const int H = 9;   // samples per semicircle
+  int n = 0;
+  for (int i = 0; i < H && n < maxN; i++) {
+    float a = (-90.0f + 180.0f * (float)i / (float)(H - 1)) * DEG_TO_RAD;
+    float px = L + r * cosf(a), py = r * sinf(a);
+    xs[n] = horizontal ? px : py;
+    ys[n] = horizontal ? py : px;
+    n++;
+  }
+  for (int i = 0; i < H && n < maxN; i++) {
+    float a = (90.0f + 180.0f * (float)i / (float)(H - 1)) * DEG_TO_RAD;
+    float px = -L + r * cosf(a), py = r * sinf(a);
+    xs[n] = horizontal ? px : py;
+    ys[n] = horizontal ? py : px;
+    n++;
+  }
+  return n;
+}
+
+// ---------------------------------------------------------------------------
+// engine.ts STATE_DEFS + expressions.ts EXPRESSIONS
 // ---------------------------------------------------------------------------
 
 namespace {
 
-struct StateDef {
+struct EyeDef { float w, h, tilt, open; };
+
+struct StageDef {
   float offX, offY;
-  float gazeYaw, gazePitch;
+  float gazeYaw, gazePitch, gazeRoll;
   float split;
-  float eyeW, eyeH, eyeTilt, eyeOpen;
-  uint8_t r, g, b;
+  EyeDef eyes[2];
+  float morph;
+  uint8_t fr, fg, fb;
   bool    hasGlow;
   uint8_t gr, gg, gb;
 };
 
-const StateDef DEFS[PET_STATE_COUNT] = {
+const StageDef DEFS[PET_STATE_COUNT] = {
   // egg
-  { 0.0f,  0.04f, 0.0f,  18.0f, 12.0f, 0.16f, 0.06f, 0.0f, 1.0f,
+  { 0.0f,  0.04f,  0.0f,  18.0f, 0.0f, 12.0f,
+    {{ 0.16f, 0.06f, 0.0f, 1.0f }, { 0.16f, 0.06f, 0.0f, 1.0f }}, 0.45f,
     0xD4, 0xC8, 0xB8, false, 0, 0, 0 },
   // coinling
-  { 0.0f,  0.00f, 0.0f,  -8.0f, 16.0f, 0.22f, 0.22f, 0.0f, 1.0f,
+  { 0.0f,  0.00f,  0.0f,  -8.0f, 0.0f, 16.0f,
+    {{ 0.22f, 0.22f, 0.0f, 1.0f }, { 0.22f, 0.22f, 0.0f, 1.0f }}, 0.45f,
     0xF5, 0x9E, 0x0B, true,  0xFB, 0xBF, 0x24 },
   // hodler
-  { 0.0f, -0.03f, 0.0f,   2.0f, 14.0f, 0.22f, 0.09f, 0.0f, 1.0f,
+  { 0.0f, -0.03f,  0.0f,   2.0f, 0.0f, 14.0f,
+    {{ 0.22f, 0.09f, 0.0f, 1.0f }, { 0.22f, 0.09f, 0.0f, 1.0f }}, 0.45f,
     0x3B, 0x82, 0xF6, true,  0x60, 0xA5, 0xFA },
   // whale
-  { 0.0f,  0.05f, 0.0f, -12.0f, 13.0f, 0.14f, 0.09f, 0.0f, 1.0f,
+  { 0.0f,  0.05f,  0.0f, -12.0f, 0.0f, 13.0f,
+    {{ 0.14f, 0.09f, 0.0f, 1.0f }, { 0.14f, 0.09f, 0.0f, 1.0f }}, 0.55f,
     0x63, 0x66, 0xF1, true,  0x81, 0x8C, 0xF8 },
 };
 
+// expressions.ts EXPRESSIONS — absolute gaze/split/eye overrides.
+// pair() mirrors tilt: eyes[0].tilt = +tilt, eyes[1].tilt = -tilt.
+struct ExprDef {
+  float gazeYaw, gazePitch, gazeRoll;
+  float split;
+  EyeDef eyes[2];
+};
+
+const ExprDef EXPR[MOOD_COUNT] = {
+  /* calm    */ {  0.0f, -18.0f,  0.0f, 15.46f,
+                  {{ 0.186f, 0.412f, 0.0f, 1.0f }, { 0.186f, 0.412f, 0.0f, 1.0f }} },
+  /* happy   */ {  2.0f, -10.0f,  0.0f, 16.5f,
+                  {{ 0.24f, 0.15f, 18.0f, 1.0f }, { 0.24f, 0.15f, -18.0f, 1.0f }} },
+  /* excited */ {  4.0f, -16.0f,  0.0f, 18.5f,
+                  {{ 0.4f, 0.5f, -8.0f, 1.0f }, { 0.4f, 0.5f, 8.0f, 1.0f }} },
+  /* waiting */ { -8.0f,  -4.0f, -6.0f, 16.0f,
+                  {{ 0.22f, 0.36f, -6.0f, 1.0f }, { 0.22f, 0.36f, 6.0f, 1.0f }} },
+  /* sleepy  */ {  0.0f,   8.0f,  0.0f, 15.0f,
+                  {{ 0.2f, 0.42f, 0.0f, 0.42f }, { 0.2f, 0.42f, 0.0f, 0.42f }} },
+  /* sad     */ {  2.0f,  10.0f,  0.0f, 15.5f,
+                  {{ 0.22f, 0.36f, -24.0f, 1.0f }, { 0.22f, 0.36f, 24.0f, 1.0f }} },
+};
+
+// PetCanvas reactions as keyframe tracks {time, scale, rotDeg}.
+struct ReactKey { float t, s, r; };
+const ReactKey KEYS_JUMP[]  = {{0,1,0},{0.22f,1.28f,0},{0.45f,0.88f,0},{0.8f,1,0}};
+const ReactKey KEYS_SPIN[]  = {{0,1,0},{0.12f,0.9f,0},{0.65f,1.08f,360},{0.9f,1,360}};
+const ReactKey KEYS_GLOW[]  = {{0,1,0},{0.16f,1.16f,0},{0.34f,1.04f,0},{0.52f,1.14f,0},
+                               {0.70f,1.04f,0},{0.88f,1.12f,0},{1.08f,1,0}};
+const ReactKey KEYS_DANCE[] = {{0,1,0},{0.11f,1.06f,-14},{0.22f,0.94f,14},{0.33f,1.06f,-14},
+                               {0.44f,0.94f,14},{0.55f,1.06f,-14},{0.66f,0.94f,14},
+                               {0.77f,1.04f,-8},{0.95f,1,0}};
+
 } // namespace
 
+// ---------------------------------------------------------------------------
+// FinagotchiPet
 // ---------------------------------------------------------------------------
 
 void FinagotchiPet::begin(TFT_eSPI* display, float scale) {
   tft = display;
   R = scale;
   buildTables();
+  buildBlinks();
   spr = new TFT_eSprite(tft);
   spr->setColorDepth(16);
   if (spr->createSprite(tft->width(), tft->height()) == nullptr) {
-    // Fall back to a smaller square around the body if RAM is tight.
-    spr->createSprite(200, 200);
+    spr->createSprite(200, 200);   // RAM fallback
   }
 }
 
@@ -113,8 +276,8 @@ void FinagotchiPet::end() {
 
 void FinagotchiPet::setState(PetState id, float nowSec) {
   if (id == cur || id >= PET_STATE_COUNT) return;
+  if (id > cur) burstT = nowSec;   // LevelUpAnimation trigger (stage up only)
   prev = cur;
-  tPrev = tCur;
   cur = id;
   tCur = nowSec;
 }
@@ -125,193 +288,471 @@ bool FinagotchiPet::evolve(float nowSec) {
   return true;
 }
 
-// radiusAtAngle from shape.ts: linear interpolation between nearest samples.
-float FinagotchiPet::radiusAt(const float* radii, float theta) const {
-  float t = theta * ((float)NRAD / TWO_PI);
-  float tf = floorf(t);
-  int i0 = ((int)tf % NRAD + NRAD) % NRAD;
-  int i1 = (i0 + 1) % NRAD;
-  return lerpf(radii[i0], radii[i1], t - tf);
+void FinagotchiPet::setLook(float yawDeg, float pitchDeg, float nowSec) {
+  float k = clampf((nowSec - lookAtT) / 0.24f);
+  float e = easeOutQuint(k);
+  lookPrevYaw = lerpf(lookPrevYaw, lookYaw, e);
+  lookPrevPitch = lerpf(lookPrevPitch, lookPitch, e);
+  lookPrevMix = lerpf(lookPrevMix, lookMix, e);
+  lookPrevWander = lerpf(lookPrevWander, lookWander, e);
+
+  lookYaw = clampf(yawDeg, -30.0f, 30.0f);
+  lookPitch = clampf(pitchDeg, -25.0f, 25.0f);
+  lookMix = 0.85f;
+  lookWander = 0.0f;
+  lookAtT = nowSec;
 }
 
+void FinagotchiPet::clearLook(float nowSec) {
+  float k = clampf((nowSec - lookAtT) / 0.24f);
+  float e = easeOutQuint(k);
+  lookPrevYaw = lerpf(lookPrevYaw, lookYaw, e);
+  lookPrevPitch = lerpf(lookPrevPitch, lookPitch, e);
+  lookPrevMix = lerpf(lookPrevMix, lookMix, e);
+  lookPrevWander = lerpf(lookPrevWander, lookWander, e);
+
+  lookYaw = 0.0f;
+  lookPitch = 0.0f;
+  lookMix = 0.0f;
+  lookWander = 1.0f;
+  lookAtT = nowSec;
+}
+
+void FinagotchiPet::setMood(uint8_t m, float nowSec) {
+  if (m >= MOOD_COUNT || m == curMood) return;
+  prevMood = curMood;
+  curMood = m;
+  moodAtT = nowSec;
+}
+
+void FinagotchiPet::setItem(uint8_t i) {
+  if (i < ITEM_COUNT) curItem = i;
+}
+
+void FinagotchiPet::react(uint8_t r, float nowSec) {
+  if (r > REACT_DANCE) return;
+  reaction = r;
+  reactT = nowSec;
+}
+
+void FinagotchiPet::setStats(uint32_t streakDays, uint32_t points,
+                             uint8_t happiness) {
+  statsStreak = streakDays;
+  statsPoints = points;
+  statsHappy = happiness > 100 ? 100 : happiness;
+}
+
+// ---------------------------------------------------------------------------
+// Bottom stats bar: flame + streak, sparkle + points, heart + happiness.
+// ---------------------------------------------------------------------------
+
+static void fmtVal(uint32_t v, char* buf, size_t n) {
+  if (v >= 100000)   snprintf(buf, n, "%luk", (unsigned long)(v / 1000));
+  else if (v >= 10000) snprintf(buf, n, "%.1fk", v / 1000.0f);
+  else               snprintf(buf, n, "%lu", (unsigned long)v);
+}
+
+void FinagotchiPet::drawStatsBar() {
+  int w = spr->width(), h = spr->height();
+  int barY = h - 38;
+  int cy = barY + 19;                    // icon/text vertical center
+
+  uint16_t dim = spr->color565(45, 45, 60);
+  uint16_t txt = spr->color565(230, 230, 240);
+  spr->drawFastHLine(10, barY, w - 20, dim);
+
+  spr->setTextDatum(ML_DATUM);
+  spr->setTextSize(2);
+  spr->setTextColor(txt, TFT_BLACK);
+
+  const int cols[3] = { w / 6, w / 2, w * 5 / 6 };
+  char buf[12];
+
+  // --- streak: flame ---
+  fmtVal(statsStreak, buf, sizeof(buf));
+  {
+    int tw = spr->textWidth(buf);
+    int gx = cols[0] - (16 + 4 + tw) / 2;
+    int ix = gx + 7;
+    uint16_t orange = spr->color565(255, 140, 40);
+    uint16_t yellow = spr->color565(255, 210, 60);
+    spr->fillCircle(ix, cy + 2, 6, orange);
+    spr->fillTriangle(ix - 6, cy + 2, ix, cy - 8, ix + 6, cy + 2, orange);
+    spr->fillCircle(ix, cy + 3, 3, yellow);
+    spr->drawString(buf, gx + 16 + 4, cy);
+  }
+
+  // --- points: sparkle ---
+  fmtVal(statsPoints, buf, sizeof(buf));
+  {
+    int tw = spr->textWidth(buf);
+    int gx = cols[1] - (16 + 4 + tw) / 2;
+    int ix = gx + 7;
+    uint16_t goldc = spr->color565(255, 200, 40);
+    spr->fillTriangle(ix, cy - 7, ix - 3, cy, ix + 3, cy, goldc);
+    spr->fillTriangle(ix, cy + 7, ix - 3, cy, ix + 3, cy, goldc);
+    spr->fillTriangle(ix - 7, cy, ix, cy - 3, ix, cy + 3, goldc);
+    spr->fillTriangle(ix + 7, cy, ix, cy - 3, ix, cy + 3, goldc);
+    spr->drawString(buf, gx + 16 + 4, cy);
+  }
+
+  // --- happiness: heart ---
+  {
+    snprintf(buf, sizeof(buf), "%u", statsHappy);
+    int tw = spr->textWidth(buf);
+    int gx = cols[2] - (16 + 4 + tw) / 2;
+    int ix = gx + 7;
+    uint16_t pink = spr->color565(244, 63, 94);
+    spr->fillCircle(ix - 3, cy - 2, 4, pink);
+    spr->fillCircle(ix + 3, cy - 2, 4, pink);
+    spr->fillTriangle(ix - 7, cy - 1, ix, cy + 7, ix + 7, cy - 1, pink);
+    spr->drawString(buf, gx + 16 + 4, cy);
+  }
+}
+
+// ---------------------------------------------------------------------------
+
 FinagotchiPet::Pose FinagotchiPet::poseFor(PetState id) const {
-  const StateDef& d = DEFS[id];
+  const StageDef& d = DEFS[id];
   Pose p;
   memcpy(p.radii, gRadii[id], sizeof(p.radii));
-  p.offX = d.offX;       p.offY = d.offY;
-  p.gazeYaw = d.gazeYaw; p.gazePitch = d.gazePitch;
+  p.offX = d.offX; p.offY = d.offY;
+  p.gazeYaw = d.gazeYaw; p.gazePitch = d.gazePitch; p.gazeRoll = d.gazeRoll;
   p.split = d.split;
-  p.eyeW = d.eyeW; p.eyeH = d.eyeH; p.eyeTilt = d.eyeTilt; p.eyeOpen = d.eyeOpen;
-  p.r = d.r; p.g = d.g; p.b = d.b;
+  for (int e = 0; e < 2; e++) {
+    p.eyes[e] = { d.eyes[e].w, d.eyes[e].h, d.eyes[e].tilt, d.eyes[e].open };
+  }
+  p.eyeAlpha = 1.0f;
+  p.bodyAlpha = 1.0f;
+  p.fr = d.fr; p.fg = d.fg; p.fb = d.fb;
   p.gr = d.gr; p.gg = d.gg; p.gb = d.gb;
   p.hasGlow = d.hasGlow;
   return p;
 }
 
-// Pose at time t, blending prev -> cur during the morph window (shape.ts blend:
-// same-angle radii lerp, so elementwise interpolation is the exact morph).
+// Pose at time t: state morph (same-angle radii lerp, shape.ts blend), then
+// the expression override (expressions.ts blendExpression over 0.45 s).
 FinagotchiPet::Pose FinagotchiPet::poseAt(float nowSec) const {
   Pose to = poseFor(cur);
-  float k = (nowSec - tCur) / morphDur;
-  if (k >= 1.0f || cur == prev) return to;
+  Pose p = to;
 
-  Pose from = poseFor(prev);
-  float t = easeOutQuint(clampf(k, 0.0f, 1.0f));
-  Pose p;
-  for (int i = 0; i < NRAD; i++) p.radii[i] = lerpf(from.radii[i], to.radii[i], t);
-  p.offX = lerpf(from.offX, to.offX, t);
-  p.offY = lerpf(from.offY, to.offY, t);
-  p.gazeYaw = lerpf(from.gazeYaw, to.gazeYaw, t);
-  p.gazePitch = lerpf(from.gazePitch, to.gazePitch, t);
-  p.split = lerpf(from.split, to.split, t);
-  p.eyeW = lerpf(from.eyeW, to.eyeW, t);
-  p.eyeH = lerpf(from.eyeH, to.eyeH, t);
-  p.eyeTilt = lerpf(from.eyeTilt, to.eyeTilt, t);
-  p.eyeOpen = lerpf(from.eyeOpen, to.eyeOpen, t);
-  p.r = lerpf(from.r, to.r, t);
-  p.g = lerpf(from.g, to.g, t);
-  p.b = lerpf(from.b, to.b, t);
-  p.gr = lerpf(from.gr, to.gr, t);
-  p.gg = lerpf(from.gg, to.gg, t);
-  p.gb = lerpf(from.gb, to.gb, t);
-  p.hasGlow = to.hasGlow;
+  float morph = DEFS[cur].morph;
+  float k = (nowSec - tCur) / morph;
+  if (k < 1.0f && cur != prev) {
+    Pose from = poseFor(prev);
+    float t = easeOutQuint(clampf(k));
+    for (int i = 0; i < NRAD; i++) p.radii[i] = lerpf(from.radii[i], to.radii[i], t);
+    p.offX = lerpf(from.offX, to.offX, t);
+    p.offY = lerpf(from.offY, to.offY, t);
+    p.fr = lerpf(from.fr, to.fr, t);
+    p.fg = lerpf(from.fg, to.fg, t);
+    p.fb = lerpf(from.fb, to.fb, t);
+    p.gr = lerpf(from.gr, to.gr, t);
+    p.gg = lerpf(from.gg, to.gg, t);
+    p.gb = lerpf(from.gb, to.gb, t);
+    p.hasGlow = to.hasGlow;
+  }
+
+  // Expression override (engine.ts posed(): expr replaces gaze/split/eyes).
+  const ExprDef& ea = EXPR[prevMood];
+  const ExprDef& eb = EXPR[curMood];
+  float me = easeOutQuint(clampf((nowSec - moodAtT) / 0.45f));
+  p.gazeYaw = lerpf(ea.gazeYaw, eb.gazeYaw, me);
+  p.gazePitch = lerpf(ea.gazePitch, eb.gazePitch, me);
+  p.gazeRoll = lerpf(ea.gazeRoll, eb.gazeRoll, me);
+  p.split = lerpf(ea.split, eb.split, me);
+  for (int e = 0; e < 2; e++) {
+    p.eyes[e].w = lerpf(ea.eyes[e].w, eb.eyes[e].w, me);
+    p.eyes[e].h = lerpf(ea.eyes[e].h, eb.eyes[e].h, me);
+    p.eyes[e].tilt = lerpf(ea.eyes[e].tilt, eb.eyes[e].tilt, me);
+    p.eyes[e].open = lerpf(ea.eyes[e].open, eb.eyes[e].open, me);
+  }
   return p;
 }
 
-// toPoints + fill: sample the silhouette and fill as a triangle fan from the
-// center (valid because all profiles are star-shaped).
-void FinagotchiPet::drawSilhouette(const Pose& p, float cx, float cy,
-                                   float sx, float sy, float scale,
-                                   uint16_t color) {
-  for (int i = 0; i < NRAD; i++) {
-    float theta = (float)i * (TWO_PI / (float)NRAD);
-    float r = p.radii[i] * scale;
-    px[i] = cx + cosf(theta) * r * sx;
-    py[i] = cy + sinf(theta) * r * sy;
-  }
-  int icx = (int)cx, icy = (int)cy;
+// ---------------------------------------------------------------------------
+// Drawing
+// ---------------------------------------------------------------------------
+
+// unit (ball-radius) coords -> screen, with reaction rotation/scale.
+void FinagotchiPet::mapPoint(float ux, float uy, float rotC, float rotS,
+                             float scale, float cx, float cy,
+                             float& sx, float& sy) const {
+  float x = ux * R * scale;
+  float y = uy * R * scale;
+  sx = cx + x * rotC - y * rotS;
+  sy = cy + x * rotS + y * rotC;
+}
+
+// Fill the body polygon (dx/dy buffers) as a triangle fan from its centroid.
+void FinagotchiPet::fillPoly(uint16_t color) {
+  float mx = 0, my = 0;
+  for (int i = 0; i < NRAD; i++) { mx += dx[i]; my += dy[i]; }
+  int icx = (int)(mx / NRAD), icy = (int)(my / NRAD);
   for (int i = 0; i < NRAD; i++) {
     int j = (i + 1) % NRAD;
-    spr->fillTriangle(icx, icy, (int)px[i], (int)py[i],
-                      (int)px[j], (int)py[j], color);
+    spr->fillTriangle(icx, icy, (int)dx[i], (int)dy[i],
+                      (int)dx[j], (int)dy[j], color);
   }
 }
 
-// Capsule (stadium) — equivalent of capsulePath from shape.ts, filled.
-// w/h are the full width/height; the capsule axis follows the longer side.
-void FinagotchiPet::drawCapsule(float cx, float cy, float w, float h,
-                                float tiltDeg, uint16_t color) {
-  if (w < 0.5f) w = 0.5f;
-  if (h < 0.5f) h = 0.5f;
+// Sphere-projected eye (face.ts eyePoses + engine.ts composeFrame matrix),
+// blink squish, alpha approximated by blending toward the body color.
+void FinagotchiPet::drawEye(const Pose& p, const EyePose& e, const EyeCfg& cfg,
+                            float lid, float rotC, float rotS, float scale,
+                            float cx, float cy, uint16_t bodyColor) {
+  if (e.depth <= 0.02f) return;
 
-  // Normalize so the capsule lies along local +x.
-  float phi = tiltDeg * DEG_TO_RAD;
-  if (h > w) {
-    float tmp = w; w = h; h = tmp;
-    phi += PI / 2.0f;
-  }
-  float r = h * 0.5f;
-  float L = (w - h) * 0.5f;   // half straight length
-
+  float fit = radiusAt(p.radii, atan2f(e.y, e.x));   // sil.rot = 0
+  float phi = cfg.tilt * DEG_TO_RAD;
   float cp = cosf(phi), sp = sinf(phi);
+  float ax = e.a * cp + e.c * sp;
+  float ay = e.b * cp + e.d * sp;
+  float cxx = -e.a * sp + e.c * cp;
+  float cyy = -e.b * sp + e.d * cp;
+  float k = blinkScale(fminf(lid, cfg.open));
 
-  const int N = 18;           // boundary samples
-  float ex[N], ey[N];
-  int n = 0;
-  // right semicircle: -90 .. +90 deg
-  for (int i = 0; i < N / 2; i++) {
-    float a = (-90.0f + 180.0f * (float)i / (float)(N / 2)) * DEG_TO_RAD;
-    float lx = L + r * cosf(a);
-    float ly = r * sinf(a);
-    ex[n] = cx + lx * cp - ly * sp;
-    ey[n] = cy + lx * sp + ly * cp;
-    n++;
-  }
-  // left semicircle: +90 .. +270 deg
-  for (int i = 0; i < N / 2; i++) {
-    float a = (90.0f + 180.0f * (float)i / (float)(N / 2)) * DEG_TO_RAD;
-    float lx = -L + r * cosf(a);
-    float ly = r * sinf(a);
-    ex[n] = cx + lx * cp - ly * sp;
-    ey[n] = cy + lx * sp + ly * cp;
-    n++;
-  }
+  float alpha = clampf(p.eyeAlpha * e.depth / 0.12f);
+  // PetEyes fill is #f5f5f5; blend toward the body for the alpha fade.
+  float er = 0xF5 * alpha + p.fr * (1.0f - alpha);
+  float eg = 0xF5 * alpha + p.fg * (1.0f - alpha);
+  float eb = 0xF5 * alpha + p.fb * (1.0f - alpha);
+  uint16_t col = spr->color565((uint8_t)er, (uint8_t)eg, (uint8_t)eb);
 
-  int icx = (int)cx, icy = (int)cy;
+  float tx = cx + e.x * fit;
+  float ty = cy + e.y * fit;
+
+  float lx[20], ly[20];
+  int n = capsulePoints(cfg.w * R * scale, cfg.h * R * scale, lx, ly, 20);
+
+  int icx = (int)(cx + (tx - cx) * rotC - (ty - cy) * rotS);
+  int icy = (int)(cy + (tx - cx) * rotS + (ty - cy) * rotC);
+
+  float exs[20], eys[20];
+  for (int i = 0; i < n; i++) {
+    float X = ax * lx[i] + cxx * ly[i] + tx;
+    float Y = ay * k * lx[i] + cyy * k * ly[i] + ty;
+    exs[i] = cx + (X - cx) * rotC - (Y - cy) * rotS;
+    eys[i] = cy + (X - cx) * rotS + (Y - cy) * rotC;
+  }
   for (int i = 0; i < n; i++) {
     int j = (i + 1) % n;
-    spr->fillTriangle(icx, icy, (int)ex[i], (int)ey[i],
-                      (int)ex[j], (int)ey[j], color);
+    spr->fillTriangle(icx, icy, (int)exs[i], (int)eys[i],
+                      (int)exs[j], (int)eys[j], col);
   }
 }
+
+// PetAccessory.tsx collectibles. Positions are in ball-radius units relative
+// to the pet center, exactly like the app's R-relative paths.
+void FinagotchiPet::drawItem(float rotC, float rotS, float scale,
+                             float cx, float cy) {
+  auto mp = [&](float ux, float uy, float& sx, float& sy) {
+    mapPoint(ux, uy, rotC, rotS, scale, cx, cy, sx, sy);
+  };
+  uint16_t gold = spr->color565(0xFB, 0xBF, 0x24);
+  float x0, y0, x1, y1, x2, y2;
+
+  switch (curItem) {
+    case ITEM_CROWN: {
+      // zigzag: (-.28,-.58)(-.154,-.66)(0,-.78)(.154,-.66)(.28,-.58)(0,-.50)
+      const float ux[6] = { -0.28f, -0.154f, 0.0f, 0.154f, 0.28f, 0.0f };
+      const float uy[6] = { -0.58f, -0.66f, -0.78f, -0.66f, -0.58f, -0.50f };
+      float sx[6], sy[6];
+      float mx = 0, my = 0;
+      for (int i = 0; i < 6; i++) { mp(ux[i], uy[i], sx[i], sy[i]); mx += sx[i]; my += sy[i]; }
+      int icx = (int)(mx / 6), icy = (int)(my / 6);
+      for (int i = 0; i < 6; i++) {
+        int j = (i + 1) % 6;
+        spr->fillTriangle(icx, icy, (int)sx[i], (int)sy[i], (int)sx[j], (int)sy[j], gold);
+      }
+      break;
+    }
+    case ITEM_GLASSES: {
+      uint16_t slate = spr->color565(0x1F, 0x29, 0x37);
+      float lx, ly, rx, ry;
+      mp(-0.22f, -0.10f, lx, ly);
+      mp(0.22f, -0.10f, rx, ry);
+      int erx = (int)(0.18f * R * scale), ery = (int)(0.14f * R * scale);
+      spr->fillEllipse((int)lx, (int)ly, erx, ery, slate);
+      spr->fillEllipse((int)rx, (int)ry, erx, ery, slate);
+      float bx0, by0, bx1, by1;
+      mp(-0.04f, -0.10f, bx0, by0);
+      mp(0.04f, -0.10f, bx1, by1);
+      spr->drawLine((int)bx0, (int)by0, (int)bx1, (int)by1, slate);
+      spr->drawLine((int)bx0, (int)by0 + 1, (int)bx1, (int)by1 + 1, slate);
+      break;
+    }
+    case ITEM_BOWTIE: {
+      uint16_t red = spr->color565(0xF4, 0x3F, 0x5E);
+      uint16_t dark = spr->color565(0xBE, 0x12, 0x3C);
+      // (0,.42)(-.24,.34)(-.24,.62)(0,.54)(.24,.62)(.24,.34)
+      const float ux[6] = { 0.0f, -0.24f, -0.24f, 0.0f, 0.24f, 0.24f };
+      const float uy[6] = { 0.42f, 0.34f, 0.62f, 0.54f, 0.62f, 0.34f };
+      float sx[6], sy[6];
+      float kx, ky, kx1, ky1;
+      mp(0.0f, 0.48f, kx, ky);
+      for (int i = 0; i < 6; i++) mp(ux[i], uy[i], sx[i], sy[i]);
+      for (int i = 0; i < 6; i++) {
+        int j = (i + 1) % 6;
+        spr->fillTriangle((int)kx, (int)ky, (int)sx[i], (int)sy[i],
+                          (int)sx[j], (int)sy[j], red);
+      }
+      mp(0.0f, 0.44f, kx, ky);
+      mp(0.0f, 0.52f, kx1, ky1);
+      spr->drawLine((int)kx, (int)ky, (int)kx1, (int)ky1, dark);
+      spr->drawLine((int)kx + 1, (int)ky, (int)kx1 + 1, (int)ky1, dark);
+      break;
+    }
+    case ITEM_HALO: {
+      float hx, hy;
+      mp(0.0f, -0.82f, hx, hy);
+      int rx = (int)(0.34f * R * scale), ry = (int)(0.07f * R * scale);
+      spr->fillEllipse((int)hx, (int)hy, rx, ry, gold);
+      spr->fillEllipse((int)hx, (int)hy, (int)(0.30f * R * scale),
+                       (int)(0.03f * R * scale), TFT_BLACK);
+      break;
+    }
+    case ITEM_DIAMOND: {
+      uint16_t cyan = spr->color565(0x22, 0xD3, 0xEE);
+      uint16_t light = spr->color565(0xCF, 0xFA, 0xFE);
+      float dcx, dcy;
+      mp(0.46f, -0.34f, dcx, dcy);
+      float s = 0.16f * R * scale;
+      spr->fillTriangle((int)dcx, (int)(dcy - s), (int)(dcx + s), (int)dcy,
+                        (int)dcx, (int)(dcy + s), cyan);
+      spr->fillTriangle((int)dcx, (int)(dcy - s), (int)(dcx - s), (int)dcy,
+                        (int)dcx, (int)(dcy + s), cyan);
+      spr->drawLine((int)(dcx - s), (int)dcy, (int)(dcx + s), (int)dcy, light);
+      spr->drawLine((int)dcx, (int)(dcy - s), (int)dcx, (int)(dcy + s), light);
+      break;
+    }
+    default: break;
+  }
+  (void)x0; (void)y0; (void)x1; (void)y1; (void)x2; (void)y2;
+}
+
+// LevelUpAnimation: sparkle burst on stage-up (700 ms, rises and fades).
+void FinagotchiPet::drawBurst(float nowSec, float cx, float cy) {
+  float age = nowSec - burstT;
+  if (age < 0.0f || age > 0.7f) return;
+  float k = age / 0.7f;
+  float fade = 1.0f - k;
+  uint16_t col = spr->color565((uint8_t)(0x8B * fade), (uint8_t)(0x5C * fade),
+                               (uint8_t)(0xF6 * fade));
+  float rise = -14.0f * (R / 75.0f) * k;
+  float rot = 25.0f * k;
+  float dist = R * (0.9f + 0.6f * easeOutCubic(k));
+  int s = (int)fmaxf(1.0f, 3.0f * fade * (R / 105.0f));
+  for (int i = 0; i < 6; i++) {
+    float a = (60.0f * i + rot) * DEG_TO_RAD;
+    int sx = (int)(cx + cosf(a) * dist);
+    int sy = (int)(cy + sinf(a) * dist + rise);
+    spr->drawLine(sx - s, sy, sx + s, sy, col);
+    spr->drawLine(sx, sy - s, sx, sy + s, col);
+  }
+}
+
+// ---------------------------------------------------------------------------
 
 void FinagotchiPet::render(float nowSec) {
   if (!spr || !spr->created()) return;
 
   Pose pose = poseAt(nowSec);
 
-  // --- Liveliness (pure functions of time, standing in for face.ts) ---
-  // Breathing: subtle vertical squash (sil.sy *= breath).
-  float breath = 1.0f + 0.018f * sinf(TWO_PI * nowSec / 3.2f);
+  // look morph (engine.ts lookAtTime, 0.24 s)
+  float lk = clampf((nowSec - lookAtT) / 0.24f);
+  float le = easeOutQuint(lk);
+  float lkYaw = lerpf(lookPrevYaw, lookYaw, le);
+  float lkPitch = lerpf(lookPrevPitch, lookPitch, le);
+  float lkMix = lerpf(lookPrevMix, lookMix, le);
+  float lkWander = lerpf(lookPrevWander, lookWander, le);
 
-  // Wander gaze: slow incommensurate sines.
-  float wanderYaw   = 14.0f * sinf(TWO_PI * nowSec / 7.3f)
-                    +  6.0f * sinf(TWO_PI * nowSec / 2.9f + 1.7f);
-  float wanderPitch =  8.0f * sinf(TWO_PI * nowSec / 5.1f + 1.3f);
+  // liveliness (face.ts, exact)
+  bool alive = pose.eyeAlpha > 0.01f;
+  float wander = alive ? lkWander : 0.0f;
+  float dYaw = (loopNoise(nowSec, 11.3f, 0.4f) * 5.5f +
+                loopNoise(nowSec, 3.7f, 2.1f) * 1.6f) * wander;
+  float dPitch = (loopNoise(nowSec, 9.1f, 1.3f) * 4.2f +
+                  loopNoise(nowSec, 4.3f, 0.7f) * 1.3f) * wander;
+  float dRoll = loopNoise(nowSec, 13.7f, 3.2f) * 2.2f * wander;
+  float driftX = loopNoise(nowSec, 7.9f, 1.9f) * 0.006f;
+  float driftY = loopNoise(nowSec, 5.3f, 0.3f) * 0.007f;
+  float breath = 1.0f + sinf(nowSec / 3.4f * TWO_PI) * 0.005f;
+  float lid = blinkScale(blinkLid(nowSec));   // engine applies blinkScale twice
 
-  // Blink: quick lid close every ~3.9 s.
-  float blinkPhase = fmodf(nowSec, 3.9f);
-  float lid = 1.0f;
-  if (blinkPhase < 0.16f) {
-    float bt = blinkPhase / 0.16f;              // 0 -> 1
-    lid = 1.0f - 0.95f * (1.0f - fabsf(2.0f * bt - 1.0f));
+  float gazeYaw = lerpf(pose.gazeYaw, lkYaw, lkMix) + dYaw;
+  float gazePitch = lerpf(pose.gazePitch, lkPitch, lkMix) + dPitch;
+  float gazeRoll = pose.gazeRoll + dRoll;
+
+  // reaction keyframes (PetCanvas)
+  float rScale = 1.0f, rRot = 0.0f;
+  if (reaction != REACT_NONE) {
+    const ReactKey* keys = KEYS_JUMP;
+    int nk = sizeof(KEYS_JUMP) / sizeof(ReactKey);
+    switch (reaction) {
+      case REACT_JUMP:  keys = KEYS_JUMP;  nk = sizeof(KEYS_JUMP) / sizeof(ReactKey); break;
+      case REACT_SPIN:  keys = KEYS_SPIN;  nk = sizeof(KEYS_SPIN) / sizeof(ReactKey); break;
+      case REACT_GLOW:  keys = KEYS_GLOW;  nk = sizeof(KEYS_GLOW) / sizeof(ReactKey); break;
+      case REACT_DANCE: keys = KEYS_DANCE; nk = sizeof(KEYS_DANCE) / sizeof(ReactKey); break;
+      default: break;
+    }
+    float age = nowSec - reactT;
+    if (age >= keys[nk - 1].t) {
+      reaction = REACT_NONE;
+    } else if (age > 0.0f) {
+      int seg = 0;
+      while (seg < nk - 2 && keys[seg + 1].t < age) seg++;
+      float f = easeOutCubic(clampf((age - keys[seg].t) / (keys[seg + 1].t - keys[seg].t)));
+      rScale = lerpf(keys[seg].s, keys[seg + 1].s, f);
+      rRot = lerpf(keys[seg].r, keys[seg + 1].r, f);
+    }
   }
 
-  float gazeYaw = pose.gazeYaw + wanderYaw;
-  float gazePitch = pose.gazePitch + wanderPitch;
+  // idle float (PetCanvas worklet): 4 s loop, ±4 px at R=75
+  float idleY = sinf(fmodf(nowSec, 4.0f) / 4.0f * TWO_PI * 0.45f) * -4.0f * (R / 75.0f);
 
-  uint16_t bodyColor = spr->color565((uint8_t)pose.r, (uint8_t)pose.g, (uint8_t)pose.b);
-  uint16_t glowColor = spr->color565((uint8_t)pose.gr, (uint8_t)pose.gg, (uint8_t)pose.gb);
+  // Pet sits slightly above center to leave room for the bottom stats bar.
+  float cx = spr->width() * 0.5f + (pose.offX + driftX) * R;
+  float cy = spr->height() * 0.44f + (pose.offY + driftY) * R + idleY;
+  float rotC = cosf(rRot * DEG_TO_RAD), rotS = sinf(rRot * DEG_TO_RAD);
 
-  float sw = (float)spr->width();
-  float sh = (float)spr->height();
-  float cx = sw * 0.5f + pose.offX * R;
-  float cy = sh * 0.5f + pose.offY * R;
+  uint16_t bodyColor = spr->color565((uint8_t)pose.fr, (uint8_t)pose.fg, (uint8_t)pose.fb);
+  // PetBody glow: same path x1.15 at 22% opacity -> dimmed color over black.
+  uint16_t glowDim = spr->color565((uint8_t)(pose.gr * 0.22f),
+                                   (uint8_t)(pose.gg * 0.22f),
+                                   (uint8_t)(pose.gb * 0.22f));
 
   spr->fillSprite(TFT_BLACK);
 
-  // Glow halo: same silhouette, slightly larger, behind the body.
-  if (pose.hasGlow) {
-    drawSilhouette(pose, cx, cy, 1.0f, breath, R * 1.09f, glowColor);
+  for (int i = 0; i < NRAD; i++) {
+    float theta = (float)i * (TWO_PI / (float)NRAD);
+    float r = pose.radii[i];
+    mapPoint(cosf(theta) * r, sinf(theta) * r * breath,
+             rotC, rotS, rScale * 1.15f, cx, cy, dx[i], dy[i]);
   }
-  drawSilhouette(pose, cx, cy, 1.0f, breath, R, bodyColor);
+  fillPoly(glowDim);
 
-  // Eyes: placed relative to the local contour (like bodyRadius fitting in
-  // engine.ts), so they track the body through morphs.
-  float rSide = radiusAt(pose.radii, 0.0f);             // east
-  float rTop  = radiusAt(pose.radii, 3.0f * PI / 2.0f); // north
-  float eyeDX = 0.30f * rSide * R * (pose.split / 14.0f);
-  float eyeY  = cy - 0.25f * rTop * R * breath + gazePitch * 0.006f * R;
-  float shiftX = gazeYaw * 0.007f * R;
+  for (int i = 0; i < NRAD; i++) {
+    float theta = (float)i * (TWO_PI / (float)NRAD);
+    float r = pose.radii[i];
+    mapPoint(cosf(theta) * r, sinf(theta) * r * breath,
+             rotC, rotS, rScale, cx, cy, dx[i], dy[i]);
+  }
+  fillPoly(bodyColor);
 
-  // Fake head-turn depth: the far eye shrinks as |yaw| grows.
-  float farShrink = 1.0f - clampf(fabsf(gazeYaw) / 25.0f, 0.0f, 1.0f) * 0.3f;
+  if (alive) {
+    EyePose ep[2];
+    eyePoses(gazeYaw, gazePitch, gazeRoll, R, pose.split, ep);
+    for (int i = 0; i < 2; i++) {
+      drawEye(pose, ep[i], pose.eyes[i], lid, rotC, rotS, rScale,
+              cx, cy, bodyColor);
+    }
+  }
 
-  float lidOpen = fminf(lid, pose.eyeOpen);
-  float wNear = pose.eyeW * R;
-  float hNear = pose.eyeH * R * lidOpen;
-  float wFar = wNear * farShrink;
-  float hFar = hNear * farShrink;
+  if (curItem != ITEM_NONE) drawItem(rotC, rotS, rScale, cx, cy);
+  drawBurst(nowSec, cx, cy);
+  drawStatsBar();
 
-  bool gazeRight = gazeYaw >= 0.0f;
-  drawCapsule(cx - eyeDX + shiftX, eyeY,
-              gazeRight ? wFar : wNear, gazeRight ? hFar : hNear,
-              pose.eyeTilt, TFT_BLACK);
-  drawCapsule(cx + eyeDX + shiftX, eyeY,
-              gazeRight ? wNear : wFar, gazeRight ? hNear : hFar,
-              pose.eyeTilt, TFT_BLACK);
-
-  // Center the sprite if it fell back to a smaller size.
   int sx = (tft->width() - spr->width()) / 2;
   int sy = (tft->height() - spr->height()) / 2;
   spr->pushSprite(sx, sy);

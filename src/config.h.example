@@ -1,0 +1,14 @@
+// Copy this file to src/config.h and fill in your values.
+// src/config.h is gitignored so credentials stay out of the repo.
+
+#pragma once
+
+#define WIFI_SSID "YourSSID"
+#define WIFI_PASS "YourPassword"
+
+// POSIX TZ string for your timezone (used for day-boundary streaks).
+// Examples:
+//   UTC:            "UTC0"
+//   US Eastern:     "EST5EDT,M3.2.0/2,M11.1.0"
+//   Central Europe: "CET-1CEST,M3.5.0,M10.5.0/3"
+#define TZ_POSIX "UTC0"
