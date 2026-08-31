@@ -5,12 +5,15 @@
   (egg -> coinling -> hodler -> whale, looping as a demo).
 
   BLE: advertises as "Finagotchi", exposes one characteristic (READ + NOTIFY
-  + WRITE). The app reads/subscribes to "<stage>:<streak>:<mood>" updates and
-  writes commands to drive the pet (see BLE_PROTOCOL.md):
+  + WRITE). The app reads/subscribes to
+  "<stage>:<streak>:<mood>:<item>:<points>:<happy>" updates and writes
+  commands to drive the pet (see BLE_PROTOCOL.md):
     stage:egg|coinling|hodler|whale
     look:<yaw>,<pitch>   look:off
-    mood:<0-255>         streak:<n>
-  While the app is connected, the demo auto-evolve is paused.
+    mood:<0-5>  item:<0-5>  react:jump|spin|glow|dance
+    points:<n>  happy:<0-100>  streak:<n>
+  While the app is connected, the demo auto-evolve and the day-based streak
+  check are paused (the app is authoritative for stage and stats).
 
   Wi-Fi + NTP: syncs local time so the streak is day-based (consecutive days
   the device has been alive). Streak and last-active-day persist in NVS.
@@ -48,13 +51,14 @@ static uint8_t  mood = MOOD_CALM;
 static uint8_t  item = ITEM_NONE;
 static uint32_t points = 0;
 static uint8_t  happiness = 50;
+static bool     timeSynced = false;
 static Preferences prefs;
 
 // Push "<stage>:<streak>:<mood>:<item>:<points>:<happy>" (read + notify).
 // Can exceed 20 bytes — the app should negotiate MTU >= 64.
 static void blePushState(PetState s) {
   if (!pCharacteristic) return;
-  char buf[40];
+  char buf[48];
   snprintf(buf, sizeof(buf), "%s:%lu:%u:%u:%lu:%u",
            STAGE_NAMES[s], (unsigned long)streak, mood, item,
            (unsigned long)points, happiness);
@@ -131,6 +135,17 @@ static void handleCommand(const char* cmd) {
   }
   else if (strncmp(cmd, "streak:", 7) == 0) {
     streak = (uint32_t)strtoul(cmd + 7, nullptr, 10);
+    // Persist so the minute-tick day check doesn't revert the app's
+    // override, and stamp the day so a stale lastDay doesn't make the tick
+    // reset/bump the streak the app just pushed once it resumes.
+    prefs.begin("fina", false);
+    prefs.putUInt("streak", streak);
+    if (timeSynced) {
+      struct tm ti;
+      if (getLocalTime(&ti, 0))
+        prefs.putUInt("lastDay", (uint32_t)(ti.tm_year + 1900) * 400 + (uint32_t)ti.tm_yday);
+    }
+    prefs.end();
     blePushState(pet.state());
   }
   else {
@@ -159,11 +174,13 @@ class CmdCallbacks : public BLECharacteristicCallbacks {
 class SrvCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* s) override {
     appConnected = true;
+    pet.setSyncWait(false, millis() / 1000.0f);
     Serial.println("App connected (demo paused).");
   }
   void onDisconnect(BLEServer* s) override {
     appConnected = false;
     pet.clearLook(millis() / 1000.0f);
+    pet.setSyncWait(true, millis() / 1000.0f);
     s->getAdvertising()->start();    // keep advertising for the next connection
     Serial.println("App disconnected (demo resumed).");
   }
@@ -171,6 +188,7 @@ class SrvCallbacks : public BLEServerCallbacks {
 
 static void setupBLE() {
   BLEDevice::init("Finagotchi");
+  BLEDevice::setMTU(128);   // state string + batched writes exceed 20 bytes
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new SrvCallbacks());
 
@@ -183,7 +201,7 @@ static void setupBLE() {
   );
   pCharacteristic->setCallbacks(new CmdCallbacks());
   pCharacteristic->addDescriptor(new BLE2902());   // required for notifications
-  pCharacteristic->setValue("egg:0:0:0");
+  pCharacteristic->setValue("egg:0:0:0:0:50");
   pService->start();
 
   BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
@@ -196,8 +214,6 @@ static void setupBLE() {
 // ---------------------------------------------------------------------------
 // Wi-Fi + NTP
 // ---------------------------------------------------------------------------
-
-static bool timeSynced = false;
 
 static bool setupWiFiTime() {
   WiFi.mode(WIFI_STA);
@@ -339,6 +355,7 @@ void setup() {
 
   setupBLE();
   blePushState(pet.state());
+  pet.setSyncWait(true, millis() / 1000.0f);   // advertise -> waiting scene
 
   lastEvolve = millis();
   Serial.println("Pet running.");
@@ -362,8 +379,9 @@ void loop() {
     blePushState(pet.state());
   }
 
-  // Day-boundary streak check.
-  if (nowMs - lastStreakCheck >= STREAK_CHECK_MS) {
+  // Day-boundary streak check. Paused while the app is connected: the app
+  // is authoritative for the stats bar and pushes streak:/points:/happy:.
+  if (!appConnected && nowMs - lastStreakCheck >= STREAK_CHECK_MS) {
     lastStreakCheck = nowMs;
     updateStreakFromTime();
   }

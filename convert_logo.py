@@ -1,12 +1,14 @@
 """Convert finagotchi_logo.png to a C header for TFT_eSPI.
 
 Processing steps:
-  1. Flood-fill the white background (connected to the image border) to black,
-     so white letters INSIDE the dark outline are preserved.
-  2. Remove the bright anti-aliased fringe ring around the outline.
-  3. Crop to the artwork bounding box.
-  4. Resize to fit the 240x240 display (LANCZOS).
-  5. Emit RGB565 C array.
+  1. Background removal:
+     - RGBA artwork with real transparency: alpha-composite over black.
+     - Opaque artwork: flood-fill the white background (connected to the
+       image border) to black, so white letters INSIDE a dark outline are
+       preserved, then remove the bright anti-aliased fringe ring.
+  2. Crop to the artwork bounding box.
+  3. Resize to fit the 240x240 display (LANCZOS).
+  4. Emit RGB565 C array.
 """
 from PIL import Image, ImageDraw
 import sys
@@ -16,6 +18,18 @@ OUTPUT = "src/logo.h"
 MAX_W, MAX_H = 236, 160     # fits 240x240 with a small margin
 FLOOD_THRESH = 60           # tolerance for "white" during flood fill
 FRINGE_LEVEL = 200          # pixels brighter than this next to background get cut
+
+
+def flatten_alpha(img: Image.Image) -> Image.Image | None:
+    """Alpha-composite over black if the image has real transparency."""
+    rgba = img.convert("RGBA")
+    if img.mode not in ("RGBA", "LA") and "transparency" not in img.info:
+        return None
+    if rgba.getchannel("A").getextrema()[0] == 255:
+        return None                 # fully opaque, no transparency to use
+    bg = Image.new("RGB", rgba.size, (0, 0, 0))
+    bg.paste(rgba, mask=rgba.getchannel("A"))
+    return bg
 
 
 def remove_background(img: Image.Image) -> Image.Image:
@@ -46,12 +60,12 @@ def remove_background(img: Image.Image) -> Image.Image:
 
 def main():
     try:
-        img = Image.open(INPUT).convert("RGB")
+        img = Image.open(INPUT)
     except FileNotFoundError:
         print(f"Error: {INPUT} not found. Save the logo image to the project folder.")
         sys.exit(1)
 
-    img = remove_background(img)
+    img = flatten_alpha(img) or remove_background(img.convert("RGB"))
 
     bbox = img.getbbox()
     if bbox:

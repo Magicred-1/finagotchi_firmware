@@ -38,7 +38,43 @@ static float rngNext() {
 // ---------------------------------------------------------------------------
 // profiles.ts — exact radial profiles, 64 samples.
 // theta = 0 points right, grows clockwise (y-down screen coords).
+// GHOST_PROFILES.hem/.curl/.arms are copied verbatim from profiles.ts
+// (generated from the ghost IP artwork by tools/radial_convert.py, max radius
+// normalized to 0.55). Do not hand-edit; regenerate from the app repo.
 // ---------------------------------------------------------------------------
+
+static const float GHOST_HEM[FinagotchiPet::NRAD] = {
+  0.3912f, 0.3923f, 0.3965f, 0.4039f, 0.4144f, 0.4281f, 0.4451f, 0.4662f,
+  0.4900f, 0.5104f, 0.5190f, 0.5092f, 0.4776f, 0.4559f, 0.4468f, 0.4538f,
+  0.4466f, 0.4399f, 0.4479f, 0.4681f, 0.4849f, 0.4837f, 0.4959f, 0.5184f,
+  0.5477f, 0.5500f, 0.5180f, 0.4687f, 0.4199f, 0.3910f, 0.3763f, 0.3691f,
+  0.3670f, 0.3687f, 0.3733f, 0.3809f, 0.3914f, 0.4045f, 0.4186f, 0.4329f,
+  0.4464f, 0.4592f, 0.4708f, 0.4816f, 0.4910f, 0.4988f, 0.5047f, 0.5087f,
+  0.5113f, 0.5121f, 0.5110f, 0.5079f, 0.5033f, 0.4965f, 0.4881f, 0.4778f,
+  0.4666f, 0.4546f, 0.4418f, 0.4283f, 0.4157f, 0.4051f, 0.3978f, 0.3931f,
+};
+
+static const float GHOST_CURL[FinagotchiPet::NRAD] = {
+  0.4336f, 0.4319f, 0.4317f, 0.4331f, 0.4359f, 0.4401f, 0.4447f, 0.4495f,
+  0.4544f, 0.4586f, 0.4619f, 0.4640f, 0.4657f, 0.4668f, 0.4680f, 0.4693f,
+  0.4718f, 0.4758f, 0.4819f, 0.4899f, 0.4998f, 0.5109f, 0.5231f, 0.5342f,
+  0.5439f, 0.5500f, 0.5477f, 0.4891f, 0.4302f, 0.3783f, 0.3819f, 0.3878f,
+  0.3947f, 0.4031f, 0.4117f, 0.4203f, 0.4289f, 0.4376f, 0.4460f, 0.4535f,
+  0.4609f, 0.4678f, 0.4743f, 0.4798f, 0.4844f, 0.4882f, 0.4914f, 0.4937f,
+  0.4956f, 0.4962f, 0.4966f, 0.4962f, 0.4951f, 0.4926f, 0.4895f, 0.4853f,
+  0.4800f, 0.4739f, 0.4672f, 0.4605f, 0.4531f, 0.4464f, 0.4407f, 0.4365f,
+};
+
+static const float GHOST_ARMS[FinagotchiPet::NRAD] = {
+  0.4486f, 0.4351f, 0.4082f, 0.3940f, 0.4023f, 0.4486f, 0.5026f, 0.5448f,
+  0.5500f, 0.5282f, 0.4971f, 0.4683f, 0.4467f, 0.4310f, 0.4203f, 0.4141f,
+  0.4122f, 0.4141f, 0.4203f, 0.4310f, 0.4467f, 0.4663f, 0.4834f, 0.4915f,
+  0.4869f, 0.4731f, 0.4541f, 0.4342f, 0.4161f, 0.4045f, 0.4139f, 0.4384f,
+  0.4659f, 0.4484f, 0.4240f, 0.4004f, 0.4106f, 0.4213f, 0.4327f, 0.4436f,
+  0.4539f, 0.4628f, 0.4705f, 0.4764f, 0.4810f, 0.4836f, 0.4851f, 0.4851f,
+  0.4845f, 0.4825f, 0.4797f, 0.4757f, 0.4709f, 0.4642f, 0.4561f, 0.4462f,
+  0.4362f, 0.4248f, 0.4128f, 0.3999f, 0.3879f, 0.3772f, 0.3975f, 0.4244f,
+};
 
 static float gRadii[PET_STATE_COUNT][FinagotchiPet::NRAD];
 static bool  gTablesReady = false;
@@ -53,26 +89,16 @@ static void buildTables() {
     float c = fabsf(cosf(theta));
     float s = fabsf(sinf(theta));
 
-    {   // egg: superellipse, n 2.5 bottom / 1.8 top, wobble sin(3t)
-      float n = degrees < 180.0f ? 2.5f : 1.8f;
-      float se = powf(powf(c, n) + powf(s, n), -1.0f / n);
-      gRadii[PET_EGG][i] = clampf(0.45f * se + 0.015f * sinf(3.0f * theta));
-    }
-    {   // coinling: n=4 squircle, wobble sin(5t)
-      float sq = powf(powf(c, 4.0f) + powf(s, 4.0f), -0.25f);
-      gRadii[PET_COINLING][i] = clampf(0.48f * sq + 0.01f * sinf(5.0f * theta));
-    }
-    {   // hodler: (0.38 + 0.22|cos 2t|)^0.4
-      float base = 0.38f + 0.22f * fabsf(cosf(theta * 2.0f));
-      gRadii[PET_HODLER][i] = clampf(powf(base, 0.4f));
-    }
-    {   // whale: ellipse a=0.58 b=0.36
-      const float a = 0.58f, b = 0.36f;
-      float cw = cosf(theta), sw = sinf(theta);
-      float den = sqrtf((b * cw) * (b * cw) + (a * sw) * (a * sw));
-      gRadii[PET_WHALE][i] = clampf(a * b / (den > 0.0f ? den : 1.0f));
-    }
+    // egg: superellipse, n 2.5 bottom / 1.8 top, wobble sin(3t) — unchanged
+    float n = degrees < 180.0f ? 2.5f : 1.8f;
+    float se = powf(powf(c, n) + powf(s, n), -1.0f / n);
+    gRadii[PET_EGG][i] = clampf(0.45f * se + 0.015f * sinf(3.0f * theta));
   }
+
+  // Ghost silhouettes ride on the coinling/hodler/whale stages (engine.ts).
+  memcpy(gRadii[PET_COINLING], GHOST_HEM,  sizeof(GHOST_HEM));
+  memcpy(gRadii[PET_HODLER],   GHOST_CURL, sizeof(GHOST_CURL));
+  memcpy(gRadii[PET_WHALE],    GHOST_ARMS, sizeof(GHOST_ARMS));
 }
 
 // shape.ts radiusAtAngle: linear interpolation between nearest samples.
@@ -221,6 +247,7 @@ const StageDef DEFS[PET_STATE_COUNT] = {
 
 // expressions.ts EXPRESSIONS — absolute gaze/split/eye overrides.
 // pair() mirrors tilt: eyes[0].tilt = +tilt, eyes[1].tilt = -tilt.
+// calm uses face.ts defaults: REST_GAZE (0,-12,0), EYE_SPLIT 19, EYE_W/H .2/.28.
 struct ExprDef {
   float gazeYaw, gazePitch, gazeRoll;
   float split;
@@ -228,18 +255,18 @@ struct ExprDef {
 };
 
 const ExprDef EXPR[MOOD_COUNT] = {
-  /* calm    */ {  0.0f, -18.0f,  0.0f, 15.46f,
-                  {{ 0.186f, 0.412f, 0.0f, 1.0f }, { 0.186f, 0.412f, 0.0f, 1.0f }} },
-  /* happy   */ {  2.0f, -10.0f,  0.0f, 16.5f,
+  /* calm    */ {  0.0f, -12.0f,  0.0f, 19.0f,
+                  {{ 0.2f, 0.28f, 0.0f, 1.0f }, { 0.2f, 0.28f, 0.0f, 1.0f }} },
+  /* happy   */ {  2.0f, -10.0f,  0.0f, 19.5f,
                   {{ 0.24f, 0.15f, 18.0f, 1.0f }, { 0.24f, 0.15f, -18.0f, 1.0f }} },
-  /* excited */ {  4.0f, -16.0f,  0.0f, 18.5f,
-                  {{ 0.4f, 0.5f, -8.0f, 1.0f }, { 0.4f, 0.5f, 8.0f, 1.0f }} },
-  /* waiting */ { -8.0f,  -4.0f, -6.0f, 16.0f,
-                  {{ 0.22f, 0.36f, -6.0f, 1.0f }, { 0.22f, 0.36f, 6.0f, 1.0f }} },
-  /* sleepy  */ {  0.0f,   8.0f,  0.0f, 15.0f,
-                  {{ 0.2f, 0.42f, 0.0f, 0.42f }, { 0.2f, 0.42f, 0.0f, 0.42f }} },
-  /* sad     */ {  2.0f,  10.0f,  0.0f, 15.5f,
-                  {{ 0.22f, 0.36f, -24.0f, 1.0f }, { 0.22f, 0.36f, 24.0f, 1.0f }} },
+  /* excited */ {  4.0f, -16.0f,  0.0f, 20.5f,
+                  {{ 0.3f, 0.34f, -8.0f, 1.0f }, { 0.3f, 0.34f, 8.0f, 1.0f }} },
+  /* waiting */ { -8.0f,  -4.0f, -6.0f, 18.5f,
+                  {{ 0.22f, 0.32f, -6.0f, 1.0f }, { 0.22f, 0.32f, 6.0f, 1.0f }} },
+  /* sleepy  */ {  0.0f,  -4.0f,  0.0f, 18.0f,
+                  {{ 0.2f, 0.34f, 0.0f, 0.42f }, { 0.2f, 0.34f, 0.0f, 0.42f }} },
+  /* sad     */ {  2.0f,  -2.0f,  0.0f, 18.5f,
+                  {{ 0.22f, 0.32f, -24.0f, 1.0f }, { 0.22f, 0.32f, 24.0f, 1.0f }} },
 };
 
 // PetCanvas reactions as keyframe tracks {time, scale, rotDeg}.
@@ -277,7 +304,8 @@ void FinagotchiPet::end() {
 void FinagotchiPet::setState(PetState id, float nowSec) {
   if (id == cur || id >= PET_STATE_COUNT) return;
   if (id > cur) burstT = nowSec;   // LevelUpAnimation trigger (stage up only)
-  prev = cur;
+  fromPose = poseAt(nowSec);       // departFige: morph from the visible pose
+  hasFrom = true;
   cur = id;
   tCur = nowSec;
 }
@@ -342,6 +370,17 @@ void FinagotchiPet::setStats(uint32_t streakDays, uint32_t points,
   statsHappy = happiness > 100 ? 100 : happiness;
 }
 
+void FinagotchiPet::setSyncWait(bool on, float nowSec) {
+  if (on == syncWait) return;
+  syncWait = on;
+  if (on) {
+    preSyncMood = curMood;
+    setMood(MOOD_WAITING, nowSec);
+  } else {
+    setMood(preSyncMood, nowSec);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Bottom stats bar: flame + streak, sparkle + points, heart + happiness.
 // ---------------------------------------------------------------------------
@@ -354,8 +393,8 @@ static void fmtVal(uint32_t v, char* buf, size_t n) {
 
 void FinagotchiPet::drawStatsBar() {
   int w = spr->width(), h = spr->height();
-  int barY = h - 38;
-  int cy = barY + 19;                    // icon/text vertical center
+  int barY = h - 56;                   // extra room below for the sync caption
+  int cy = barY + 19;                  // icon/text vertical center
 
   uint16_t dim = spr->color565(45, 45, 60);
   uint16_t txt = spr->color565(230, 230, 240);
@@ -363,7 +402,7 @@ void FinagotchiPet::drawStatsBar() {
 
   spr->setTextDatum(ML_DATUM);
   spr->setTextSize(2);
-  spr->setTextColor(txt, TFT_BLACK);
+  spr->setTextColor(txt, spr->color565(0x07, 0x11, 0x1F));
 
   const int cols[3] = { w / 6, w / 2, w * 5 / 6 };
   char buf[12];
@@ -411,6 +450,56 @@ void FinagotchiPet::drawStatsBar() {
 }
 
 // ---------------------------------------------------------------------------
+// Waiting-for-sync scene: two comets orbiting the pet with fading tails over
+// a breathing orbit ring, plus a caption. Pure function of time (3 s
+// revolution). Tails fade by blending cyan into the navy bg, like the glow.
+// ---------------------------------------------------------------------------
+
+void FinagotchiPet::drawSyncWait(float nowSec, float cx, float cy) {
+  const float PERIOD = 3.0f;    // seconds per revolution
+  const int   TAIL = 10;        // dots per comet tail
+  float ro = R * 0.82f;         // orbit radius (clears body + reactions)
+
+  // Breathing orbit ring.
+  float pulse = 0.5f + 0.5f * sinf(nowSec / 1.8f * TWO_PI);
+  uint16_t ring = spr->color565(
+      (uint8_t)(30 + 20 * pulse), (uint8_t)(40 + 26 * pulse),
+      (uint8_t)(58 + 34 * pulse));
+  spr->drawCircle((int)cx, (int)cy, (int)ro, ring);
+
+  // Two comets, half a revolution apart, each with a fading dotted tail.
+  for (int c = 0; c < 2; c++) {
+    float head = (nowSec / PERIOD + (float)c * 0.5f) * TWO_PI;
+    for (int j = 0; j < TAIL; j++) {
+      float k = (float)j / (float)(TAIL - 1);   // 0 head -> 1 tail end
+      float a = head - k * 1.1f;                // ~63 deg tail span
+      float fade = (1.0f - k) * (1.0f - k);
+      uint16_t col = spr->color565(
+          (uint8_t)(0x22 * fade + 0x07 * (1.0f - fade)),
+          (uint8_t)(0xD3 * fade + 0x11 * (1.0f - fade)),
+          (uint8_t)(0xEE * fade + 0x1F * (1.0f - fade)));
+      int r = (j == 0) ? 3 : (k < 0.4f ? 2 : 1);
+      spr->fillCircle((int)(cx + cosf(a) * ro), (int)(cy + sinf(a) * ro),
+                      r, col);
+    }
+  }
+
+  // Caption at the bottom: title with cycling ellipsis + dim subtitle.
+  static const char* DOTS[4] = { "", ".", "..", "..." };
+  char buf[28];
+  snprintf(buf, sizeof(buf), "waiting for connection%s",
+           DOTS[(int)(nowSec * 1.4f) & 3]);
+  uint16_t bg = spr->color565(0x07, 0x11, 0x1F);
+  int h = spr->height();
+  spr->setTextDatum(TC_DATUM);
+  spr->setTextSize(1);
+  spr->setTextColor(spr->color565(200, 210, 225), bg);
+  spr->drawString(buf, spr->width() / 2, h - 22);
+  spr->setTextColor(spr->color565(80, 100, 122), bg);
+  spr->drawString("open the Finagotchi app", spr->width() / 2, h - 10);
+}
+
+// ---------------------------------------------------------------------------
 
 FinagotchiPet::Pose FinagotchiPet::poseFor(PetState id) const {
   const StageDef& d = DEFS[id];
@@ -438,19 +527,19 @@ FinagotchiPet::Pose FinagotchiPet::poseAt(float nowSec) const {
 
   float morph = DEFS[cur].morph;
   float k = (nowSec - tCur) / morph;
-  if (k < 1.0f && cur != prev) {
-    Pose from = poseFor(prev);
+  if (k < 1.0f && hasFrom) {
     float t = easeOutQuint(clampf(k));
-    for (int i = 0; i < NRAD; i++) p.radii[i] = lerpf(from.radii[i], to.radii[i], t);
-    p.offX = lerpf(from.offX, to.offX, t);
-    p.offY = lerpf(from.offY, to.offY, t);
-    p.fr = lerpf(from.fr, to.fr, t);
-    p.fg = lerpf(from.fg, to.fg, t);
-    p.fb = lerpf(from.fb, to.fb, t);
-    p.gr = lerpf(from.gr, to.gr, t);
-    p.gg = lerpf(from.gg, to.gg, t);
-    p.gb = lerpf(from.gb, to.gb, t);
-    p.hasGlow = to.hasGlow;
+    for (int i = 0; i < NRAD; i++) p.radii[i] = lerpf(fromPose.radii[i], to.radii[i], t);
+    p.offX = lerpf(fromPose.offX, to.offX, t);
+    p.offY = lerpf(fromPose.offY, to.offY, t);
+    p.fr = lerpf(fromPose.fr, to.fr, t);
+    p.fg = lerpf(fromPose.fg, to.fg, t);
+    p.fb = lerpf(fromPose.fb, to.fb, t);
+    p.gr = lerpf(fromPose.gr, to.gr, t);
+    p.gg = lerpf(fromPose.gg, to.gg, t);
+    p.gb = lerpf(fromPose.gb, to.gb, t);
+    // blendPose: glowColor = t < 0.5 ? a : b (no glow until mid-morph)
+    p.hasGlow = t < 0.5f ? fromPose.hasGlow : to.hasGlow;
   }
 
   // Expression override (engine.ts posed(): expr replaces gaze/split/eyes).
@@ -609,7 +698,7 @@ void FinagotchiPet::drawItem(float rotC, float rotS, float scale,
       int rx = (int)(0.34f * R * scale), ry = (int)(0.07f * R * scale);
       spr->fillEllipse((int)hx, (int)hy, rx, ry, gold);
       spr->fillEllipse((int)hx, (int)hy, (int)(0.30f * R * scale),
-                       (int)(0.03f * R * scale), TFT_BLACK);
+                       (int)(0.03f * R * scale), spr->color565(0x07, 0x11, 0x1F));
       break;
     }
     case ITEM_DIAMOND: {
@@ -716,21 +805,27 @@ void FinagotchiPet::render(float nowSec) {
   float cy = spr->height() * 0.44f + (pose.offY + driftY) * R + idleY;
   float rotC = cosf(rRot * DEG_TO_RAD), rotS = sinf(rRot * DEG_TO_RAD);
 
+  // App background is deep navy #07111F (PetCanvas).
+  uint16_t bgColor = spr->color565(0x07, 0x11, 0x1F);
   uint16_t bodyColor = spr->color565((uint8_t)pose.fr, (uint8_t)pose.fg, (uint8_t)pose.fb);
-  // PetBody glow: same path x1.15 at 22% opacity -> dimmed color over black.
-  uint16_t glowDim = spr->color565((uint8_t)(pose.gr * 0.22f),
-                                   (uint8_t)(pose.gg * 0.22f),
-                                   (uint8_t)(pose.gb * 0.22f));
 
-  spr->fillSprite(TFT_BLACK);
+  spr->fillSprite(bgColor);
 
-  for (int i = 0; i < NRAD; i++) {
-    float theta = (float)i * (TWO_PI / (float)NRAD);
-    float r = pose.radii[i];
-    mapPoint(cosf(theta) * r, sinf(theta) * r * breath,
-             rotC, rotS, rScale * 1.15f, cx, cy, dx[i], dy[i]);
+  if (pose.hasGlow) {
+    // PetBody glow: same path x1.15 behind the body at 22% opacity,
+    // blended over the navy background.
+    uint16_t glowDim = spr->color565(
+        (uint8_t)(pose.gr * 0.22f + 0x07 * 0.78f),
+        (uint8_t)(pose.gg * 0.22f + 0x11 * 0.78f),
+        (uint8_t)(pose.gb * 0.22f + 0x1F * 0.78f));
+    for (int i = 0; i < NRAD; i++) {
+      float theta = (float)i * (TWO_PI / (float)NRAD);
+      float r = pose.radii[i];
+      mapPoint(cosf(theta) * r, sinf(theta) * r * breath,
+               rotC, rotS, rScale * 1.15f, cx, cy, dx[i], dy[i]);
+    }
+    fillPoly(glowDim);
   }
-  fillPoly(glowDim);
 
   for (int i = 0; i < NRAD; i++) {
     float theta = (float)i * (TWO_PI / (float)NRAD);
@@ -751,7 +846,10 @@ void FinagotchiPet::render(float nowSec) {
 
   if (curItem != ITEM_NONE) drawItem(rotC, rotS, rScale, cx, cy);
   drawBurst(nowSec, cx, cy);
-  drawStatsBar();
+  // Stats are app-driven: only show the bar while the app is connected.
+  // Disconnected shows the waiting-for-connection scene instead.
+  if (syncWait) drawSyncWait(nowSec, cx, cy);
+  else drawStatsBar();
 
   int sx = (tft->width() - spr->width()) / 2;
   int sy = (tft->height() - spr->height()) / 2;

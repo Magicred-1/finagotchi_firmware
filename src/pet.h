@@ -2,12 +2,15 @@
   FinagotchiPet — ESP32/TFT_eSPI port of the app's radial Finagotchi engine.
 
   Faithful ports:
-  - profiles.ts radial bodies (64 samples) + morph = same-angle radii lerp
+  - profiles.ts radial bodies (64 samples): procedural egg + GHOST_PROFILES
+    hem/curl/arms ghost silhouettes on coinling/hodler/whale; morph =
+    same-angle radii lerp from a departure-pose snapshot (engine.ts departFige)
   - face.ts sphere-projected eyes (eyePoses tangent basis), seeded blink
     schedule (createRng 0x5eed), loopNoise liveliness
   - expressions.ts: 6 moods overriding gaze/split/eyes, blended over 0.45 s
   - engine.ts: dated setters, look target (mix/wander, 0.24 s morph),
-    glow = body x1.15 @ 22% (PetBody), white eyes (PetEyes #f5f5f5)
+    glow = body x1.15 @ 22% over navy #07111F (PetBody), white eyes
+    (PetEyes #f5f5f5)
   - PetAccessory.tsx collectibles: crown / glasses / bowtie / halo / diamond
   - PetCanvas reactions (jump/spin/glow/dance) + LevelUpAnimation sparkle
     burst on evolve
@@ -85,6 +88,10 @@ public:
   // Bottom stats bar: streak days / points / happiness (0-100).
   void setStats(uint32_t streakDays, uint32_t points, uint8_t happiness);
 
+  // Waiting-for-sync scene: waiting mood + pulsing beacon overlay while the
+  // device advertises for the app. Restores the previous mood when done.
+  void setSyncWait(bool on, float nowSec);
+
   void render(float nowSec);        // draw one frame
 
   // face.ts eyePoses output: position + tangent basis + depth
@@ -110,8 +117,12 @@ private:
   float       R = 105.0f;
 
   PetState  cur = PET_EGG;
-  PetState  prev = PET_EGG;
   float     tCur = 0.0f;
+
+  // Departure pose snapshot (engine.ts departFige): the pose visible at the
+  // moment of setState, so morphs interrupted mid-transition never pop.
+  Pose      fromPose;
+  bool      hasFrom = false;
 
   // External gaze target with dated morph (0.24 s)
   float     lookYaw = 0.0f,    lookPitch = 0.0f;
@@ -137,6 +148,10 @@ private:
   uint32_t  statsPoints = 0;
   uint8_t   statsHappy = 50;
 
+  // Waiting-for-sync scene
+  bool      syncWait = false;
+  uint8_t   preSyncMood = MOOD_CALM;
+
   // screen-space draw buffers
   float dx[NRAD], dy[NRAD];
 
@@ -153,4 +168,5 @@ private:
   void  drawItem(float rotC, float rotS, float scale, float cx, float cy);
   void  drawBurst(float nowSec, float cx, float cy);
   void  drawStatsBar();
+  void  drawSyncWait(float nowSec, float cx, float cy);
 };
