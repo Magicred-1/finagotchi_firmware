@@ -3,7 +3,36 @@
 Device advertises as **`Finagotchi`**.
 
 - Service: `0000f1a0-0000-1000-8000-00805f9b34fb`
-- Characteristic: `0000f1a1-0000-1000-8000-00805f9b34fb` (READ + NOTIFY + WRITE)
+- Characteristic: `0000f1a1-0000-1000-8000-00805f9b34fb` (READ + NOTIFY + WRITE + WRITE_NR — both write-with-response and write-without-response are accepted)
+- Provisioning characteristic: `0000f1a2-0000-1000-8000-00805f9b34fb` (WRITE + WRITE_NR, **encrypted writes only** — see below)
+
+## Pairing (required before Wi-Fi provisioning)
+
+The device uses BLE Secure Connections with bonding. It has a screen, so it
+acts as "display only" (`ESP_IO_CAP_OUT`): when the app initiates pairing,
+the device shows a 6-digit passkey on its screen and the app must perform
+**passkey entry**. After bonding, the link is encrypted.
+
+The pet/state characteristic stays open (stats are not sensitive); only the
+provisioning characteristic enforces encryption.
+
+## Wi-Fi provisioning (first-time setup)
+
+Write to the provisioning characteristic:
+
+```
+<ssid>\n<passphrase>
+```
+
+UTF-8, newline separator (a newline appears in neither a WPA passphrase nor
+a sane SSID). Constraints: ssid 1–32 chars, passphrase 8–63 chars (empty
+passphrase = open network). The write is rejected by the stack unless the
+link is encrypted, so pair first.
+
+On receipt the device validates, persists the credentials in NVS (they
+override the compile-time `config.h` defaults from then on), and immediately
+reconnects Wi-Fi. A status overlay on the screen reports success/failure,
+and `PROV:` lines appear on the serial monitor.
 
 ## Device -> App (read / notify)
 
@@ -43,6 +72,9 @@ streak rolls over at midnight.
 | 3 | bowtie |
 | 4 | halo |
 | 5 | diamond |
+| 6 | tshirt |
+
+Unknown item ids degrade to `none` (0) rather than misrendering.
 
 ## App -> Device (write)
 
@@ -63,8 +95,13 @@ truncated away.
 | `look:off` | Resume idle gaze wander |
 | `react:jump` / `spin` / `glow` / `dance` | Play a reaction animation |
 | `points:<n>` | Set points (persisted in NVS, shown in the stats bar) |
-| `happy:<0-100>` | Set happiness (RAM only, shown in the stats bar) |
+| `happy:<0-100>` | Set happiness (persisted in NVS, shown in the stats bar) |
 | `streak:<n>` | Set displayed streak (persisted in NVS; also stamps the day so the offline day check keeps it) |
+| `<stage>:<streak>:<mood>:<item>:<points>:<happy>` | Full state snapshot (same shape as the notify string) — sets everything at once |
+
+Writes may use write-with-response or write-without-response — the
+characteristic exposes both properties. Writes with an unrecognized payload
+are logged as `BLE: unknown command` on the serial monitor.
 
 ## On-screen stats bar
 

@@ -22,8 +22,9 @@
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
+#include <memory>
 
-enum PetState : uint8_t {
+enum class PetState : uint8_t {
   PET_EGG = 0,
   PET_COINLING,
   PET_HODLER,
@@ -32,7 +33,7 @@ enum PetState : uint8_t {
 };
 
 // Emotions (BLE `mood:` id) — order matches expressions.ts EXPRESSIONS[].
-enum PetMoodId : uint8_t {
+enum class PetMoodId : uint8_t {
   MOOD_CALM = 0,
   MOOD_HAPPY,
   MOOD_EXCITED,
@@ -43,24 +44,31 @@ enum PetMoodId : uint8_t {
 };
 
 // Collectibles (BLE `item:` id) — matches PetAccessory.tsx.
-enum PetItem : uint8_t {
+enum class PetItem : uint8_t {
   ITEM_NONE = 0,
   ITEM_CROWN,
   ITEM_GLASSES,
   ITEM_BOWTIE,
   ITEM_HALO,
   ITEM_DIAMOND,
+  ITEM_TSHIRT,
   ITEM_COUNT
 };
 
 // Reactions (BLE `react:`) — matches PetCanvas PetReaction.
-enum PetReaction : uint8_t {
+enum class PetReaction : uint8_t {
   REACT_NONE = 0,
   REACT_JUMP,
   REACT_SPIN,
   REACT_GLOW,
   REACT_DANCE
 };
+
+// Integer views of the *_COUNT sentinels: enum-class values don't convert
+// implicitly, but array sizes and bounds checks need plain numbers.
+constexpr size_t kPetStateCount = static_cast<size_t>(PetState::PET_STATE_COUNT);
+constexpr size_t kMoodCount     = static_cast<size_t>(PetMoodId::MOOD_COUNT);
+constexpr size_t kItemCount     = static_cast<size_t>(PetItem::ITEM_COUNT);
 
 class FinagotchiPet {
 public:
@@ -79,18 +87,24 @@ public:
   void clearLook(float nowSec);
 
   // Emotion + collectible + reaction (app-driven via BLE).
-  void setMood(uint8_t mood, float nowSec);
-  void setItem(uint8_t item);
-  void react(uint8_t reaction, float nowSec);
-  uint8_t mood() const { return curMood; }
-  uint8_t item() const { return curItem; }
+  void setMood(PetMoodId mood, float nowSec);
+  void setItem(PetItem item);
+  void react(PetReaction reaction, float nowSec);
+  PetMoodId mood() const { return curMood; }
+  PetItem item() const { return curItem; }
 
   // Bottom stats bar: streak days / points / happiness (0-100).
   void setStats(uint32_t streakDays, uint32_t points, uint8_t happiness);
 
+  // Top-right battery indicator (0-100). clearBattery() hides it (USB power,
+  // no battery sensed).
+  void setBattery(uint8_t pct);
+  void clearBattery();
+
   // Waiting-for-sync scene: waiting mood + pulsing beacon overlay while the
   // device advertises for the app. Restores the previous mood when done.
   void setSyncWait(bool on, float nowSec);
+  bool syncWaiting() const { return syncWait; }
 
   void render(float nowSec);        // draw one frame
 
@@ -113,10 +127,10 @@ private:
   };
 
   TFT_eSPI*   tft = nullptr;
-  TFT_eSprite* spr = nullptr;
+  std::unique_ptr<TFT_eSprite> spr;
   float       R = 105.0f;
 
-  PetState  cur = PET_EGG;
+  PetState  cur = PetState::PET_EGG;
   float     tCur = 0.0f;
 
   // Departure pose snapshot (engine.ts departFige): the pose visible at the
@@ -132,14 +146,14 @@ private:
   float     lookAtT = -10.0f;
 
   // Expression (dated, blends over 0.45 s)
-  uint8_t   curMood = MOOD_CALM;
-  uint8_t   prevMood = MOOD_CALM;
+  PetMoodId curMood = PetMoodId::MOOD_CALM;
+  PetMoodId prevMood = PetMoodId::MOOD_CALM;
   float     moodAtT = -10.0f;
 
-  uint8_t   curItem = ITEM_NONE;
+  PetItem   curItem = PetItem::ITEM_NONE;
 
   // Reaction + level-up burst
-  uint8_t   reaction = REACT_NONE;
+  PetReaction reaction = PetReaction::REACT_NONE;
   float     reactT = -10.0f;
   float     burstT = -10.0f;
 
@@ -148,9 +162,13 @@ private:
   uint32_t  statsPoints = 0;
   uint8_t   statsHappy = 50;
 
+  // Battery indicator
+  uint8_t   batteryPct = 100;
+  bool      batteryKnown = false;
+
   // Waiting-for-sync scene
   bool      syncWait = false;
-  uint8_t   preSyncMood = MOOD_CALM;
+  PetMoodId preSyncMood = PetMoodId::MOOD_CALM;
 
   // screen-space draw buffers
   float dx[NRAD], dy[NRAD];
@@ -160,13 +178,27 @@ private:
   float radiusAt(const float* radii, float theta) const;
 
   void  fillPoly(uint16_t color);   // triangle fan over dx/dy
+  void  fillPolyN(const float* xs, const float* ys, int n, uint16_t color);
   void  mapPoint(float ux, float uy, float rotC, float rotS,
                  float scale, float cx, float cy, float& sx, float& sy) const;
   void  drawEye(const Pose& p, const EyePose& e, const EyeCfg& cfg,
                 float lid, float rotC, float rotS, float scale,
                 float cx, float cy, uint16_t bodyColor);
-  void  drawItem(float rotC, float rotS, float scale, float cx, float cy);
+
+  // 2D affine anchor matrix [a,b,c,d,e,f] (engine.ts composeAnchors).
+  // Artwork is drawn around the origin in units of R and mapped through it.
+  struct Anchor { float a, b, c, d, e, f; };
+
+  void  anchorPoint(const Anchor& an, float ux, float uy,
+                    float& sx, float& sy) const;
+  bool  anchorFor(const Pose& p, const float eyeX[2], const float eyeY[2],
+                  bool eyesOk, float gazeRoll, float breath,
+                  float rotC, float rotS, float rRotDeg, float rScale,
+                  float cx, float cy, Anchor& out) const;
+  void  drawItem(const Anchor& an);   // anchored accessory artwork
+  void  drawShirt(float cx, float cy);  // fitted tee from the body contour
   void  drawBurst(float nowSec, float cx, float cy);
   void  drawStatsBar();
+  void  drawBattery();
   void  drawSyncWait(float nowSec, float cx, float cy);
 };

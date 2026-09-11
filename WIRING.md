@@ -17,6 +17,37 @@
 | CS          | GPIO10              | TFT_CS    |
 | BL / LED    | GPIO13 (optional)   | TFT_BL    |
 
+## Buttons
+
+Two momentary push buttons for local interaction. One leg to GPIO, other leg
+to GND rail. Uses internal pull-ups (no external resistor needed).
+
+| Button | GPIO | Function |
+|--------|------|----------|
+| Button 1 | GPIO37 | Short press: cycle reaction (jump → spin → glow → dance). Long press (1s): cycle mood |
+| Button 2 | GPIO39 | Short press: feed/play (+10 happiness, happy mood). Long press (1s): cycle mood |
+
+> On ESP32-S3 modules with **octal PSRAM** (e.g. N16R8), GPIO 33–37 are used
+> by the PSRAM bus — GPIO37 won't work as a button there. Use a quad-PSRAM
+> module (N8R2) or pick a different pin in that case.
+
+> If your buttons are wired to different pins, edit `BUTTON_1_PIN` and
+> `BUTTON_2_PIN` in `src/main.cpp`.
+
+## Battery sense (optional)
+
+Top-right battery icon on screen. LiPo+ → voltage divider → GPIO4 (ADC1 —
+ADC2 conflicts with Wi-Fi):
+
+| Connection | Part |
+|------------|------|
+| LiPo+ → GPIO4 | 2× 100k resistors in series (1:1 divider) |
+| Midpoint → GPIO4 | tap between the two resistors |
+| LiPo− | GND rail (shared with the board!) |
+
+Without the divider the icon hides itself (reads ~0 V = USB power assumed).
+> Never connect LiPo+ directly to a GPIO — 4.2 V exceeds the 3.3 V max.
+
 > If your display module has pins labeled `SCL`/`SDA`, that is the SPI clock/data naming used by some vendors. `SCL` = SCK, `SDA` = MOSI.
 
 ## Changing pins or driver
