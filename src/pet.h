@@ -70,6 +70,20 @@ constexpr size_t kPetStateCount = static_cast<size_t>(PetState::PET_STATE_COUNT)
 constexpr size_t kMoodCount     = static_cast<size_t>(PetMoodId::MOOD_COUNT);
 constexpr size_t kItemCount     = static_cast<size_t>(PetItem::ITEM_COUNT);
 
+// One DCA plan, mirrored read-only from the app (BLE dca: commands) or from
+// the relay poll while offline. ticker is clamped to 6 chars + NUL.
+// priceUsd = last known token unit price (app/relay-fed; 0 = unknown).
+struct DcaPlan {
+  bool     enabled;
+  uint32_t nextBuyEpoch;
+  float    amountSol;
+  char     ticker[7];
+  uint32_t buys;
+  uint32_t holdingsHeld;
+  float    priceUsd;
+};
+constexpr size_t kDcaMaxPlans = 4;
+
 class FinagotchiPet {
 public:
   static const int NRAD = 64;   // PROFILE_SAMPLES
@@ -105,6 +119,36 @@ public:
   // device advertises for the app. Restores the previous mood when done.
   void setSyncWait(bool on, float nowSec);
   bool syncWaiting() const { return syncWait; }
+
+  // DCA plan carousel in the stats-bar area + "+n TICKER" gain toasts.
+  // setDcaPlan stores a copy; overdue marks the slot with an amber ring.
+  void setDcaPlan(uint8_t idx, const DcaPlan& p, bool overdue);
+  void clearDcaPlans();
+  uint8_t dcaPlanCount() const { return dcaCount; }
+
+  // Wall clock for the countdown text; 0 = never synced, shows "--".
+  void setEpoch(uint32_t epoch);
+
+  // SOL/USD rate for the positions page amount toggle (BLE solusd:,
+  // NVS-persisted); <= 0 = unknown, amount stays in SOL only.
+  void setSolUsd(float rate) { solUsd = rate; }
+
+  // Button hooks: long-press pins the next plan for 30 s, double-press
+  // resumes the 4 s auto-rotate.
+  void pinNextDcaPlan(float nowSec);
+  void unpinDcaPlan();
+
+  // dca:hit celebration: LevelUpAnimation sparkle burst + float-up toast.
+  void sparkleBurst(float nowSec) { burstT = nowSec; }
+  void enqueueToast(const char* text, float nowSec);
+
+  // Second page: full-screen DCA positions view with token logos.
+  // Buttons: BTN2 navigates pages, BTN1 is the context action (feed on the
+  // pet page, next plan card on the DCA page). Local UI only.
+  void toggleDcaPage() { pageDca = !pageDca; }
+  void showPetPage() { pageDca = false; }
+  bool dcaPageVisible() const { return pageDca; }
+  void nextDcaCard(float nowSec);   // BTN1 action on the DCA page
 
   void render(float nowSec);        // draw one frame
 
@@ -170,6 +214,33 @@ private:
   bool      syncWait = false;
   PetMoodId preSyncMood = PetMoodId::MOOD_CALM;
 
+  // DCA plan carousel (stats-bar area)
+  DcaPlan   dca[kDcaMaxPlans] = {};
+  bool      dcaOverdue[kDcaMaxPlans] = {};
+  uint8_t   dcaCount = 0;             // slots in use (0..kDcaMaxPlans)
+  uint32_t  nowEpoch = 0;             // wall clock; 0 = never synced
+  uint8_t   dcaShow = 0;              // slot currently on screen
+  uint8_t   dcaPrevShow = 0;          // slot blending out
+  float     dcaShowT = -10.0f;        // last slot change (0.45 s blend)
+  float     dcaRotateT = 0.0f;        // last auto-rotate tick (4 s)
+  int8_t    dcaPinned = -1;           // >=0: pinned slot, overrides rotate
+  float     dcaPinUntil = 0.0f;
+
+  // Gain toasts: queue of 3 ("+n TICKER"), floats up from the stats bar
+  struct Toast { char text[24]; float t0; };
+  Toast     toasts[3] = {{ "", -100.0f }, { "", -100.0f }, { "", -100.0f }};
+
+  // Page switch: false = pet scene, true = DCA positions page
+  bool      pageDca = false;
+
+  // DCA positions card view (one plan per screen, slide transition)
+  uint8_t   dcaCard = 0;
+  uint8_t   dcaCardPrev = 0;
+  float     dcaCardT = -10.0f;
+
+  // SOL/USD rate for the amount toggle (0 = unknown -> SOL only)
+  float     solUsd = 0.0f;
+
   // screen-space draw buffers
   float dx[NRAD], dy[NRAD];
 
@@ -201,4 +272,7 @@ private:
   void  drawStatsBar();
   void  drawBattery();
   void  drawSyncWait(float nowSec, float cx, float cy);
+  void  drawDcaLine(float nowSec);    // plan carousel line (stats-bar area)
+  void  drawToasts(float nowSec);     // gain toasts floating up
+  void  drawDcaPage(float nowSec);    // full-screen DCA positions view
 };

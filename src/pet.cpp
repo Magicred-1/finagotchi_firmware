@@ -1,4 +1,5 @@
 #include "pet.h"
+#include "token_logos.h"
 
 #include <array>
 
@@ -398,6 +399,62 @@ void FinagotchiPet::setSyncWait(bool on, float nowSec) {
 }
 
 // ---------------------------------------------------------------------------
+// DCA plan carousel + gain toasts
+// ---------------------------------------------------------------------------
+
+void FinagotchiPet::setDcaPlan(uint8_t idx, const DcaPlan& p, bool overdue) {
+  if (idx >= kDcaMaxPlans) return;
+  dca[idx] = p;
+  dca[idx].ticker[sizeof(dca[idx].ticker) - 1] = 0;
+  dcaOverdue[idx] = overdue;
+  if (idx >= dcaCount) dcaCount = idx + 1;
+}
+
+void FinagotchiPet::clearDcaPlans() {
+  memset(dca, 0, sizeof(dca));
+  memset(dcaOverdue, 0, sizeof(dcaOverdue));
+  dcaCount = 0;
+  dcaShow = dcaPrevShow = 0;
+  dcaPinned = -1;
+}
+
+void FinagotchiPet::setEpoch(uint32_t epoch) {
+  nowEpoch = epoch;
+}
+
+void FinagotchiPet::pinNextDcaPlan(float nowSec) {
+  if (dcaCount == 0) return;
+  // Cycle to the next enabled slot after the current pin/visible one.
+  uint8_t from = dcaPinned >= 0 ? static_cast<uint8_t>(dcaPinned) : dcaShow;
+  for (size_t k = 1; k <= dcaCount; k++) {
+    uint8_t cand = static_cast<uint8_t>((from + k) % dcaCount);
+    if (dca[cand].enabled) {
+      dcaPinned = static_cast<int8_t>(cand);
+      dcaPinUntil = nowSec + 30.0f;
+      return;
+    }
+  }
+}
+
+void FinagotchiPet::unpinDcaPlan() {
+  dcaPinned = -1;
+}
+
+void FinagotchiPet::enqueueToast(const char* text, float nowSec) {
+  // Free slot, else replace the oldest toast still on screen.
+  int slot = -1, oldest = 0;
+  for (int i = 0; i < 3; i++) {
+    float age = nowSec - toasts[i].t0;
+    if (toasts[i].text[0] == 0 || age >= 2.5f) { slot = i; break; }
+    if (toasts[i].t0 < toasts[oldest].t0) oldest = i;
+  }
+  if (slot < 0) slot = oldest;
+  strncpy(toasts[slot].text, text, sizeof(toasts[slot].text) - 1);
+  toasts[slot].text[sizeof(toasts[slot].text) - 1] = 0;
+  toasts[slot].t0 = nowSec;
+}
+
+// ---------------------------------------------------------------------------
 // Bottom stats bar: flame + streak, sparkle + points, heart + happiness.
 // ---------------------------------------------------------------------------
 
@@ -407,6 +464,83 @@ void fmtVal(uint32_t v, char* buf, size_t n) {
   if (v >= 100000)   snprintf(buf, n, "%luk", static_cast<unsigned long>(v / 1000));
   else if (v >= 10000) snprintf(buf, n, "%.1fk", v / 1000.0f);
   else               snprintf(buf, n, "%lu", static_cast<unsigned long>(v));
+}
+
+// Countdown text for a plan: "in 2d 14h" / "in 3h 25m"; "overdue" once the
+// epoch passes, "--" when the wall clock was never synced.
+void fmtCountdown(uint32_t nextBuyEpoch, uint32_t nowEpoch, char* buf, size_t n) {
+  if (nowEpoch == 0 || nextBuyEpoch == 0) { strlcpy(buf, "--", n); return; }
+  int32_t rem = static_cast<int32_t>(nextBuyEpoch - nowEpoch);
+  if (rem <= 0) { strlcpy(buf, "overdue", n); return; }
+  if (rem >= 86400)
+    snprintf(buf, n, "in %ldd %ldh", static_cast<long>(rem / 86400),
+             static_cast<long>(rem % 86400 / 3600));
+  else
+    snprintf(buf, n, "in %ldh %ldm", static_cast<long>(rem / 3600),
+             static_cast<long>(rem % 3600 / 60));
+}
+
+void hsv2rgb(float h, float s, float v, uint8_t& r, uint8_t& g, uint8_t& b) {
+  float c = v * s;
+  float x = c * (1.0f - fabsf(fmodf(h * 6.0f, 2.0f) - 1.0f));
+  float m = v - c;
+  float rr, gg, bb;
+  int seg = static_cast<int>(h * 6.0f) % 6;
+  switch (seg) {
+    case 0: rr = c; gg = x; bb = 0; break;
+    case 1: rr = x; gg = c; bb = 0; break;
+    case 2: rr = 0; gg = c; bb = x; break;
+    case 3: rr = 0; gg = x; bb = c; break;
+    case 4: rr = x; gg = 0; bb = c; break;
+    default: rr = c; gg = 0; bb = x; break;
+  }
+  r = static_cast<uint8_t>((rr + m) * 255.0f);
+  g = static_cast<uint8_t>((gg + m) * 255.0f);
+  b = static_cast<uint8_t>((bb + m) * 255.0f);
+}
+
+// Logo-chip color for a ticker: brand colors for the tokens the app lists
+// (xStocks use their underlying brand), otherwise a deterministic
+// identicon-style hue from a djb2 hash.
+void tokenColor(const char* ticker, uint8_t& r, uint8_t& g, uint8_t& b) {
+  struct Known { const char* sym; uint8_t r, g, b; };
+  static const Known KNOWN[] = {
+    // native / DeFi
+    { "SOL",  153,  69, 255 },
+    { "USDC",  39, 117, 202 },
+    { "BONK", 253, 186,  39 },
+    { "JUP",    0, 194, 139 },
+    { "WIF",  124,  58, 237 },
+    // xStocks
+    { "SPYX",  225,  60,  57 },   // SPYx  — State Street red
+    { "GOOGLX", 66, 133, 244 },   // GOOGLx — Google blue
+    { "AAPLX", 162, 170, 173 },   // AAPLx  — Apple silver
+    { "TSLAX", 232,  33,  39 },   // TSLAx  — Tesla red
+    { "NVDAX", 118, 185,   0 },   // NVDAx  — NVIDIA green
+    { "METAX",   0, 129, 251 },   // METAx  — Meta blue
+    { "MSFTX",   0, 164, 239 },   // MSFTx  — Microsoft blue
+    { "AMZNX", 255, 153,   0 },   // AMZNx  — Amazon orange
+    { "MSTRX", 247, 147,  26 },   // MSTRx  — Strategy orange
+    { "CRCLX",  41,  98, 255 },   // CRCLx  — Circle blue
+    { "NFLXX", 229,   9,  20 },   // NFLXx  — Netflix red
+    { "COINX",   0,  82, 255 },   // COINx  — Coinbase blue
+    { "HOODX",   0, 200,   5 },   // HOODx  — Robinhood green
+  };
+  for (const auto& k : KNOWN) {
+    if (strcmp(ticker, k.sym) == 0) { r = k.r; g = k.g; b = k.b; return; }
+  }
+  uint32_t h = 5381;
+  for (const char* c = ticker; *c; c++) h = h * 33 + static_cast<uint8_t>(*c);
+  hsv2rgb(static_cast<float>(h % 360) / 360.0f, 0.65f, 0.85f, r, g, b);
+}
+
+// Actual token logo bitmap (src/token_logos.h — official xStocks metadata
+// CDN icons, see tools/convert_token_logos.py) or nullptr for the
+// procedural monogram chip fallback.
+const uint16_t* tokenLogoData(const char* ticker) {
+  for (size_t i = 0; i < TOKEN_LOGO_COUNT; i++)
+    if (strcmp(ticker, TOKEN_LOGOS[i].ticker) == 0) return TOKEN_LOGOS[i].data;
+  return nullptr;
 }
 
 } // namespace
@@ -420,6 +554,7 @@ void FinagotchiPet::drawStatsBar() {
   uint16_t txt = spr->color565(230, 230, 240);
   spr->drawFastHLine(10, barY, w - 20, dim);
 
+  spr->setTextFont(1);   // toasts switch to font 2 — reset per frame
   spr->setTextDatum(ML_DATUM);
   spr->setTextSize(2);
   spr->setTextColor(txt, spr->color565(0x07, 0x11, 0x1F));
@@ -537,19 +672,345 @@ void FinagotchiPet::drawSyncWait(float nowSec, float cx, float cy) {
     }
   }
 
-  // Caption at the bottom: title with cycling ellipsis + dim subtitle.
+  // Caption at the bottom: title with cycling ellipsis + dim subtitle. When
+  // the DCA carousel is up it owns the h-22 line, so the title drops to
+  // h-10 and the subtitle is skipped.
   static const char* DOTS[4] = { "", ".", "..", "..." };
   char buf[28];
   snprintf(buf, sizeof(buf), "waiting for connection%s",
            DOTS[static_cast<int>(nowSec * 1.4f) & 3]);
   uint16_t bg = spr->color565(0x07, 0x11, 0x1F);
   int h = spr->height();
+  bool hasPlans = dcaCount > 0;
+  spr->setTextFont(1);
   spr->setTextDatum(TC_DATUM);
   spr->setTextSize(1);
   spr->setTextColor(spr->color565(200, 210, 225), bg);
-  spr->drawString(buf, spr->width() / 2, h - 22);
-  spr->setTextColor(spr->color565(80, 100, 122), bg);
-  spr->drawString("open the Finagotchi app", spr->width() / 2, h - 10);
+  spr->drawString(buf, spr->width() / 2, hasPlans ? h - 10 : h - 22);
+  if (!hasPlans) {
+    spr->setTextColor(spr->color565(80, 100, 122), bg);
+    spr->drawString("open the Finagotchi app", spr->width() / 2, h - 10);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// DCA carousel: one plan line between the stats row and the sync caption,
+// rotating every 4 s with a 0.45 s slide/fade blend (same ease as the mood
+// blends). Layout: progress ring at the left, then
+// "TICKER  10 USDC  in 2d 14h" (font 1). Past due with no new buys: amber
+// ring + "overdue". Epoch never synced: countdown shows "--".
+// ---------------------------------------------------------------------------
+
+void FinagotchiPet::drawDcaLine(float nowSec) {
+  if (dcaCount == 0) return;
+
+  // Pick the slot to show: the pinned one wins for 30 s, else auto-rotate.
+  int target = dcaShow;
+  if (dcaPinned >= 0) {
+    if (nowSec >= dcaPinUntil || dcaPinned >= static_cast<int>(dcaCount) ||
+        !dca[dcaPinned].enabled) {
+      dcaPinned = -1;
+    } else {
+      target = dcaPinned;
+    }
+  }
+  if (dcaPinned < 0 && nowSec - dcaRotateT >= 4.0f) {
+    dcaRotateT = nowSec;
+    for (size_t k = 1; k <= dcaCount; k++) {   // next enabled slot
+      uint8_t cand = static_cast<uint8_t>((dcaShow + k) % dcaCount);
+      if (dca[cand].enabled) { target = cand; break; }
+    }
+  }
+  if (target >= static_cast<int>(dcaCount) || !dca[target].enabled) {
+    target = -1;                                // visible slot got disabled
+    for (size_t i = 0; i < dcaCount; i++)
+      if (dca[i].enabled) { target = static_cast<int>(i); break; }
+    if (target < 0) return;                     // all slots disabled
+  }
+  if (target != dcaShow) {
+    dcaPrevShow = dcaShow;
+    dcaShow = static_cast<uint8_t>(target);
+    dcaShowT = nowSec;
+  }
+
+  const uint16_t navy = spr->color565(0x07, 0x11, 0x1F);
+  const int w = spr->width(), h = spr->height();
+  const int y = h - 22;                    // top of the 8 px font-1 line
+  const int cy = y + 4;                    // line vertical center
+
+  // One slot's line, faded in from the navy bg (no per-glyph alpha) and
+  // sliding vertically: new line rises in from +8 px, old one exits upward.
+  auto drawSlot = [&](uint8_t slot, float fade, int yOff) {
+    const DcaPlan& p = dca[slot];
+    bool unknown = (nowEpoch == 0 || p.nextBuyEpoch == 0);
+    int32_t rem = unknown ? 0 : static_cast<int32_t>(p.nextBuyEpoch - nowEpoch);
+    // Amber whenever past due: flagged by the poll, or the epoch simply passed.
+    bool od = dcaOverdue[slot] || (!unknown && rem <= 0);
+
+    char cd[12];
+    fmtCountdown(p.nextBuyEpoch, nowEpoch, cd, sizeof(cd));
+
+    char amt[10];
+    snprintf(amt, sizeof(amt), "%.4g", static_cast<double>(p.amountSol));
+
+    char buf[40];
+    snprintf(buf, sizeof(buf), "%s  %s USDC  %s", p.ticker, amt, cd);
+
+    // Text: amber when overdue, light grey otherwise, faded from navy.
+    const float tr = od ? 251.0f : 215.0f, tg = od ? 191.0f : 224.0f,
+                tb = od ? 36.0f : 234.0f;
+    uint16_t col = spr->color565(
+        static_cast<uint8_t>(lerpf(0x07, tr, fade)),
+        static_cast<uint8_t>(lerpf(0x11, tg, fade)),
+        static_cast<uint8_t>(lerpf(0x1F, tb, fade)));
+    spr->setTextFont(1);
+    spr->setTextDatum(TC_DATUM);
+    spr->setTextSize(1);
+    spr->setTextColor(col, navy);
+    spr->drawString(buf, w / 2, y + yOff);
+
+    // Progress ring at the left edge: fills toward nextBuyEpoch over a 7-day
+    // window (the interval length isn't mirrored, so the sweep is relative).
+    const int rx = 14;
+    uint16_t dim = spr->color565(static_cast<uint8_t>(lerpf(0x07, 45, fade)),
+                                 static_cast<uint8_t>(lerpf(0x11, 45, fade)),
+                                 static_cast<uint8_t>(lerpf(0x1F, 60, fade)));
+    spr->drawCircle(rx, cy + yOff, 5, dim);
+    if (od) {
+      uint16_t amber = spr->color565(static_cast<uint8_t>(lerpf(0x07, 251, fade)),
+                                     static_cast<uint8_t>(lerpf(0x11, 191, fade)),
+                                     static_cast<uint8_t>(lerpf(0x1F, 36, fade)));
+      spr->drawCircle(rx, cy + yOff, 4, amber);   // full amber ring = overdue
+    } else if (!unknown) {
+      float frac = 1.0f - clampf(static_cast<float>(rem) / (7.0f * 86400.0f));
+      if (frac > 0.01f) {
+        uint16_t mint = spr->color565(static_cast<uint8_t>(lerpf(0x07, 120, fade)),
+                                      static_cast<uint8_t>(lerpf(0x11, 255, fade)),
+                                      static_cast<uint8_t>(lerpf(0x1F, 214, fade)));
+        spr->drawArc(rx, cy + yOff, 5, 3, 0, static_cast<int32_t>(360.0f * frac),
+                     mint, navy);
+      }
+    }
+
+    // Pinned marker: small dot at the right edge.
+    if (dcaPinned == static_cast<int>(slot))
+      spr->fillCircle(w - 14, cy + yOff, 2, col);
+  };
+
+  float e = easeOutQuint(clampf((nowSec - dcaShowT) / 0.45f));
+  if (e < 1.0f && dcaPrevShow != dcaShow && dcaPrevShow < dcaCount)
+    drawSlot(dcaPrevShow, 1.0f - e, static_cast<int>(-8.0f * e));
+  drawSlot(dcaShow, e, static_cast<int>(8.0f * (1.0f - e)));
+}
+
+// Gain toasts: "+n TICKER" spawns at the stats bar, floats up ~40 px with
+// easeOutCubic over 1.2 s, holds 0.6 s, then fades 0.7 s by lerping the
+// mint-cyan text toward the scene navy (TFT_eSPI has no per-glyph alpha).
+void FinagotchiPet::drawToasts(float nowSec) {
+  const uint16_t navy = spr->color565(0x07, 0x11, 0x1F);
+  int stack = 0;
+  for (int i = 0; i < 3; i++) {
+    float age = nowSec - toasts[i].t0;
+    if (toasts[i].text[0] == 0 || age < 0.0f || age >= 2.5f) continue;
+    float rise = easeOutCubic(clampf(age / 1.2f));
+    float fade = age > 1.8f ? clampf((age - 1.8f) / 0.7f) : 0.0f;
+    uint16_t col = spr->color565(
+        static_cast<uint8_t>(lerpf(120.0f, 0x07, fade)),
+        static_cast<uint8_t>(lerpf(255.0f, 0x11, fade)),
+        static_cast<uint8_t>(lerpf(214.0f, 0x1F, fade)));
+    int y = (spr->height() - 56) - 16 - static_cast<int>(40.0f * rise) - stack * 18;
+    spr->setTextFont(2);
+    spr->setTextDatum(TC_DATUM);
+    spr->setTextSize(1);
+    spr->setTextColor(col, navy);
+    spr->drawString(toasts[i].text, spr->width() / 2, y);
+    stack++;
+  }
+  spr->setTextFont(1);
+}
+
+// ---------------------------------------------------------------------------
+// DCA positions page (BTN2 navigate): one plan per card — big token logo,
+// USD price (font 4), a stats grid (buy amount in USDC, buys, held,
+// held value) and a next-buy countdown with a progress bar. BTN1 pages
+// through plans with a 0.45 s easeOutQuint slide. Logos are the actual
+// xStocks token icons (src/token_logos.h, embedded at build time); unknown
+// tickers get a procedural monogram chip. Prices come from the on-device
+// HTTP price feed (xStocks API + CoinGecko SOL/USD, see main.cpp).
+// ---------------------------------------------------------------------------
+
+void FinagotchiPet::nextDcaCard(float nowSec) {
+  if (dcaCount == 0) return;
+  dcaCardPrev = dcaCard;
+  dcaCard = (dcaCard + 1) % dcaCount;
+  dcaCardT = nowSec;
+}
+
+void FinagotchiPet::drawDcaPage(float nowSec) {
+  const uint16_t navy  = spr->color565(0x07, 0x11, 0x1F);
+  const uint16_t txt   = spr->color565(230, 230, 240);
+  const uint16_t dim   = spr->color565(80, 100, 122);
+  const uint16_t line  = spr->color565(45, 45, 60);
+  const uint16_t mint  = spr->color565(120, 255, 214);
+  const uint16_t amber = spr->color565(251, 191, 36);
+  const int w = spr->width(), h = spr->height();
+
+  spr->fillSprite(navy);
+
+  // Header (static, doesn't slide with the cards)
+  spr->setTextFont(1);
+  spr->setTextDatum(TL_DATUM);
+  spr->setTextSize(1);
+  spr->setTextColor(dim, navy);
+  spr->drawString("DCA POSITIONS", 12, 8);
+  if (dcaCount > 0) {
+    char pg[6];
+    snprintf(pg, sizeof(pg), "%u/%u", dcaCard + 1, dcaCount);
+    spr->setTextDatum(TR_DATUM);
+    spr->drawString(pg, w - 12, 8);
+  }
+  spr->drawFastHLine(10, 22, w - 20, line);
+
+  if (dcaCount == 0) {
+    spr->setTextDatum(TC_DATUM);
+    spr->setTextColor(dim, navy);
+    spr->drawString("no DCA plans yet", w / 2, 100);
+    spr->drawString("open the Finagotchi app", w / 2, 114);
+  } else {
+    if (dcaCard >= dcaCount) { dcaCard = 0; dcaCardPrev = 0; }
+
+    // One card's contents, drawn at a horizontal offset (slide transition).
+    auto drawCard = [&](uint8_t slot, int ox) {
+      const DcaPlan& p = dca[slot];
+      bool unknown = (nowEpoch == 0 || p.nextBuyEpoch == 0);
+      int32_t rem = unknown ? 0 : static_cast<int32_t>(p.nextBuyEpoch - nowEpoch);
+      bool od = dcaOverdue[slot] || (!unknown && rem <= 0);
+      float pulse = od ? 0.7f + 0.3f * sinf(nowSec * 4.0f) : 1.0f;
+
+      // --- logo 48x48 (actual icon) or monogram chip fallback ---
+      const int lcx = ox + 40, lcy = 56;   // chip center
+      const uint16_t* logo = tokenLogoData(p.ticker);
+      if (logo) {
+        spr->pushImage(lcx - 24, lcy - 24, TOKEN_LOGO_SIZE, TOKEN_LOGO_SIZE, logo);
+        spr->drawCircle(lcx, lcy, 25, od ? amber : line);
+      } else {
+        uint8_t lr, lg, lb;
+        tokenColor(p.ticker, lr, lg, lb);
+        uint16_t chipCol = spr->color565(lr, lg, lb);
+        spr->fillCircle(lcx, lcy, 24, chipCol);
+        spr->drawCircle(lcx, lcy, 24, od ? amber : line);
+        size_t tl = strlen(p.ticker);
+        char init[4] = { 0, 0, 0, 0 };
+        if (tl <= 3) {
+          strlcpy(init, p.ticker, sizeof(init));
+          spr->setTextFont(1);
+        } else {
+          init[0] = p.ticker[0];
+          init[1] = p.ticker[1];
+          spr->setTextFont(2);
+        }
+        spr->setTextDatum(MC_DATUM);
+        spr->setTextColor(spr->color565(255, 255, 255), chipCol);
+        spr->drawString(init, lcx, lcy);
+        if (tl > 2 && p.ticker[tl - 1] == 'X') {
+          spr->setTextFont(1);
+          spr->setTextDatum(BR_DATUM);
+          spr->drawString("x", lcx + 17, lcy + 18);
+        }
+      }
+
+      // --- ticker + big USD price ---
+      spr->setTextFont(2);
+      spr->setTextDatum(TL_DATUM);
+      spr->setTextColor(p.enabled ? txt : dim, navy);
+      spr->drawString(p.ticker, ox + 76, 36);
+      if (!p.enabled) {
+        spr->setTextFont(1);
+        spr->setTextColor(amber, navy);
+        spr->drawString("paused", ox + 76 + spr->textWidth(p.ticker) + 8, 42);
+      }
+      // "$" in font 2 (font 4 is digits-only), price digits in font 4.
+      spr->setTextColor(p.priceUsd > 0.0f ? mint : dim, navy);
+      spr->drawString("$", ox + 76, 66);
+      char pr[12];
+      if (p.priceUsd > 0.0f) snprintf(pr, sizeof(pr), "%.2f", static_cast<double>(p.priceUsd));
+      else strlcpy(pr, "--", sizeof(pr));
+      spr->setTextFont(4);
+      spr->drawString(pr, ox + 88, 58);
+
+      // --- stats grid: two columns, dim labels over brighter values ---
+      const int colL = ox + 16, colR = ox + 128;
+      const int r1 = 108, r2 = 152;
+      auto stat = [&](int x, int y, const char* label, const char* value,
+                      uint16_t vcol) {
+        spr->setTextFont(1);
+        spr->setTextDatum(TL_DATUM);
+        spr->setTextColor(dim, navy);
+        spr->drawString(label, x, y);
+        spr->setTextColor(vcol, navy);
+        spr->drawString(value, x, y + 12);
+      };
+
+      // BUY value: plan amounts are USDC-denominated, shown as $.
+      char buy[16];
+      snprintf(buy, sizeof(buy), "$%.2f", static_cast<double>(p.amountSol));
+      stat(colL, r1, "BUY", buy, mint);
+
+      char nb[12];
+      snprintf(nb, sizeof(nb), "%lu", static_cast<unsigned long>(p.buys));
+      stat(colR, r1, "BUYS", nb, txt);
+
+      char held[12];
+      snprintf(held, sizeof(held), "%lu", static_cast<unsigned long>(p.holdingsHeld));
+      stat(colL, r2, "HELD", held, txt);
+
+      char val[12];
+      if (p.priceUsd > 0.0f)
+        fmtVal(static_cast<uint32_t>(p.holdingsHeld * p.priceUsd), val, sizeof(val));
+      else
+        strlcpy(val, "--", sizeof(val));
+      char valBuf[16];
+      snprintf(valBuf, sizeof(valBuf), "~$%s", val);
+      stat(colR, r2, "VALUE", valBuf, mint);
+
+      // --- next buy: countdown + full-width progress bar ---
+      spr->setTextFont(1);
+      spr->setTextDatum(TL_DATUM);
+      spr->setTextColor(dim, navy);
+      spr->drawString("NEXT BUY", ox + 16, 196);
+      char cd[12];
+      fmtCountdown(p.nextBuyEpoch, nowEpoch, cd, sizeof(cd));
+      uint16_t cdCol = od ? spr->color565(static_cast<uint8_t>(251 * pulse),
+                                          static_cast<uint8_t>(191 * pulse), 36)
+                          : txt;
+      spr->setTextFont(2);
+      spr->setTextDatum(TR_DATUM);
+      spr->setTextColor(cdCol, navy);
+      spr->drawString(cd, ox + w - 16, 192);
+
+      const int bx = ox + 16, bw = w - 32, by = 214;
+      spr->fillRect(bx, by, bw, 6, line);
+      if (od) {
+        spr->fillRect(bx, by, bw, 6, spr->color565(static_cast<uint8_t>(251 * pulse),
+                                                   static_cast<uint8_t>(191 * pulse), 36));
+      } else if (!unknown) {
+        float frac = 1.0f - clampf(static_cast<float>(rem) / (7.0f * 86400.0f));
+        int fw = static_cast<int>(bw * clampf(frac));
+        if (fw > 0) spr->fillRect(bx, by, fw, 6, mint);
+      }
+    };
+
+    // Slide transition (pager style): old card exits left, new enters right.
+    float k = easeOutQuint(clampf((nowSec - dcaCardT) / 0.45f));
+    if (k < 1.0f && dcaCardPrev != dcaCard)
+      drawCard(dcaCardPrev, -static_cast<int>(k * w));
+    drawCard(dcaCard, static_cast<int>((1.0f - k) * w));
+  }
+
+  spr->setTextFont(1);
+  spr->setTextDatum(TC_DATUM);
+  spr->setTextColor(dim, navy);
+  spr->drawString("btn1: next   btn2: back", w / 2, h - 12);
 }
 
 // ---------------------------------------------------------------------------
@@ -990,6 +1451,16 @@ void FinagotchiPet::drawBurst(float nowSec, float cx, float cy) {
 void FinagotchiPet::render(float nowSec) {
   if (!spr || !spr->created()) return;
 
+  int sx = (tft->width() - spr->width()) / 2;
+  int sy = (tft->height() - spr->height()) / 2;
+
+  // Second window: full-screen DCA positions (button 1 double-press).
+  if (pageDca) {
+    drawDcaPage(nowSec);
+    spr->pushSprite(sx, sy);
+    return;
+  }
+
   Pose pose = poseAt(nowSec);
 
   // look morph (engine.ts lookAtTime, 0.24 s)
@@ -1114,9 +1585,9 @@ void FinagotchiPet::render(float nowSec) {
   // so it wins any stray overlap with a comet dipping low.
   if (syncWait) drawSyncWait(nowSec, cx, cy);
   drawStatsBar();
+  drawDcaLine(nowSec);   // plan carousel between stats row and sync caption
   drawBattery();
+  drawToasts(nowSec);    // "+n TICKER" float-ups ride over everything
 
-  int sx = (tft->width() - spr->width()) / 2;
-  int sy = (tft->height() - spr->height()) / 2;
   spr->pushSprite(sx, sy);
 }

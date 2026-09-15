@@ -12,3 +12,10 @@
 //   US Eastern:     "EST5EDT,M3.2.0/2,M11.1.0"
 //   Central Europe: "CET-1CEST,M3.5.0,M10.5.0/3"
 #define TZ_POSIX "UTC0"
+
+// Standalone DCA mirror: while the app is disconnected, the device polls
+//   GET http://<RELAY_HOST>/api/device/<DEVICE_ID>/dca
+// every 30 min for plan state (read-only; see README.md for the CSV
+// contract). No secrets here — the relay must be safe to hit anonymously.
+#define RELAY_HOST "relay.example.com"
+#define DEVICE_ID "finagotchi-01"

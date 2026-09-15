@@ -19,13 +19,60 @@
 
 ## Buttons
 
-Two momentary push buttons for local interaction. One leg to GPIO, other leg
-to GND rail. Uses internal pull-ups (no external resistor needed).
+Two momentary push buttons for local interaction, wired to GND. The firmware
+uses the ESP32's **internal pull-ups**, so each button just shorts its GPIO to
+GND when pressed — **no resistors needed**.
+
+### Parts
+
+- 2× tactile push buttons (standard 6×6 mm, 4 legs)
+- 4× jumper wires
+
+### How the 4-leg button works
+
+The 4 legs are internally connected in pairs. On each **side** of the button,
+the two legs are the same electrical node; the press bridges the two sides:
+
+```
+side A ──o   o── side B      (press to connect A and B)
+side A ──o   o── side B
+```
+
+So you only need **one leg from each side** — pick any leg on side A for GPIO
+and any leg on side B for GND.
+
+### Breadboard placement
+
+1. **Straddle the center gap.** Push the button across the breadboard's
+   center channel so two legs land on one half (e.g. columns e/f) and two on
+   the other half. This guarantees you're actually using both sides of the
+   switch. (If all 4 legs are on the same 5-hole strip, the button is
+   shorted permanently and the pin reads as always-pressed.)
+2. **Wire GND:** jumper from one leg of the button to a GND rail. Tie the
+   GND rail to the ESP32's GND (shared ground with the display).
+3. **Wire GPIO:** jumper from the leg on the *other side* of the center gap
+   to the GPIO pin below.
+4. Repeat for the second button, using a different row.
+
+```
+        ┌─ button ─┐
+GPIO ───┤ e    f   ├─── GND rail ─── GND (ESP32)
+        └──────────┘
+            ▲ straddles center gap
+```
+
+Sanity check: with nothing pressed, the GPIO reads HIGH (3.3 V via internal
+pull-up); pressed = LOW. Active-low is what the firmware expects.
+
+### Pin & function map
 
 | Button | GPIO | Function |
 |--------|------|----------|
-| Button 1 | GPIO37 | Short press: cycle reaction (jump → spin → glow → dance). Long press (1s): cycle mood |
-| Button 2 | GPIO39 | Short press: feed/play (+10 happiness, happy mood). Long press (1s): cycle mood |
+| Button 1 (left, action) | GPIO4 | Short press: context action — feed/play on the pet page (+10 happiness, happy mood), next plan card on the DCA page. Long press (1s): cycle mood. Double press: cycle reaction (jump → spin → glow → dance) |
+| Button 2 (right, navigate) | GPIO37 | Short press: switch page (pet ↔ DCA positions). Long press (1s): jump back to the pet page. Double press: resume carousel auto-rotate (drops a pinned plan) |
+
+> GPIO4 is now the left button — the battery voltage divider moved to GPIO5
+> (see below).
 
 > On ESP32-S3 modules with **octal PSRAM** (e.g. N16R8), GPIO 33–37 are used
 > by the PSRAM bus — GPIO37 won't work as a button there. Use a quad-PSRAM
@@ -36,13 +83,13 @@ to GND rail. Uses internal pull-ups (no external resistor needed).
 
 ## Battery sense (optional)
 
-Top-right battery icon on screen. LiPo+ → voltage divider → GPIO4 (ADC1 —
+Top-right battery icon on screen. LiPo+ → voltage divider → GPIO5 (ADC1 —
 ADC2 conflicts with Wi-Fi):
 
 | Connection | Part |
 |------------|------|
-| LiPo+ → GPIO4 | 2× 100k resistors in series (1:1 divider) |
-| Midpoint → GPIO4 | tap between the two resistors |
+| LiPo+ → GPIO5 | 2× 100k resistors in series (1:1 divider) |
+| Midpoint → GPIO5 | tap between the two resistors |
 | LiPo− | GND rail (shared with the board!) |
 
 Without the divider the icon hides itself (reads ~0 V = USB power assumed).

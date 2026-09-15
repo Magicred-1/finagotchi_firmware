@@ -98,10 +98,83 @@ truncated away.
 | `happy:<0-100>` | Set happiness (persisted in NVS, shown in the stats bar) |
 | `streak:<n>` | Set displayed streak (persisted in NVS; also stamps the day so the offline day check keeps it) |
 | `<stage>:<streak>:<mood>:<item>:<points>:<happy>` | Full state snapshot (same shape as the notify string) — sets everything at once |
+| `dca:count:<n>` | Declares that `n` (0–4) `dca:plan:` writes follow; all previous plan slots are wiped from NVS first |
+| `dca:plan:<i>:<enabled>:<next_buy_epoch>:<amount>:<TICKER>:<buys>:<holdings>[:<price_usd>]` | Write plan slot `i` (0–3): enabled 0/1, next-buy unix epoch, amount in SOL (float), ticker (clamped to 6 chars), completed buys, holdings held. The optional 8th field is the token's unit price in USD (drives the price/valuation display). Persisted in NVS, shown in the carousel |
+| `dca:clear` | Wipe all plan slots (RAM + NVS) |
+| `dca:hit:<n>:<TICKER>` | A buy just executed: "+n TICKER" gain toast + dance reaction + sparkle burst |
+| `solusd:<rate>` | SOL/USD rate (float) for the positions-page amount toggle; persisted in NVS (`finagotchi`/`solUsd`) |
 
 Writes may use write-with-response or write-without-response — the
 characteristic exposes both properties. Writes with an unrecognized payload
 are logged as `BLE: unknown command` on the serial monitor.
+
+## DCA plan tracking
+
+The device mirrors up to **4 DCA plans** from the app, persisted in NVS
+(`finagotchi` namespace: `dcaCount` + `dca0`..`dca3` blobs) so they survive
+reboots. When plans exist, a carousel line rotates one plan every 4 s in the
+stats-bar area (0.45 s slide/fade blend, like the mood blends):
+
+```
+TICKER  0.25 SOL  in 2d 14h
+```
+
+with a small progress ring on the left filling toward `next_buy_epoch`. If a
+plan is past its epoch with no new buys it is marked **overdue**: amber ring
++ "overdue" text. If the wall clock was never synced, the countdown shows
+`--` instead of garbage. Button 2 long-press pins a plan (30 s), a
+double-press resumes auto-rotate.
+
+A second, full-screen **DCA positions page** shows one plan per card: the
+actual token logo (official xStocks icons embedded at build time — see
+`tools/convert_token_logos.py`; unknown tickers get a procedural monogram
+chip), the token's USD unit price in a large font, a stats grid (buy amount
+alternating SOL/USD every 3 s — USD needs the `solusd:` rate — buys, held,
+held value), and the next-buy countdown with a progress bar. Button 1
+(action) pages through plans with a 0.45 s slide transition; overdue cards
+pulse amber. While offline, the device fetches prices itself over HTTPS
+(xStocks `price-data` + CoinGecko SOL/USD) on the poll cadence. This page is
+local UI only — it never leaves the device. Navigation: button 2 (navigate)
+short-press switches pages.
+
+The notify/read snapshot gains an **optional 7th field** — the number of
+active plan slots:
+
+```
+<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>]
+```
+
+New firmware tolerates its absence (6-field writes still parse); old
+firmware ignores the extra field. The count is device-owned — the app may
+echo it back in a snapshot write, where it is parsed but ignored.
+
+### Standalone mode (app disconnected)
+
+While no app is connected, the device polls the read-only relay every
+30 min over Wi-Fi (see `README.md` for the endpoint contract) and matches
+CSV rows to cached plans by ticker:
+
+- remote `buys` > cached `buys` → "+<delta×amount> TICKER" gain toast
+  (delta capped at 9) and the cache updates
+- a plan past `next_buy_epoch` with unchanged buys → slot marked overdue
+  (amber ring); ≥1 overdue plan nudges the mood toward `waiting`, ≥2 toward
+  `sad`, reverting when resolved
+- after every successful poll the wall clock is re-synced via NTP
+
+On connect the app becomes authoritative again: polls pause and the app may
+resend `dca:count:` / `dca:plan:` plus any missed `dca:hit:` events. The
+device never calls Titan or any signing API — the relay is read-only and the
+URL/device id are compile-time `config.h` defines.
+
+### Gain toasts
+
+`dca:hit:` (connected) and offline buy detection (standalone) spawn a gain
+toast: "+n TICKER" in mint cyan (120,255,214), font 2, centered, spawning at
+the stats bar, floating up ~40 px with easeOutCubic over 1.2 s, holding
+0.6 s, then fading 0.7 s by lerping the text color toward the scene navy
+`#07111F` (no per-glyph alpha in TFT_eSPI). Queue holds 3; a 4th replaces
+the oldest.
+
 
 ## On-screen stats bar
 
