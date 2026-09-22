@@ -107,6 +107,11 @@ public:
   PetMoodId mood() const { return curMood; }
   PetItem item() const { return curItem; }
 
+  // 12-stage sub-stage (1-12) drives the on-screen stage badge and subtle
+  // visual tweaks while the base PetState stays one of the 4 engine forms.
+  void setSubStage(uint8_t subStage);
+  uint8_t subStage() const { return curSubStage; }
+
   // Bottom stats bar: streak days / points / happiness (0-100).
   void setStats(uint32_t streakDays, uint32_t points, uint8_t happiness);
 
@@ -175,6 +180,7 @@ private:
   float       R = 105.0f;
 
   PetState  cur = PetState::PET_EGG;
+  uint8_t   curSubStage = 1;
   float     tCur = 0.0f;
 
   // Departure pose snapshot (engine.ts departFige): the pose visible at the

@@ -378,6 +378,10 @@ void FinagotchiPet::setStats(uint32_t streakDays, uint32_t points,
   statsHappy = happiness > 100 ? 100 : happiness;
 }
 
+void FinagotchiPet::setSubStage(uint8_t subStage) {
+  curSubStage = subStage < 1 ? 1 : (subStage > 12 ? 12 : subStage);
+}
+
 void FinagotchiPet::setBattery(uint8_t pct) {
   batteryPct = pct > 100 ? 100 : pct;
   batteryKnown = true;
@@ -545,19 +549,60 @@ const uint16_t* tokenLogoData(const char* ticker) {
 
 } // namespace
 
+namespace {
+
+// 12-stage name lookup used by the on-screen stage badge.
+const char* stageNameForSubStage(uint8_t subStage) {
+  switch (subStage) {
+    case 1:  return "Egg";
+    case 2:  return "Hatching";
+    case 3:  return "Hatchling";
+    case 4:  return "Tiny Saver";
+    case 5:  return "Coinling";
+    case 6:  return "Staker";
+    case 7:  return "Saver";
+    case 8:  return "HODLer";
+    case 9:  return "Disciplined";
+    case 10: return "Accumu-whale";
+    case 11: return "Alpha Whale";
+    case 12: return "Whale Legend";
+    default: return "";
+  }
+}
+
+} // namespace
+
 void FinagotchiPet::drawStatsBar() {
   int w = spr->width(), h = spr->height();
+  uint16_t navy = spr->color565(0x07, 0x11, 0x1F);
+  uint16_t txt = spr->color565(230, 230, 240);
+
+  // --- stage name badge (left of the stats bar) ---
+  const char* stageName = stageNameForSubStage(curSubStage);
+  if (stageName[0]) {
+    spr->setTextFont(1);
+    spr->setTextDatum(TL_DATUM);
+    spr->setTextSize(1);
+    int tw = spr->textWidth(stageName);
+    int pad = 6;
+    int bx = 10;
+    int by = 4;
+    uint16_t badgeBg = spr->color565(30, 45, 70);
+    spr->fillRoundRect(bx, by, tw + pad * 2, 16, 4, badgeBg);
+    spr->setTextColor(txt, badgeBg);
+    spr->drawString(stageName, bx + pad, by + 4);
+  }
+
   int barY = h - 56;                   // extra room below for the sync caption
   int cy = barY + 19;                  // icon/text vertical center
 
   uint16_t dim = spr->color565(45, 45, 60);
-  uint16_t txt = spr->color565(230, 230, 240);
   spr->drawFastHLine(10, barY, w - 20, dim);
 
   spr->setTextFont(1);   // toasts switch to font 2 — reset per frame
   spr->setTextDatum(ML_DATUM);
   spr->setTextSize(2);
-  spr->setTextColor(txt, spr->color565(0x07, 0x11, 0x1F));
+  spr->setTextColor(txt, navy);
 
   const int cols[3] = { w / 6, w / 2, w * 5 / 6 };
   char buf[12];

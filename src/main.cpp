@@ -20,8 +20,12 @@
   Wi-Fi + NTP: syncs local time so the streak is day-based (consecutive days
   the device has been alive). Streak, points and happiness persist in NVS.
   Credentials come from config.h, or from the app over BLE: pair using the
-  passkey shown on screen, then write "ssid\npass" to the provisioning
-  characteristic (encrypted writes only) — stored in NVS from then on.
+  passkey shown on screen, then write "ssid\npass[\ndeviceToken]" to the
+  provisioning characteristic (encrypted writes only) — stored in NVS from
+  then on. With a device token, a sync task polls the companion API for
+  authoritative pet state every 60 s while no app is connected; once a state
+  has been applied the server owns stage/streak and the demo auto-evolve and
+  local streak tick stay off.
 
   The bottom stats bar (streak / points / happiness) is always on screen —
   while no app is connected it plays under the waiting-for-connection scene.
@@ -36,6 +40,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <time.h>
+#include <sys/time.h>
 #include <Preferences.h>
 #include <array>
 #include "config.h"
@@ -68,18 +73,32 @@ BLECharacteristic* pCharacteristic = nullptr;
 volatile bool      appConnected = false;
 
 const char* STAGE_NAMES[kPetStateCount] = { "egg", "coinling", "hodler", "whale" };
+uint8_t  subStage = 1;
 uint32_t streak = 0;
 uint8_t  mood = static_cast<uint8_t>(PetMoodId::MOOD_CALM);
 uint8_t  item = static_cast<uint8_t>(PetItem::ITEM_NONE);
 uint32_t points = 0;
 uint8_t  happiness = 50;
 bool     timeSynced = false;
+// Once the companion server has pushed state at least once it owns
+// stage/streak: the demo auto-evolve and local streak tick stay off
+// (persisted as "srvlink" in NVS).
+bool     serverLinked = false;
 Preferences prefs;
 
 // Wi-Fi credentials: config.h defaults, overridden by app-provisioned NVS
 // values (see the provisioning characteristic below).
 char wifiSsid[33] = WIFI_SSID;
 char wifiPass[65] = WIFI_PASS;
+
+// Companion-API device token (optional 3rd provisioning field, NVS "dtoken").
+// Empty = no cloud state sync.
+char deviceToken[160] = "";
+
+// Mood names matching the server JSON (order matches PetMoodId).
+const char* MOOD_NAMES[kMoodCount] = {
+  "calm", "happy", "excited", "waiting", "sleepy", "sad"
+};
 
 // ---------------------------------------------------------------------------
 // DCA plans (read-only mirror of the app's multi-DCA tracker)
@@ -197,13 +216,53 @@ void updateStreakFromTime();
 void blePushState(PetState s) {
   if (!pCharacteristic) return;
   char buf[48];
-  snprintf(buf, sizeof(buf), "%s:%lu:%u:%u:%lu:%u:%u",
+  snprintf(buf, sizeof(buf), "%s:%lu:%u:%u:%lu:%u:%u:%u",
            STAGE_NAMES[static_cast<size_t>(s)], static_cast<unsigned long>(streak), mood, item,
-           static_cast<unsigned long>(points), happiness, dcaCount);
+           static_cast<unsigned long>(points), happiness, dcaCount, subStage);
   pCharacteristic->setValue(buf);
   pCharacteristic->notify();
   pet.setStats(streak, points, happiness);
   Serial.printf("BLE -> %s\n", buf);
+}
+
+// App-store stages 1-12 collapse to the 4 base shapes. Shared by the BLE
+// stage:<n> handler and the cloud state sync.
+PetState petStateForStage(int n) {
+  static const std::array<PetState, 12> numMap = {
+    PetState::PET_EGG,                                  // 1
+    PetState::PET_COINLING, PetState::PET_COINLING,     // 2-3
+    PetState::PET_COINLING, PetState::PET_COINLING,     // 4-5
+    PetState::PET_COINLING, PetState::PET_COINLING,     // 6-7
+    PetState::PET_HODLER,   PetState::PET_HODLER,       // 8-9
+    PetState::PET_WHALE,    PetState::PET_WHALE,
+    PetState::PET_WHALE                                 // 10-12
+  };
+  if (n < 1) n = 1;
+  if (n > 12) n = 12;
+  return numMap[static_cast<size_t>(n - 1)];
+}
+
+// Shared snapshot apply for the BLE full-state write and the cloud state
+// sync: sets stage/sub-stage/stats, persists the stats in NVS, pushes the
+// notify. `sub` <= 0 keeps the current sub-stage.
+void applySnapshot(PetState state, int sub, uint32_t s, uint8_t m, uint32_t p, uint8_t h) {
+  float nowSec = millis() / 1000.0f;
+  pet.setState(state, nowSec);
+  if (sub >= 1) {
+    subStage = static_cast<uint8_t>(sub > 12 ? 12 : sub);
+    pet.setSubStage(subStage);
+  }
+  streak = s;
+  points = p;
+  happiness = h > 100 ? 100 : h;
+  mood = m < kMoodCount ? m : static_cast<uint8_t>(PetMoodId::MOOD_CALM);
+  pet.setMood(static_cast<PetMoodId>(mood), nowSec);
+  prefs.begin("fina", false);
+  prefs.putUInt("streak", streak);
+  prefs.putUInt("points", points);
+  prefs.putUChar("happy", happiness);
+  prefs.end();
+  blePushState(pet.state());
 }
 
 // Handle one app command, e.g. "stage:coinling" or "look:-15,8".
@@ -219,17 +278,23 @@ void handleCommand(const char* cmd) {
         return;
       }
     }
-    // App store uses numeric stages: 1 egg, 2/3 coinling, 4 hodler, 5 whale
-    if (name[0] >= '1' && name[0] <= '5' && name[1] == 0) {
-      static const std::array<PetState, 5> numMap = {
-        PetState::PET_EGG, PetState::PET_COINLING, PetState::PET_COINLING,
-        PetState::PET_HODLER, PetState::PET_WHALE
-      };
-      pet.setState(numMap[name[0] - '1'], nowSec);
+    // App store uses numeric stages 1-12; collapse them to the 4 base shapes.
+    char* end = nullptr;
+    long n = strtol(name, &end, 10);
+    if (end != name && *end == 0 && n >= 1 && n <= 12) {
+      subStage = static_cast<uint8_t>(n);
+      pet.setSubStage(subStage);
+      pet.setState(petStateForStage(static_cast<int>(n)), nowSec);
       blePushState(pet.state());
       return;
     }
     Serial.printf("BLE: unknown stage '%s'\n", name);
+  }
+  else if (strncmp(cmd, "substage:", 9) == 0) {
+    int v = atoi(cmd + 9);
+    subStage = static_cast<uint8_t>(v < 1 ? 1 : (v > 12 ? 12 : v));
+    pet.setSubStage(subStage);
+    blePushState(pet.state());
   }
   else if (strncmp(cmd, "react:", 6) == 0) {
     const char* name = cmd + 6;
@@ -364,35 +429,47 @@ void handleCommand(const char* cmd) {
       Serial.printf("BLE: SOL/USD=%.2f\n", static_cast<double>(rate));
     }
   }
+  else if (strncmp(cmd, "epoch:", 6) == 0) {
+    // Fallback clock set from the app (devices whose Wi-Fi has no NTP
+    // access). Ignored once NTP has synced — NTP stays authoritative.
+    if (!timeSynced) {
+      time_t t = static_cast<time_t>(strtoul(cmd + 6, nullptr, 10));
+      if (t > 1700000000) {   // sanity: reject clearly-bogus values
+        struct timeval tv = { t, 0 };
+        settimeofday(&tv, nullptr);
+        timeSynced = true;
+        Serial.printf("BLE: clock set from app (%lu)\n", static_cast<unsigned long>(t));
+      }
+    }
+  }
   else {
-    // Full state snapshot in the same shape the device notifies:
     // "<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>]". Lets
     // the app push everything in one write instead of field-by-field
     // commands. The 7th field (plan count, device-owned) is parsed but
     // ignored, so new and old app builds can share one format.
     char sname[12];
     unsigned long s, p;
-    unsigned m, it, h, dc;
-    if (sscanf(cmd, "%11[^:]:%lu:%u:%u:%lu:%u:%u", sname, &s, &m, &it, &p, &h, &dc) >= 6) {
+    unsigned m, it, h, dc, ss;
+    int parsed = sscanf(cmd, "%11[^:]:%lu:%u:%u:%lu:%u:%u:%u", sname, &s, &m, &it, &p, &h, &dc, &ss);
+    if (parsed >= 6) {
+      // Stage name -> one of the 4 base shapes (unknown name: keep the
+      // current shape). If a sub-stage is present (8th field), store it too;
+      // otherwise keep the current sub-stage. Item stays a BLE-only field —
+      // the cloud snapshot has no collectibles.
+      PetState ps = pet.state();
       for (size_t i = 0; i < kPetStateCount; i++) {
         if (strcmp(sname, STAGE_NAMES[i]) == 0) {
-          pet.setState(static_cast<PetState>(i), nowSec);
+          ps = static_cast<PetState>(i);
           break;
         }
       }
-      streak = static_cast<uint32_t>(s);
-      points = static_cast<uint32_t>(p);
-      happiness = static_cast<uint8_t>(h > 100 ? 100 : h);
-      mood = static_cast<uint8_t>(m < kMoodCount ? m : static_cast<unsigned>(PetMoodId::MOOD_CALM));
       item = static_cast<uint8_t>(it < kItemCount ? it : static_cast<unsigned>(PetItem::ITEM_NONE));
-      pet.setMood(static_cast<PetMoodId>(mood), nowSec);
       pet.setItem(static_cast<PetItem>(item));
-      prefs.begin("fina", false);
-      prefs.putUInt("streak", streak);
-      prefs.putUInt("points", points);
-      prefs.putUChar("happy", happiness);
-      prefs.end();
-      blePushState(pet.state());
+      applySnapshot(ps, parsed >= 8 ? static_cast<int>(ss < 1 ? 1 : ss) : 0,
+                    static_cast<uint32_t>(s),
+                    static_cast<uint8_t>(m < kMoodCount ? m : static_cast<unsigned>(PetMoodId::MOOD_CALM)),
+                    static_cast<uint32_t>(p),
+                    static_cast<uint8_t>(h > 100 ? 100 : h));
       return;
     }
     Serial.printf("BLE: unknown command '%s'\n", cmd);
@@ -484,7 +561,8 @@ class SecCallbacks : public BLESecurityCallbacks {
 };
 
 // Writes are stashed and processed on the loop task (see cmdBuf above).
-char provBuf[98];
+// Sized for the full 3-field payload: 32 + 63 + 128 + 2 separators + NUL.
+char provBuf[232];
 volatile size_t provLen = 0;
 volatile bool provPending = false;
 portMUX_TYPE provMux = portMUX_INITIALIZER_UNLOCKED;
@@ -542,9 +620,12 @@ void drawOverlay() {
   }
 }
 
-// Runs on the loop task: validate + persist "ssid\npass", then reconnect.
+// Runs on the loop task: validate + persist "ssid\npass[\ndeviceToken]",
+// then reconnect. The device token (companion API, cloud state sync) is
+// optional: a 2-field write is the legacy payload and leaves any stored
+// token untouched.
 void processProvision() {
-  char buf[98];
+  char buf[232];
   portENTER_CRITICAL(&provMux);
   size_t n = provLen;
   memcpy(buf, provBuf, n + 1);
@@ -561,7 +642,14 @@ void processProvision() {
   }
   *nl = 0;
   const char* ssid = buf;
-  const char* pass = nl + 1;
+  char* pass = nl + 1;
+  // Optional third field: split it off before validating the passphrase.
+  const char* token = nullptr;
+  char* nl2 = strchr(pass, '\n');
+  if (nl2) {
+    *nl2 = 0;
+    token = nl2 + 1;
+  }
   size_t sl = strlen(ssid), pl = strlen(pass);
   if (sl < 1 || sl > 32 || pl > 63 || (pl > 0 && pl < 8)) {
     Serial.printf("PROV: rejected (ssid %u chars, pass %u chars)\n",
@@ -569,14 +657,23 @@ void processProvision() {
     showOverlay("WiFi setup failed", 2500);
     return;
   }
+  size_t tl = token ? strlen(token) : 0;
+  if (token && (tl < 1 || tl > 128)) {
+    Serial.printf("PROV: rejected (token %u chars)\n", static_cast<unsigned>(tl));
+    showOverlay("WiFi setup failed", 2500);
+    return;
+  }
 
   prefs.begin("fina", false);
   prefs.putString("wssid", ssid);
   prefs.putString("wpass", pass);
+  if (token) prefs.putString("dtoken", token);
   prefs.end();
   strlcpy(wifiSsid, ssid, sizeof(wifiSsid));
   strlcpy(wifiPass, pass, sizeof(wifiPass));
-  Serial.printf("PROV: credentials for '%s' saved, reconnecting...\n", ssid);
+  if (token) strlcpy(deviceToken, token, sizeof(deviceToken));
+  Serial.printf("PROV: credentials for '%s' saved%s, reconnecting...\n", ssid,
+                token ? " (+ device token)" : "");
   showOverlay("WiFi saved, joining...", 4000);
 
   WiFi.disconnect(true);
@@ -603,7 +700,7 @@ class SrvCallbacks : public BLEServerCallbacks {
 
 void setupBLE() {
   BLEDevice::init("Finagotchi");
-  BLEDevice::setMTU(128);   // state string + batched writes exceed 20 bytes
+  BLEDevice::setMTU(256);   // 3-field provisioning write + state string exceed 128
 
   // Secure Connections + bonding; the device displays the passkey.
   BLEDevice::setSecurityCallbacks(new SecCallbacks());
@@ -834,16 +931,22 @@ void updateBattery() {
 // Wi-Fi + NTP
 // ---------------------------------------------------------------------------
 
-// App-provisioned credentials (NVS) win over the config.h defaults.
+// App-provisioned credentials (NVS) win over the config.h defaults. Also
+// loads the optional companion-API device token (cloud state sync).
 void loadWiFiCreds() {
   prefs.begin("fina", true);
   String s = prefs.getString("wssid", "");
   String p = prefs.getString("wpass", "");
+  String t = prefs.getString("dtoken", "");
   prefs.end();
   if (s.length() > 0 && s.length() <= 32) {
     strlcpy(wifiSsid, s.c_str(), sizeof(wifiSsid));
     strlcpy(wifiPass, p.c_str(), sizeof(wifiPass));
     Serial.printf("WiFi: using provisioned credentials (ssid '%s')\n", wifiSsid);
+  }
+  if (t.length() > 0 && t.length() <= 128) {
+    strlcpy(deviceToken, t.c_str(), sizeof(deviceToken));
+    Serial.println("WiFi: device token loaded (cloud sync enabled)");
   }
 }
 
@@ -891,6 +994,7 @@ void loadStats() {
   streak = prefs.getUInt("streak", 0);
   points = prefs.getUInt("points", 0);
   happiness = prefs.getUChar("happy", 50);
+  serverLinked = prefs.getUChar("srvlink", 0) != 0;
   prefs.end();
 }
 
@@ -1093,14 +1197,19 @@ const char* mintFor(const char* ticker) {
 
 // GET a small JSON body into buf. Returns bytes read, 0 on any failure.
 // One retry: the first TLS/DNS attempt occasionally fails on fresh Wi-Fi.
-size_t httpGetJson(const char* url, char* buf, size_t len) {
+// `auth` (optional) is sent as the Authorization header value; `codeOut`
+// (optional) receives the last HTTP status. A 401 is never retried.
+size_t httpGetJson(const char* url, char* buf, size_t len,
+                   const char* auth = nullptr, int* codeOut = nullptr) {
   for (int attempt = 0; attempt < 2; attempt++) {
     WiFiClientSecure client;           // task-local: fresh TLS session
     client.setInsecure();              // public read-only data, no certs to leak
     HTTPClient http;
     http.setTimeout(5000);
     if (!http.begin(client, url)) return 0;
+    if (auth) http.addHeader("Authorization", auth);
     int code = http.GET();
+    if (codeOut) *codeOut = code;
     size_t n = 0;
     if (code == HTTP_CODE_OK)
       n = http.getStreamPtr()->readBytes(reinterpret_cast<uint8_t*>(buf), len - 1);
@@ -1109,6 +1218,7 @@ size_t httpGetJson(const char* url, char* buf, size_t len) {
       buf[n] = 0;
       return n;
     }
+    if (code == HTTP_CODE_UNAUTHORIZED) break;   // bad token: retrying won't help
     vTaskDelay(pdMS_TO_TICKS(1000));
   }
   buf[0] = 0;
@@ -1124,6 +1234,23 @@ float jsonNumber(const char* from, const char* key) {
   while (*p == ' ') p++;
   if (strncmp(p, "null", 4) == 0) return 0.0f;
   return strtof(p, nullptr);
+}
+
+// Extract the quoted string after a flat JSON key ("mood":) into out.
+// Returns false when the key is absent or not a string.
+bool jsonString(const char* from, const char* key, char* out, size_t len) {
+  const char* p = strstr(from, key);
+  if (!p) return false;
+  p += strlen(key);
+  while (*p == ' ') p++;
+  if (*p != '"') return false;
+  const char* e = strchr(++p, '"');
+  if (!e) return false;
+  size_t n = static_cast<size_t>(e - p);
+  if (n >= len) n = len - 1;
+  memcpy(out, p, n);
+  out[n] = 0;
+  return true;
 }
 
 void fetchPrices() {
@@ -1212,6 +1339,120 @@ void applyDcaMoodNudge(float nowSec) {
 }
 
 // ---------------------------------------------------------------------------
+// Cloud state sync (standalone mode)
+//
+// Devices provisioned with a device token (optional 3rd provisioning field)
+// poll the companion API for authoritative pet state while no app is
+// connected:
+//   GET https://api.finagotchi.app/device/state
+//   Authorization: Bearer <deviceToken>
+//   -> {"stage":4,"sub":4,"streak":7,"mood":"happy","points":120,"happy":80,
+//       "upd":1726000000}
+// Parsed values are stashed under stateMux and applied on the loop task via
+// applySnapshot (same code path as the BLE snapshot write). After 5
+// consecutive 401s the token is assumed dead and syncing stops until reboot.
+// ---------------------------------------------------------------------------
+
+constexpr const char* STATE_SYNC_URL = "https://api.finagotchi.app/device/state";
+constexpr uint32_t STATE_SYNC_MS = 60000;          // poll cadence
+constexpr uint32_t STATE_SYNC_FIRST_MS = 20000;    // first poll after boot
+constexpr uint8_t  STATE_SYNC_MAX_401 = 5;         // then give up until reboot
+
+struct CloudState {
+  int      stage;
+  int      sub;
+  uint32_t streak;
+  uint8_t  mood;
+  uint32_t points;
+  uint8_t  happy;
+};
+CloudState     cloudStash = {};
+volatile bool  stateDirty = false;       // sync task -> loop task handoff
+portMUX_TYPE   stateMux = portMUX_INITIALIZER_UNLOCKED;
+bool           lastSyncOk = false;
+
+// One poll. Returns the HTTP status code (0 = transport failure).
+int syncStateFromServer() {
+  char auth[192];
+  snprintf(auth, sizeof(auth), "Bearer %s", deviceToken);
+  static char body[512];   // static: keep the sync task stack small
+  int code = 0;
+  size_t n = httpGetJson(STATE_SYNC_URL, body, sizeof(body), auth, &code);
+  if (n == 0) {
+    lastSyncOk = false;
+    Serial.printf("State sync: failed (HTTP %d)\n", code);
+    return code;
+  }
+
+  CloudState cs;
+  cs.stage   = static_cast<int>(jsonNumber(body, "\"stage\":"));
+  cs.sub     = static_cast<int>(jsonNumber(body, "\"sub\":"));
+  cs.streak  = static_cast<uint32_t>(jsonNumber(body, "\"streak\":"));
+  cs.points  = static_cast<uint32_t>(jsonNumber(body, "\"points\":"));
+  cs.happy   = static_cast<uint8_t>(jsonNumber(body, "\"happy\":"));
+  uint32_t upd = static_cast<uint32_t>(jsonNumber(body, "\"upd\":"));
+  char moodName[12] = "";
+  jsonString(body, "\"mood\":", moodName, sizeof(moodName));
+  cs.mood = static_cast<uint8_t>(PetMoodId::MOOD_CALM);
+  for (size_t i = 0; i < kMoodCount; i++) {
+    if (strcmp(moodName, MOOD_NAMES[i]) == 0) {
+      cs.mood = static_cast<uint8_t>(i);
+      break;
+    }
+  }
+
+  if (cs.stage < 1 || cs.stage > 12) {
+    lastSyncOk = false;
+    Serial.printf("State sync: bad stage %d, ignoring\n", cs.stage);
+    return code;
+  }
+  if (cs.happy > 100) cs.happy = 100;
+
+  portENTER_CRITICAL(&stateMux);
+  cloudStash = cs;
+  portEXIT_CRITICAL(&stateMux);
+  stateDirty = true;
+  lastSyncOk = true;
+  Serial.printf("State sync: stage=%d sub=%d streak=%lu upd=%lu\n", cs.stage, cs.sub,
+                static_cast<unsigned long>(cs.streak), static_cast<unsigned long>(upd));
+  return code;
+}
+
+// Polls only while the app is disconnected (same discipline as dcaPollTask);
+// rejoins Wi-Fi silently when the link dropped. 10 s idle tick.
+void stateSyncTask(void*) {
+  uint32_t lastSync = millis();
+  uint8_t authFails = 0;
+  bool disabled = false;
+  bool first = true;
+  for (;;) {
+    if (!disabled && deviceToken[0] != '\0' && !appConnected) {
+      uint32_t wait = first ? STATE_SYNC_FIRST_MS : STATE_SYNC_MS;
+      if (millis() - lastSync >= wait) {
+        lastSync = millis();
+        first = false;
+        if (WiFi.status() == WL_CONNECTED) {
+          int code = syncStateFromServer();
+          if (code == HTTP_CODE_UNAUTHORIZED) {
+            if (++authFails >= STATE_SYNC_MAX_401) {
+              disabled = true;   // bad token: stop hammering until reboot
+              Serial.println("State sync: 5 consecutive 401s, sync disabled until reboot");
+            }
+          } else if (code == HTTP_CODE_OK) {
+            authFails = 0;
+          }
+        } else {
+          // Silent retry: rejoin with the current credentials, poll next cycle.
+          WiFi.mode(WIFI_STA);
+          WiFi.begin(wifiSsid, wifiPass);
+        }
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(10000));
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Display
 // ---------------------------------------------------------------------------
 
@@ -1290,6 +1531,10 @@ void setup() {
   // disconnected. 12 KB stack: TLS handshakes (WiFiClientSecure) are hungry.
   xTaskCreate(dcaPollTask, "dca", 12288, nullptr, 1, nullptr);
 
+  // Cloud state sync: same shape as the DCA poll, active only when a device
+  // token was provisioned.
+  xTaskCreate(stateSyncTask, "sync", 12288, nullptr, 1, nullptr);
+
   lastEvolve = millis();
   Serial.println("Pet running.");
 }
@@ -1339,9 +1584,34 @@ void loop() {
     dcaNudgePending = false;
     applyDcaMoodNudge(nowSec);
   }
+  if (stateDirty) {
+    portENTER_CRITICAL(&stateMux);
+    CloudState cs = cloudStash;
+    stateDirty = false;
+    portEXIT_CRITICAL(&stateMux);
+    // Apply only when something actually changed — identical polls must not
+    // burn NVS write cycles.
+    PetState ps = petStateForStage(cs.stage);
+    bool changed = ps != pet.state() ||
+                   (cs.sub >= 1 && cs.sub <= 12 &&
+                    static_cast<uint8_t>(cs.sub) != subStage) ||
+                   cs.streak != streak || cs.points != points ||
+                   cs.happy != happiness || cs.mood != mood;
+    if (changed) {
+      applySnapshot(ps, cs.sub, cs.streak, cs.mood, cs.points, cs.happy);
+      if (!serverLinked) {
+        serverLinked = true;
+        prefs.begin("fina", false);
+        prefs.putUChar("srvlink", 1);
+        prefs.end();
+        Serial.println("State sync: server linked (demo auto-evolve off)");
+      }
+    }
+  }
 
-  // Demo auto-evolve runs only while no app is connected.
-  if (!appConnected && nowMs - lastEvolve >= EVOLVE_MS) {
+  // Demo auto-evolve runs only while no app is connected and no server is
+  // linked (once linked, the server owns the stage).
+  if (!appConnected && !serverLinked && nowMs - lastEvolve >= EVOLVE_MS) {
     lastEvolve = nowMs;
     if (!pet.evolve(nowSec)) {
       pet.setState(PetState::PET_EGG, nowSec);   // loop demo
@@ -1351,7 +1621,8 @@ void loop() {
 
   // Day-boundary streak check. Paused while the app is connected: the app
   // is authoritative for the stats bar and pushes streak:/points:/happy:.
-  if (!appConnected && nowMs - lastStreakCheck >= STREAK_CHECK_MS) {
+  // Also paused once server-linked: the server owns the streak.
+  if (!appConnected && !serverLinked && nowMs - lastStreakCheck >= STREAK_CHECK_MS) {
     lastStreakCheck = nowMs;
     updateStreakFromTime();
   }

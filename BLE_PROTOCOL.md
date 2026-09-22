@@ -21,7 +21,7 @@ provisioning characteristic enforces encryption.
 Write to the provisioning characteristic:
 
 ```
-<ssid>\n<passphrase>
+<ssid>\n<passphrase>[\n<deviceToken>]
 ```
 
 UTF-8, newline separator (a newline appears in neither a WPA passphrase nor
@@ -29,19 +29,31 @@ a sane SSID). Constraints: ssid 1–32 chars, passphrase 8–63 chars (empty
 passphrase = open network). The write is rejected by the stack unless the
 link is encrypted, so pair first.
 
-On receipt the device validates, persists the credentials in NVS (they
-override the compile-time `config.h` defaults from then on), and immediately
-reconnects Wi-Fi. A status overlay on the screen reports success/failure,
-and `PROV:` lines appear on the serial monitor.
+The **optional third field** is the companion-API device token (1–128 chars),
+which enables standalone cloud state sync (see below). A legacy 2-field write
+works unchanged and leaves any previously stored token untouched; a write
+with a present-but-invalid token is rejected.
+
+On receipt the device validates, persists the credentials (and token, if
+present) in NVS (they override the compile-time `config.h` defaults from
+then on), and immediately reconnects Wi-Fi. A status overlay on the screen
+reports success/failure, and `PROV:` lines appear on the serial monitor.
+
+> The 3-field payload can reach ~226 bytes — the firmware now requests MTU
+> 256; the app must still complete the MTU exchange (automatic on iOS,
+> `requestMTU(256)` on Android) or the write will truncate.
 
 ## Device -> App (read / notify)
 
-Value is a UTF-8 string: `<stage>:<streak>:<mood>:<item>:<points>:<happy>`
+Value is a UTF-8 string: `<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>][:<subStage>]`
 
-Example: `coinling:3:1:2:12500:87`
+Example: `coinling:3:1:2:12500:87:0:5`
 
 Sent on connect and whenever any field changes, plus when the day-based
-streak rolls over at midnight.
+streak rolls over at midnight. The optional 7th field is `dcaCount`
+(device-owned). The optional 8th field is `subStage` (1-12), which lets
+the hardware show the full 12-stage evolution line while still rendering
+one of the four base creature forms.
 
 > The string can exceed 20 bytes — the firmware requests MTU 128; the app
 > must still complete the MTU exchange (automatic on iOS, `requestMTU` on
@@ -88,7 +100,8 @@ truncated away.
 | Command | Effect |
 |---|---|
 | `stage:egg` / `coinling` / `hodler` / `whale` | Morph to stage (easeOutQuint) |
-| `stage:<1-5>` | Numeric stage (app store mapping: 1 egg, 2/3 coinling, 4 hodler, 5 whale) |
+| `stage:<1-12>` | Numeric stage; maps to base shape (1 egg, 2-7 coinling, 8-9 hodler, 10-12 whale) |
+| `substage:<1-12>` | Set the visible 12-stage name badge without changing the base shape |
 | `mood:<0-5>` | Blend to emotion (0.45 s ease) |
 | `item:<0-5>` | Equip collectible (instant) |
 | `look:<yaw>,<pitch>` | Steer gaze, degrees (yaw ±30, pitch ±25) |
@@ -103,6 +116,7 @@ truncated away.
 | `dca:clear` | Wipe all plan slots (RAM + NVS) |
 | `dca:hit:<n>:<TICKER>` | A buy just executed: "+n TICKER" gain toast + dance reaction + sparkle burst |
 | `solusd:<rate>` | SOL/USD rate (float) for the positions-page amount toggle; persisted in NVS (`finagotchi`/`solUsd`) |
+| `epoch:<sec>` | Fallback wall-clock set (unix seconds). Only applied if NTP has never synced; ignored afterwards |
 
 Writes may use write-with-response or write-without-response — the
 characteristic exposes both properties. Writes with an unrecognized payload
@@ -138,15 +152,18 @@ local UI only — it never leaves the device. Navigation: button 2 (navigate)
 short-press switches pages.
 
 The notify/read snapshot gains an **optional 7th field** — the number of
-active plan slots:
+active plan slots — and an **optional 8th field** — the 12-stage
+sub-stage index:
 
 ```
-<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>]
+<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>][:<subStage>]
 ```
 
-New firmware tolerates its absence (6-field writes still parse); old
-firmware ignores the extra field. The count is device-owned — the app may
-echo it back in a snapshot write, where it is parsed but ignored.
+New firmware tolerates either optional field being absent; old firmware
+ignores extra fields. The count is device-owned — the app may echo it back
+in a snapshot write, where it is parsed but ignored. The sub-stage index
+(1-12) controls the on-screen evolution badge and is independent of the
+four base creature shapes.
 
 ### Standalone mode (app disconnected)
 
@@ -165,6 +182,34 @@ On connect the app becomes authoritative again: polls pause and the app may
 resend `dca:count:` / `dca:plan:` plus any missed `dca:hit:` events. The
 device never calls Titan or any signing API — the relay is read-only and the
 URL/device id are compile-time `config.h` defines.
+
+### Cloud state sync (provisioned devices)
+
+Devices provisioned with a **device token** (3rd provisioning field) poll the
+companion API for authoritative pet state while no app is connected:
+
+```
+GET https://api.finagotchi.app/device/state
+Authorization: Bearer <deviceToken>
+
+-> {"stage":4,"sub":4,"streak":7,"mood":"happy","points":120,"happy":80,"upd":1726000000}
+```
+
+- Poll cadence **60 s** (first poll ~20 s after boot); paused while the app
+  is connected, like the DCA poll. If Wi-Fi dropped, the task silently
+  rejoins with the stored credentials and retries next cycle.
+- On HTTP 200 the fields are applied through the same code path as a BLE
+  snapshot write (`stage` 1–12 maps to the base shapes per the table above,
+  `sub` sets the 12-stage badge directly, `mood` is one of the mood names).
+  Identical polls are skipped — no NVS writes when nothing changed. `item`
+  is not part of the cloud snapshot and stays device-owned.
+- On HTTP 401 the token is assumed bad: after **5 consecutive 401s** syncing
+  stops until reboot (avoids hammering the API).
+- The first successful apply sets the persisted `serverLinked` flag
+  (`fina`/`srvlink` in NVS). While linked, the demo auto-evolve and the
+  local day-based streak tick stay off — the server owns stage/streak.
+  Devices without a token (or that never synced) keep the demo behavior
+  exactly as before.
 
 ### Gain toasts
 
@@ -213,4 +258,7 @@ the scene returns.
 
 While an app is connected, the on-device demo auto-evolve and the day-based
 streak check are paused so the app has full control of the stage and stats.
-On disconnect, gaze is cleared and the demo resumes.
+On disconnect, gaze is cleared and the demo resumes. Once the device is
+server-linked (successful cloud state sync), the demo auto-evolve and the
+local streak tick stay off even while disconnected — the server is then
+authoritative for stage/streak.
