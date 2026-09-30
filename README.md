@@ -2,71 +2,61 @@
 
 ESP32-S3 Tamagotchi-style companion for the Finagotchi Solana savings-pet
 app: 240×240 ST7789 TFT, BLE mirror of the pet (stage/mood/items/reactions),
-day-based streaks, Wi-Fi provisioning over BLE, battery gauge. See
-`BLE_PROTOCOL.md` for the wire protocol and `WIRING.md` for the hardware
-setup.
+day-based streaks, Wi-Fi provisioning over BLE, standalone cloud state sync
+via a device token, battery gauge. See `BLE_PROTOCOL.md` for the wire
+protocol, `HARDWARE_CONTRACT.md` for the app↔device↔API contract, and
+`WIRING.md` for the hardware setup.
 
-## DCA relay endpoint contract
+## Standalone cloud state sync (device token)
 
-While the app is disconnected over BLE, the device keeps its DCA plan
-display fresh by polling a **read-only** relay every 30 minutes:
+The device can keep showing authoritative pet state while the app is away,
+without the app relaying anything:
 
-```
-GET http://<RELAY_HOST>/api/device/<DEVICE_ID>/dca
-```
+1. **Pair** — in the app, the wallet calls `POST /device/pair` on the
+   companion API (`https://api.finagotchi.app`), which mints a `fgd_…`
+   device token. The API stores only a hash of it.
+2. **Provision** — the app writes the token to the device over BLE as the
+   optional third field of the provisioning payload
+   (`<ssid>\n<passphrase>\n<deviceToken>`, encrypted writes only — see
+   `BLE_PROTOCOL.md`). The device persists it in NVS (`fina`/`dtoken`).
+3. **Sync** — while no app is connected, a sync task polls
+   `GET <STATE_SYNC_URL>` (default
+   `https://api.finagotchi.app/device/state`, overridable in
+   `src/config.h`) every 60 s with `Authorization: Bearer <deviceToken>`
+   and applies the compact JSON snapshot
+   (`{"stage","sub","streak","mood","points","happy","upd"}`) through the
+   same code path as a BLE state write. Unchanged polls cost no NVS writes;
+   after 5 consecutive 401s the token is considered revoked and syncing
+   stops until reboot.
 
-`RELAY_HOST` and `DEVICE_ID` are compile-time defines in `src/config.h`
-(see `src/config.h.example`). The endpoint must be safe to hit anonymously —
-no secrets are baked into the firmware, and the device never calls Titan or
-any signing API.
+Once a snapshot has been applied, the persisted `serverLinked` flag keeps
+the demo auto-evolve and the local day-based streak tick off — the server
+owns stage/streak. Devices without a token behave exactly as before.
 
-### Response
+### Prices
 
-`200 OK`, `Content-Type: text/plain`, body is a semicolon-separated list of
-comma-separated plan rows:
+Independently of the state sync, each poll cycle also fetches **real
+prices** over HTTPS: one batched call to the Jupiter Price API v3
+(`https://api.jup.ag/price/v3?ids=<sol_mint>,<plan_mints...>` — note
+`lite-api.jup.ag` is IPv6-only and unusable from the ESP32) gives real
+on-chain DEX prices 24/7 for SOL/USD and every plan whose ticker has a
+known xStock mint (mint table in `src/main.cpp`, sourced from the issuer's
+`/api/v2/public/assets` API). xStock tickers without a known mint fall back
+to the issuer's indicative quote
+(`/public/assets/<symbol>/price-data` → `{"quote": <number|null>}`, null
+while the market is closed — cached value kept). TLS is unverified
+(`setInsecure`) — the data is public and read-only.
 
-```
-TICKER,amount,next_epoch,buys,holdings[,price_usd];TICKER,amount,next_epoch,buys,holdings[,price_usd];...
-```
+### Legacy DCA relay defines
 
-| Field | Type | Meaning |
-|---|---|---|
-| `TICKER` | string (≤6 chars) | Token symbol; matched case-sensitively against the tickers the app pushed over BLE |
-| `amount` | float | SOL per buy |
-| `next_epoch` | uint32 unix time | When the next buy is scheduled |
-| `buys` | uint32 | Total buys executed so far |
-| `holdings` | uint32 | Holdings currently held |
-| `price_usd` | float, optional | Token unit price in USD (drives the price/valuation display; omit to keep the cached value) |
+`src/config.h` still carries `RELAY_HOST`/`DEVICE_ID` and the firmware
+still contains the read-only DCA plan poll
+(`GET http://<RELAY_HOST>/api/device/<DEVICE_ID>/dca`, CSV rows) that the
+BTN1 standalone "sync now" action also triggers. No public server
+implements that endpoint — the poll fails silently and the cached plan
+state stays on screen. The token flow above is the supported standalone
+sync path.
 
-Example payload:
-
-```
-SPYX,0.25,1780200000,12,3,645.20;GOOGLX,0.1,1780310000,4,90,251.30
-```
-
-### Device behavior
-
-- Rows are matched to the (up to 4) cached plans by ticker; unknown tickers
-  are ignored, missing tickers keep their cached state.
-- If remote `buys` > cached `buys`, the device shows a "+<delta×amount>
-  TICKER" gain toast (delta capped at 9) and updates its cache.
-- A plan past `next_epoch` whose `buys` didn't change since the last poll is
-  marked overdue (amber ring on the carousel line).
-- After every successful poll the device re-syncs its wall clock via NTP.
-- Any failure — Wi-Fi down, HTTP error, 5 s timeout, malformed CSV — is
-  silent: the last cached state stays on screen and the next cycle retries.
-  The device never crashes or blanks the screen on relay trouble.
-- Independently of the relay, each poll cycle also fetches **real prices**
-  over HTTPS: one batched call to the Jupiter Price API v3
-  (`https://api.jup.ag/price/v3?ids=<sol_mint>,<plan_mints...>` — note
-  `lite-api.jup.ag` is IPv6-only and unusable from the ESP32) gives
-  real on-chain DEX prices 24/7 for SOL/USD and every plan whose ticker has
-  a known xStock mint (mint table in `src/main.cpp`, sourced from the
-  issuer's `/api/v2/public/assets` API). xStock tickers without a known mint
-  fall back to the issuer's indicative quote
-  (`/public/assets/<symbol>/price-data` → `{"quote": <number|null>}`, null
-  while the market is closed — cached value kept). TLS is unverified
-  (`setInsecure`) — the data is public and read-only.
-- When the app reconnects over BLE, polling pauses and the app is
-  authoritative again (it may resend `dca:count:`/`dca:plan:` and any missed
-  `dca:hit:` events).
+- When the app reconnects over BLE, all polling pauses and the app is
+  authoritative again (it may resend `dca:count:`/`dca:plan:` and any
+  missed `dca:hit:` events).

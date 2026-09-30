@@ -148,8 +148,8 @@ public:
   void enqueueToast(const char* text, float nowSec);
 
   // Second page: full-screen DCA positions view with token logos.
-  // Buttons: BTN2 navigates pages, BTN1 is the context action (feed on the
-  // pet page, next plan card on the DCA page). Local UI only.
+  // Buttons: BTN2 navigates pages, BTN1 is the context action (manual sync
+  // on the pet page, next plan card on the DCA page). Local UI only.
   void toggleDcaPage() { pageDca = !pageDca; }
   void showPetPage() { pageDca = false; }
   bool dcaPageVisible() const { return pageDca; }

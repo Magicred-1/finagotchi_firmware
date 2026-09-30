@@ -68,7 +68,7 @@ pull-up); pressed = LOW. Active-low is what the firmware expects.
 
 | Button | GPIO | Function |
 |--------|------|----------|
-| Button 1 (left, action) | GPIO4 | Short press: context action — feed/play on the pet page (+10 happiness, happy mood), next plan card on the DCA page. Long press (1s): cycle mood. Double press: cycle reaction (jump → spin → glow → dance) |
+| Button 1 (left, action) | GPIO4 | Short press: context action — sync now on the pet page (asks the app over BLE when connected, otherwise polls the relay + prices over Wi-Fi), next plan card on the DCA page. Long press (1s): cycle mood. Double press: cycle reaction (jump → spin → glow → dance) |
 | Button 2 (right, navigate) | GPIO37 | Short press: switch page (pet ↔ DCA positions). Long press (1s): jump back to the pet page. Double press: resume carousel auto-rotate (drops a pinned plan) |
 
 > GPIO4 is now the left button — the battery voltage divider moved to GPIO5

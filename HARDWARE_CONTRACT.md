@@ -34,7 +34,15 @@ only — requires an encrypted/bonded link):
 <ssid>\n<pass>
 ```
 
-Exactly one `\n` separator, no trailing newline.
+Exactly one `\n` separator, no trailing newline. The write is rejected by
+the BLE stack unless the link is bonded/encrypted — pair first.
+
+**Auto-push:** the app sends this 2-field write with the phone's current
+Wi-Fi credentials on *every* BLE connect, not just during first-time setup.
+Firmware compares ssid+pass against the stored NVS credentials and no-ops
+when they are unchanged: no disconnect/rejoin, just an "Already on \<ssid\>"
+overlay ack and a `PROV:` serial line. A 2-field write never modifies the
+stored device token; only a 3-field write (below) sets or rotates it.
 
 **Revision 2026-09 (cloud sync):** an optional third field carries the device
 token that lets the hardware pull pet state directly from the API server:

@@ -39,6 +39,17 @@ present) in NVS (they override the compile-time `config.h` defaults from
 then on), and immediately reconnects Wi-Fi. A status overlay on the screen
 reports success/failure, and `PROV:` lines appear on the serial monitor.
 
+**Auto-push on connect:** the app now writes the phone's current Wi-Fi
+credentials (2-field payload) on *every* BLE connect, not just first-time
+setup. To keep that cheap, the firmware compares the incoming ssid+pass
+against the stored NVS values before touching the radio: if both match, the
+write is a no-op — no `WiFi.disconnect()`, no ~10 s rejoin — and the screen
+shows an "Already on \<ssid\>" overlay instead. A token field, if present,
+is still persisted even when the credentials are unchanged, so token
+rotation keeps working; a 2-field write never touches the stored device
+token. If the credentials differ, the behavior is unchanged: persist
+everything and reconnect.
+
 > The 3-field payload can reach ~226 bytes — the firmware now requests MTU
 > 256; the app must still complete the MTU exchange (automatic on iOS,
 > `requestMTU(256)` on Android) or the write will truncate.
@@ -55,9 +66,20 @@ streak rolls over at midnight. The optional 7th field is `dcaCount`
 the hardware show the full 12-stage evolution line while still rendering
 one of the four base creature forms.
 
-> The string can exceed 20 bytes — the firmware requests MTU 128; the app
-> must still complete the MTU exchange (automatic on iOS, `requestMTU` on
+> The string can exceed 20 bytes — the firmware requests MTU 256; the app
+> must still complete the MTU exchange (automatic on iOS, `requestMTU(256)` on
 > Android) or notifications will truncate at 20 bytes.
+
+### `sync:req` (manual sync request)
+
+When the user short-presses button 1 (action) on the pet page while the app
+is connected, the device notifies the literal string `sync:req` instead of a
+state snapshot (it never starts with a stage name, so old apps parse it as
+garbage and ignore it). The app should respond by resending a full state
+snapshot plus `dca:count:` / `dca:plan:` writes — the same payload it sends
+on connect. While the app is disconnected, the same button press triggers
+the standalone Wi-Fi sync (relay poll + price fetch) immediately instead of
+waiting for the 30-minute cadence.
 
 ### Field ids
 
@@ -91,8 +113,8 @@ Unknown item ids degrade to `none` (0) rather than misrendering.
 ## App -> Device (write)
 
 Write one command per write, or several separated by `;`.
-The firmware requests MTU 128 on connect (automatic on iOS; call
-`requestMTU(128)` on Android). If no MTU exchange happened, keep every
+The firmware requests MTU 256 on connect (automatic on iOS; call
+`requestMTU(256)` on Android). If no MTU exchange happened, keep every
 write ≤ 20 bytes — in particular send `points:` / `happy:` as their own
 writes instead of batching them into the connect snapshot, or they will be
 truncated away.
@@ -110,7 +132,7 @@ truncated away.
 | `points:<n>` | Set points (persisted in NVS, shown in the stats bar) |
 | `happy:<0-100>` | Set happiness (persisted in NVS, shown in the stats bar) |
 | `streak:<n>` | Set displayed streak (persisted in NVS; also stamps the day so the offline day check keeps it) |
-| `<stage>:<streak>:<mood>:<item>:<points>:<happy>` | Full state snapshot (same shape as the notify string) — sets everything at once |
+| `<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>][:<subStage>]` | Full state snapshot (same shape as the notify string) — sets everything at once; the optional trailing fields update the plan count and 12-stage sub-stage |
 | `dca:count:<n>` | Declares that `n` (0–4) `dca:plan:` writes follow; all previous plan slots are wiped from NVS first |
 | `dca:plan:<i>:<enabled>:<next_buy_epoch>:<amount>:<TICKER>:<buys>:<holdings>[:<price_usd>]` | Write plan slot `i` (0–3): enabled 0/1, next-buy unix epoch, amount in SOL (float), ticker (clamped to 6 chars), completed buys, holdings held. The optional 8th field is the token's unit price in USD (drives the price/valuation display). Persisted in NVS, shown in the carousel |
 | `dca:clear` | Wipe all plan slots (RAM + NVS) |

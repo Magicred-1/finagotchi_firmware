@@ -19,3 +19,8 @@
 // contract). No secrets here — the relay must be safe to hit anonymously.
 #define RELAY_HOST "relay.example.com"
 #define DEVICE_ID "finagotchi-01"
+
+// Cloud state sync: with a device token provisioned over BLE, the device
+// polls this endpoint every 60 s while no app is connected (Bearer auth).
+// Override to point at a self-hosted/staging API.
+// #define STATE_SYNC_URL "https://api.finagotchi.app/device/state"

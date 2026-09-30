@@ -54,6 +54,11 @@
 #ifndef DEVICE_ID
 #define DEVICE_ID "finagotchi-01"
 #endif
+// Companion API endpoint the state sync task polls with the device token.
+// Override in config.h to point at a self-hosted/staging API.
+#ifndef STATE_SYNC_URL
+#define STATE_SYNC_URL "https://api.finagotchi.app/device/state"
+#endif
 
 namespace {
 
@@ -117,7 +122,9 @@ volatile bool plansDirty = false;          // poll task -> loop task handoff
 volatile bool dcaNudgePending = false;     // (dis)connect -> re-eval mood nudge
 float    solUsdRate = 0.0f;                // SOL/USD (BLE solusd: or price feed)
 volatile bool priceDirty = false;          // price feed -> loop task handoff
+volatile bool syncRequested = false;       // BTN1 -> poll task: sync now
 void     fetchPrices();                    // defined in the poll section below
+bool     pollDcaRelay();                   // defined in the poll section below
 
 void loadPlans() {
   prefs.begin("finagotchi", true);
@@ -623,7 +630,9 @@ void drawOverlay() {
 // Runs on the loop task: validate + persist "ssid\npass[\ndeviceToken]",
 // then reconnect. The device token (companion API, cloud state sync) is
 // optional: a 2-field write is the legacy payload and leaves any stored
-// token untouched.
+// token untouched. If ssid+pass match the stored NVS credentials the write
+// is a no-op (no disconnect/rejoin) except that a provided token is still
+// persisted.
 void processProvision() {
   char buf[232];
   portENTER_CRITICAL(&provMux);
@@ -661,6 +670,29 @@ void processProvision() {
   if (token && (tl < 1 || tl > 128)) {
     Serial.printf("PROV: rejected (token %u chars)\n", static_cast<unsigned>(tl));
     showOverlay("WiFi setup failed", 2500);
+    return;
+  }
+
+  // The app auto-pushes its current Wi-Fi credentials on every connect, so
+  // the same creds arriving again is the common case: skip the ~10 s
+  // disconnect/rejoin and just ack. A token field is still persisted so
+  // token rotation keeps working on a 2-field-no-change write.
+  prefs.begin("fina", true);
+  String storedSsid = prefs.getString("wssid", "");
+  String storedPass = prefs.getString("wpass", "");
+  prefs.end();
+  if (storedSsid == ssid && storedPass == pass) {
+    if (token) {
+      prefs.begin("fina", false);
+      prefs.putString("dtoken", token);
+      prefs.end();
+      strlcpy(deviceToken, token, sizeof(deviceToken));
+    }
+    Serial.printf("PROV: credentials unchanged ('%s')%s, staying connected\n",
+                  ssid, token ? ", device token updated" : "");
+    char msg[48];
+    snprintf(msg, sizeof(msg), "Already on %s", ssid);
+    showOverlay(msg, 2500);
     return;
   }
 
@@ -785,7 +817,7 @@ uint8_t moodCycleIdx = 0;
 void setupButtons() {
   pinMode(btn1.pin, INPUT_PULLUP);
   pinMode(btn2.pin, INPUT_PULLUP);
-  Serial.printf("Buttons: GPIO%d (react), GPIO%d (feed)\n", btn1.pin, btn2.pin);
+  Serial.printf("Buttons: GPIO%d (action), GPIO%d (navigate)\n", btn1.pin, btn2.pin);
 }
 
 // Returns true on short-press release, sets longFired on long press.
@@ -827,7 +859,7 @@ void handleButtons(float nowSec) {
 
   // BTN1 = action, BTN2 = navigate (see WIRING.md).
 
-  // BTN1 short: context action — feed/play on the pet page, next plan card
+  // BTN1 short: context action — sync now on the pet page, next plan card
   // on the DCA positions page. Double-press: cycle reactions.
   static uint32_t lastShort1 = 0;
   if (short1) {
@@ -842,15 +874,19 @@ void handleButtons(float nowSec) {
       if (pet.dcaPageVisible()) {
         pet.nextDcaCard(nowSec);
         Serial.println("BTN1: next DCA plan");
+      } else if (appConnected) {
+        // Wallet app connected over BLE: it is authoritative, so ask it to
+        // resend state + plans (see "sync:req" in BLE_PROTOCOL.md).
+        pCharacteristic->setValue("sync:req");
+        pCharacteristic->notify();
+        blePushState(pet.state());   // restore the snapshot as the read value
+        pet.enqueueToast("syncing...", nowSec);
+        Serial.println("BTN1: sync requested from app");
       } else {
-        happiness = happiness > 90 ? 100 : happiness + 10;
-        prefs.begin("fina", false);
-        prefs.putUChar("happy", happiness);
-        prefs.end();
-        pet.setMood(PetMoodId::MOOD_HAPPY, nowSec);
-        pet.react(PetReaction::REACT_JUMP, nowSec);
-        blePushState(pet.state());
-        Serial.printf("BTN1: feed, happy=%u\n", happiness);
+        // Standalone: run the Wi-Fi sync (relay + prices) on the poll task.
+        syncRequested = true;
+        pet.enqueueToast("syncing...", nowSec);
+        Serial.println("BTN1: Wi-Fi sync requested");
       }
     }
   }
@@ -1063,8 +1099,8 @@ void stashToast(const char* text) {
   portEXIT_CRITICAL(&toastMux);
 }
 
-void pollDcaRelay() {
-  if (WiFi.status() != WL_CONNECTED) return;
+bool pollDcaRelay() {
+  if (WiFi.status() != WL_CONNECTED) return false;
 
   char url[128];
   snprintf(url, sizeof(url), "http://%s/api/device/%s/dca", RELAY_HOST, DEVICE_ID);
@@ -1076,7 +1112,7 @@ void pollDcaRelay() {
   if (code != HTTP_CODE_OK) {
     Serial.printf("DCA poll: HTTP %d, keeping cache\n", code);
     http.end();
-    return;
+    return false;
   }
   char csv[512];
   int n = http.getStreamPtr()->readBytes(csv, sizeof(csv) - 1);
@@ -1128,16 +1164,35 @@ void pollDcaRelay() {
   struct tm ti;
   if (getLocalTime(&ti, 100) && ti.tm_year > 120) timeSynced = true;
   Serial.printf("DCA poll: %d bytes, %s\n", n, any ? "plans updated" : "no matching plans");
+  return true;
 }
 
 // Polls only while the app is disconnected; when connected the app is
-// authoritative and polls stay paused. 10 s idle tick — the render loop on
+// authoritative and polls stay paused. BTN1 sets syncRequested for an
+// immediate manual sync (same relay + price path) — the 500 ms wake keeps
+// that responsive while the 30 min cadence is untouched. The render loop on
 // the loop task is never blocked.
 void dcaPollTask(void*) {
   bool first = true;
   uint32_t lastPoll = millis();
   for (;;) {
-    if (!appConnected) {
+    if (syncRequested) {
+      syncRequested = false;
+      if (!appConnected) {
+        if (WiFi.status() == WL_CONNECTED) {
+          bool ok = pollDcaRelay();
+          fetchPrices();
+          stashToast(ok ? "synced" : "sync failed");
+        } else {
+          // Rejoin with the current credentials; user can press again.
+          WiFi.mode(WIFI_STA);
+          WiFi.begin(wifiSsid, wifiPass);
+          stashToast("wifi joining...");
+        }
+        lastPoll = millis();   // don't let the auto cadence fire right after
+        first = false;
+      }
+    } else if (!appConnected) {
       uint32_t wait = first ? DCA_FIRST_POLL_MS : DCA_POLL_MS;
       if (millis() - lastPoll >= wait) {
         lastPoll = millis();
@@ -1152,7 +1207,7 @@ void dcaPollTask(void*) {
         }
       }
     }
-    vTaskDelay(pdMS_TO_TICKS(10000));
+    vTaskDelay(pdMS_TO_TICKS(500));
   }
 }
 
@@ -1344,7 +1399,7 @@ void applyDcaMoodNudge(float nowSec) {
 // Devices provisioned with a device token (optional 3rd provisioning field)
 // poll the companion API for authoritative pet state while no app is
 // connected:
-//   GET https://api.finagotchi.app/device/state
+//   GET <STATE_SYNC_URL>   (default https://api.finagotchi.app/device/state)
 //   Authorization: Bearer <deviceToken>
 //   -> {"stage":4,"sub":4,"streak":7,"mood":"happy","points":120,"happy":80,
 //       "upd":1726000000}
@@ -1353,7 +1408,6 @@ void applyDcaMoodNudge(float nowSec) {
 // consecutive 401s the token is assumed dead and syncing stops until reboot.
 // ---------------------------------------------------------------------------
 
-constexpr const char* STATE_SYNC_URL = "https://api.finagotchi.app/device/state";
 constexpr uint32_t STATE_SYNC_MS = 60000;          // poll cadence
 constexpr uint32_t STATE_SYNC_FIRST_MS = 20000;    // first poll after boot
 constexpr uint8_t  STATE_SYNC_MAX_401 = 5;         // then give up until reboot
