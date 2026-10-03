@@ -40,7 +40,7 @@ namespace {
 constexpr uint8_t BUTTON_1_PIN = 4;    // left button
 constexpr uint8_t BUTTON_2_PIN = 37;   // right button
 
-constexpr uint32_t DEBOUNCE_MS    = 50;
+constexpr uint32_t DEBOUNCE_MS    = 30;
 constexpr uint32_t LONG_PRESS_MS  = 1000;
 constexpr uint32_t DOUBLE_PRESS_MS = 500;
 
@@ -156,16 +156,21 @@ void onBtn2Short() {
   lv_obj_t* act = lv_screen_active();
   if (uiScreenDcaDetailOpen()) {
     uiScreenDcaCloseDetail();
+    Serial.println("BTN2: close detail");
   } else if (act == g_ui.petScreen) {
     uiScreenDcaShow();
     Serial.println("BTN2: portfolio screen");
   } else if (act == g_ui.dcaScreen) {
-    if (!uiScreenDcaFocusAdvance()) {
+    if (uiScreenDcaFocusAdvance()) {
+      Serial.println("BTN2: focus next card");
+    } else {
       uiScreenMenuShow();
       Serial.println("BTN2: menu screen");
     }
   } else if (act == g_ui.menuScreen) {
-    if (!uiScreenMenuFocusAdvance()) {
+    if (uiScreenMenuFocusAdvance()) {
+      Serial.println("BTN2: focus next row");
+    } else {
       uiScreenPetShow();
       Serial.println("BTN2: pet screen");
     }
@@ -177,6 +182,20 @@ void onBtn2Double() {
     uiScreenPetChipAdvance();
     Serial.println("BTN2 double: next-buy chip advance");
   }
+}
+
+// Double-press only eats the second press where a double action actually
+// exists on the current screen — everywhere else every press is a short,
+// so fast tapping never swallows navigation.
+bool btn1HasDoubleHere() {
+  lv_obj_t* act = lv_screen_active();
+  if (act == g_ui.petScreen) return true;                       // reaction
+  if (act == g_ui.dcaScreen && !uiScreenDcaDetailOpen()) return true;  // USD/SOL
+  return false;
+}
+
+bool btn2HasDoubleHere() {
+  return lv_screen_active() == g_ui.petScreen;                  // chip advance
 }
 
 } // namespace
@@ -195,14 +214,25 @@ void uiInputInit() {
 
 void uiInputUpdate() {
   float nowSec = millis() / 1000.0f;
+
+  // DIAG (temporary): raw GPIO transitions, before debounce — separates
+  // "pin never changes" (hardware) from "logic drops the press" (firmware).
+  static bool dbgRaw1 = HIGH, dbgRaw2 = HIGH;
+  bool r1 = digitalRead(BUTTON_1_PIN);
+  bool r2 = digitalRead(BUTTON_2_PIN);
+  if (r1 != dbgRaw1) { dbgRaw1 = r1; Serial.printf("DBG BTN1 raw=%d\n", r1); }
+  if (r2 != dbgRaw2) { dbgRaw2 = r2; Serial.printf("DBG BTN2 raw=%d\n", r2); }
+
   bool long1, long2;
   bool short1 = handleButton(btn1, long1);
   bool short2 = handleButton(btn2, long2);
 
-  // BTN1 short/double (500 ms window: a second short within it = double).
+  // BTN1 short/double: the 500 ms double window only applies where the
+  // screen has a double action (btn1HasDoubleHere) — otherwise every press
+  // is a short, so mashing never eats presses.
   static uint32_t lastShort1 = 0;
   if (short1) {
-    if (millis() - lastShort1 < DOUBLE_PRESS_MS) {
+    if (btn1HasDoubleHere() && millis() - lastShort1 < DOUBLE_PRESS_MS) {
       lastShort1 = 0;
       onBtn1Double(nowSec);
     } else {
@@ -213,7 +243,7 @@ void uiInputUpdate() {
 
   static uint32_t lastShort2 = 0;
   if (short2) {
-    if (millis() - lastShort2 < DOUBLE_PRESS_MS) {
+    if (btn2HasDoubleHere() && millis() - lastShort2 < DOUBLE_PRESS_MS) {
       lastShort2 = 0;
       onBtn2Double();
     } else {

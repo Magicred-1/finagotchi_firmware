@@ -1549,6 +1549,13 @@ void loop() {
   uint32_t nowMs = millis();
   float nowSec = nowMs / 1000.0f;
 
+  // DIAG (temporary): heartbeat proves the loop is iterating.
+  static uint32_t lastBeat = 0;
+  if (nowMs - lastBeat >= 5000) {
+    lastBeat = nowMs;
+    Serial.printf("loop alive %lu\n", static_cast<unsigned long>(nowMs / 1000));
+  }
+
   // Pet scene renders at the FRAME_MS cadence; LVGL (buttons, timers,
   // screen flush) runs every pass.
   if (nowMs - lastFrame >= FRAME_MS) {
