@@ -123,6 +123,10 @@ const char* ITEM_NAMES[kItemCount] = {
 
 DcaPlan  plans[kDcaMaxPlans] = {};
 bool     planOverdue[kDcaMaxPlans] = {};   // past nextBuyEpoch, no new buys
+// price_usd came from the app (8th dca:plan field, > 0): fresher than the
+// on-device feed, so fetchPrices() skips self-fetching that ticker. Runtime
+// only — after a reboot the device self-fetches until the app pushes again.
+bool     appPrice[kDcaMaxPlans] = {};
 uint8_t  dcaCount = 0;
 volatile bool plansDirty = false;          // poll task -> loop task handoff
 volatile bool dcaNudgePending = false;     // (dis)connect -> re-eval mood nudge
@@ -177,6 +181,7 @@ void wipePlans() {
   prefs.end();
   memset(plans, 0, sizeof(plans));
   memset(planOverdue, 0, sizeof(planOverdue));
+  memset(appPrice, 0, sizeof(appPrice));
   dcaCount = 0;
   ui::clearDcaPlans();
 }
@@ -208,14 +213,16 @@ void seedDemoPlans() {
   plans[0] = mk(base + 2 * 86400 + 14 * 3600, 0.25f, "SPYX",   12,   3, 645.20f);
   plans[1] = mk(base + 5 * 3600,              0.10f, "GOOGLX",  4,  90, 251.30f);
   plans[2] = mk(base - 3600,                  0.05f, "HOODX",   7,  42, 108.45f);  // overdue
-  dcaCount = 3;
+  plans[3] = mk(0,                            0.02f, "TSLAX",   5,  10, 255.00f);  // paused
+  plans[3].enabled = false;   // paused plans arrive as en=0, epoch=0
+  dcaCount = 4;
   for (size_t i = 0; i < dcaCount; i++) {
     planOverdue[i] = (i == 2);
     ui::setDcaPlan(static_cast<uint8_t>(i), plans[i], planOverdue[i]);
   }
   dcaNudgePending = true;   // show the overdue mood nudge too
   ui::setSolUsd(212.40f);   // demo SOL/USD rate for the amount toggle
-  Serial.println("DEMO: seeded placeholder plans (SPYX / GOOGLX / HOODX)");
+  Serial.println("DEMO: seeded placeholder plans (SPYX / GOOGLX / HOODX / TSLAX paused)");
 }
 #endif
 
@@ -412,6 +419,11 @@ void handleCommand(const char* cmd) {
       p.holdingsHeld = static_cast<uint32_t>(hold);
       p.priceUsd = got == 8 ? price : 0.0f;
       planOverdue[i] = false;   // fresh app data: app is authoritative
+      // The 8th field is always sent by current apps (0 when unknown): a
+      // positive price marks the slot app-priced so fetchPrices() skips
+      // self-fetching that ticker; 0 clears the slot's price (no stale
+      // values on reused slots).
+      appPrice[i] = (got == 8 && price > 0.0f);
       if (i >= dcaCount) dcaCount = static_cast<uint8_t>(i + 1);
       prefs.begin("finagotchi", false);
       char key[8];
@@ -861,6 +873,47 @@ void actionOpenDca() {
   }
 }
 
+// Detail double-press: pause/resume a plan. Optimistic local toggle (the
+// app rewrites the whole table back, reconciling), then dca:pause:<slot>.
+void actionTogglePause(uint8_t slot) {
+  if (slot >= dcaCount) return;
+  if (!appConnected) {
+    ui::enqueueToast("connect the app");
+    Serial.println("DCA pause: no app connected");
+    return;
+  }
+  plans[slot].enabled = !plans[slot].enabled;
+  planOverdue[slot] = false;
+  savePlans();
+  ui::setDcaPlan(slot, plans[slot], planOverdue[slot]);   // optimistic visuals
+  char req[16];
+  snprintf(req, sizeof(req), "dca:pause:%u", slot);
+  pCharacteristic->setValue(req);
+  pCharacteristic->notify();
+  blePushState(pet.state());   // restore the snapshot as the read value
+  Serial.printf("BLE -> %s (optimistic %s)\n", req,
+                plans[slot].enabled ? "resumed" : "paused");
+}
+
+// Create-screen confirm: dca:new:<TICKER>:<amountSol>:<freqSec>. The app
+// opens its DCA wizard prefilled; no ack. Returns true when sent.
+bool actionCreatePlan(const char* ticker, float amountSol, uint32_t freqSec) {
+  if (!appConnected) {
+    ui::enqueueToast("connect the app");
+    Serial.println("DCA new: no app connected");
+    return false;
+  }
+  char req[40];
+  snprintf(req, sizeof(req), "dca:new:%s:%.4g:%lu", ticker,
+           static_cast<double>(amountSol), static_cast<unsigned long>(freqSec));
+  pCharacteristic->setValue(req);
+  pCharacteristic->notify();
+  blePushState(pet.state());
+  ui::enqueueToast("check the app");
+  Serial.printf("BLE -> %s\n", req);
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Battery gauge (LiPo via 1:1 divider on ADC1)
 // ---------------------------------------------------------------------------
@@ -1251,11 +1304,13 @@ void fetchPrices() {
 
   // One batched Jupiter call: SOL + every enabled plan with a known mint.
   // (api.jup.ag, not lite-api.jup.ag — lite is IPv6-only, ESP32 is IPv4.)
+  // Slots the app priced itself (8th dca:plan field) are skipped — the
+  // app's quote is fresher; self-fetch is the fallback for the rest.
   char url[384];
   int n = snprintf(url, sizeof(url), "https://api.jup.ag/price/v3?ids=%s", SOL_MINT);
   size_t idx[kDcaMaxPlans], ni = 0;   // plan slots included in the call
   for (size_t i = 0; i < dcaCount; i++) {
-    if (!plans[i].enabled) continue;
+    if (!plans[i].enabled || appPrice[i]) continue;
     const char* mint = mintFor(plans[i].ticker);
     if (!mint) continue;
     n += snprintf(url + n, sizeof(url) - static_cast<size_t>(n), ",%s", mint);
@@ -1286,7 +1341,7 @@ void fetchPrices() {
   // Fallback for enabled xStock tickers without a known mint: the issuer's
   // indicative quote (null while the market is closed -> keep cached).
   for (size_t i = 0; i < dcaCount; i++) {
-    if (!plans[i].enabled || mintFor(plans[i].ticker)) continue;
+    if (!plans[i].enabled || appPrice[i] || mintFor(plans[i].ticker)) continue;
     size_t tl = strlen(plans[i].ticker);
     if (tl < 2 || plans[i].ticker[tl - 1] != 'X') continue;   // not an xStock
     char sym[8];
@@ -1519,9 +1574,16 @@ void setup() {
   // LVGL takes over the display: pet canvas + chrome widgets. Button
   // semantics that touch BLE/pet state stay here as callbacks.
   ui::Actions actions = { actionSyncNow, actionCycleReaction, actionFeedPet,
-                          actionCycleItem, actionCycleMood, actionOpenDca };
+                          actionCycleItem, actionCycleMood, actionOpenDca,
+                          actionTogglePause, actionCreatePlan };
   ui::begin(&tft, &pet, actions);
   ui::setSubStage(subStage);
+
+  // Create-plan screen: offer the xStocks the device ships mints/logos for.
+  static const char* createTickers[sizeof(XSTOCK_MINTS) / sizeof(XSTOCK_MINTS[0])];
+  for (size_t i = 0; i < sizeof(XSTOCK_MINTS) / sizeof(XSTOCK_MINTS[0]); i++)
+    createTickers[i] = XSTOCK_MINTS[i].ticker;
+  ui::setCreateTickers(createTickers, sizeof(XSTOCK_MINTS) / sizeof(XSTOCK_MINTS[0]));
 
   loadPlans();               // restore DCA plan slots (dcaN blobs) -> UI
 #ifdef DCA_DEMO_SEED
@@ -1548,13 +1610,6 @@ void setup() {
 void loop() {
   uint32_t nowMs = millis();
   float nowSec = nowMs / 1000.0f;
-
-  // DIAG (temporary): heartbeat proves the loop is iterating.
-  static uint32_t lastBeat = 0;
-  if (nowMs - lastBeat >= 5000) {
-    lastBeat = nowMs;
-    Serial.printf("loop alive %lu\n", static_cast<unsigned long>(nowMs / 1000));
-  }
 
   // Pet scene renders at the FRAME_MS cadence; LVGL (buttons, timers,
   // screen flush) runs every pass.

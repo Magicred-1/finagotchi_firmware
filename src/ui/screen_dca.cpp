@@ -134,8 +134,11 @@ lv_obj_t* dChip;
 lv_obj_t* dTicker;
 lv_obj_t* dPrice;
 lv_obj_t* dStatVal[4];               // BUY / BUYS / HELD / VALUE
+lv_obj_t* nbCap;
 lv_obj_t* dCountdown;
 lv_obj_t* dBar;
+
+lv_obj_t* newCard;                   // trailing "+ New plan" card
 
 int8_t detailSlot = -1;
 
@@ -144,11 +147,12 @@ void openDetail(uint8_t slot);   // defined below
 // Group membership must track visibility exactly: hidden cards in the
 // focus group swallow LV_KEY_NEXT presses (focus moves to an invisible
 // card and the buttons look dead). Rebuilds the group with the visible
-// cards only.
+// cards only — the plan slots plus the always-visible "+ New plan" card.
 void groupSetCards(bool keepFocus) {
-  lv_obj_t* visible[kDcaMaxPlans];
+  lv_obj_t* visible[kDcaMaxPlans + 1];
   uint8_t n = 0;
   for (size_t i = 0; i < g_ui.planCount; i++) visible[n++] = card[i];
+  visible[n++] = newCard;
   uiGroupSet(visible, n, keepFocus);
 }
 
@@ -203,7 +207,8 @@ void headerFill() {
 // Fill one card from its plan slot.
 void cardFill(uint8_t slot) {
   const DcaPlan& p = g_ui.plans[slot];
-  bool od = uiPlanOverdue(slot);
+  bool paused = uiPlanPaused(p);
+  bool od = !paused && uiPlanOverdue(slot);
 
   const lv_image_dsc_t* logo = logoFor(p.ticker);
   if (logo) {
@@ -217,16 +222,19 @@ void cardFill(uint8_t slot) {
   }
 
   lv_label_set_text(cardTicker[slot], p.ticker);
-  lv_obj_set_style_text_color(cardTicker[slot], p.enabled ? UI_COL_TEXT : UI_COL_MUTED, 0);
+  lv_obj_set_style_text_color(cardTicker[slot], paused ? UI_COL_MUTED : UI_COL_TEXT, 0);
 
   char buf[24];
   fmtValue(p, buf, sizeof(buf));
   lv_label_set_text(cardValue[slot], buf);
+  lv_obj_set_style_text_color(cardValue[slot], paused ? UI_COL_MUTED : UI_COL_TEXT, 0);
 
   char cd[12];
-  uiFmtCountdown(p.nextBuyEpoch, g_ui.epoch, cd, sizeof(cd));
+  if (paused) strlcpy(cd, "paused", sizeof(cd));
+  else uiFmtCountdown(p.nextBuyEpoch, g_ui.epoch, cd, sizeof(cd));
   lv_label_set_text(cardCountdown[slot], cd);
-  lv_obj_set_style_text_color(cardCountdown[slot], od ? UI_COL_WARNING : UI_COL_MUTED, 0);
+  lv_obj_set_style_text_color(cardCountdown[slot],
+      paused ? UI_COL_MUTED : (od ? UI_COL_WARNING : UI_COL_MUTED), 0);
 
   char amt[16];
   uiFmtAmount(p, amt, sizeof(amt));
@@ -243,12 +251,17 @@ void cardClicked(lv_event_t* e) {
   openDetail(slot);
 }
 
+void newCardClicked(lv_event_t*) {
+  uiScreenCreateShow();
+}
+
 // --- detail view ---------------------------------------------------------------
 
 void detailFill() {
   if (detailSlot < 0 || detailSlot >= static_cast<int8_t>(g_ui.planCount)) return;
   const DcaPlan& p = g_ui.plans[detailSlot];
-  bool od = uiPlanOverdue(static_cast<uint8_t>(detailSlot));
+  bool paused = uiPlanPaused(p);
+  bool od = !paused && uiPlanOverdue(static_cast<uint8_t>(detailSlot));
 
   const lv_image_dsc_t* logo = logoFor(p.ticker);
   if (logo) {
@@ -282,6 +295,17 @@ void detailFill() {
   lv_label_set_text(dStatVal[2], buf);
   fmtValue(p, buf, sizeof(buf));
   lv_label_set_text(dStatVal[3], buf);
+
+  if (paused) {
+    // Big PAUSED instead of countdown + progress (en=0 / epoch=0 plans).
+    lv_label_set_text(nbCap, "STATUS");
+    lv_label_set_text(dCountdown, "PAUSED");
+    lv_obj_set_style_text_color(dCountdown, UI_COL_WARNING, 0);
+    lv_obj_set_hidden(dBar, true);
+    return;
+  }
+  lv_label_set_text(nbCap, "NEXT BUY");
+  lv_obj_set_hidden(dBar, false);
 
   char cd[12];
   uiFmtCountdown(p.nextBuyEpoch, g_ui.epoch, cd, sizeof(cd));
@@ -377,6 +401,16 @@ lv_obj_t* uiScreenDcaCreate() {
     lv_obj_set_hidden(card[i], true);
   }
 
+  // Trailing "+ New plan" card: always visible, sits after the last plan.
+  newCard = lv_obj_create(col);
+  lv_obj_set_size(newCard, 208, 44);
+  uiThemeCard(newCard);
+  lv_obj_set_clickable(newCard, true);
+  lv_obj_add_event_cb(newCard, newCardClicked, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t* plus = uiThemeLabel(newCard, &lv_font_montserrat_14, UI_COL_PRIMARY);
+  lv_label_set_text(plus, LV_SYMBOL_PLUS "  New plan");
+  lv_obj_center(plus);
+
   emptyLabel = uiThemeLabel(listScr, &lv_font_montserrat_14, UI_COL_MUTED);
   lv_label_set_text(emptyLabel, "no DCA plans yet");
   lv_obj_align(emptyLabel, LV_ALIGN_CENTER, 0, 0);
@@ -416,7 +450,7 @@ lv_obj_t* uiScreenDcaCreate() {
     lv_obj_align(dStatVal[i], LV_ALIGN_TOP_LEFT, statX[i], statY[i] + 15);
   }
 
-  lv_obj_t* nbCap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
+  nbCap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(nbCap, "NEXT BUY");
   lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 24, 190);
 
@@ -496,15 +530,20 @@ void uiScreenDcaToggleAmountUnit() {
 }
 
 bool uiScreenDcaFocusAdvance() {
-  if (g_ui.planCount == 0) return false;
   lv_obj_t* f = lv_group_get_focused(g_ui.group);
-  if (f && f != card[g_ui.planCount - 1]) {
+  if (f && f != newCard) {   // the "+ New plan" card is always last
     lv_group_focus_next(g_ui.group);
     return true;
   }
   if (!f) {   // nothing focused yet (e.g. after a refresh): focus the first
-    lv_group_focus_obj(card[0]);
+    lv_group_focus_obj(g_ui.planCount > 0 ? card[0] : newCard);
     return true;
   }
   return false;   // on the last card: caller moves to the next screen
+}
+
+void uiScreenDcaTogglePause() {
+  if (detailSlot < 0 || detailSlot >= static_cast<int8_t>(g_ui.planCount)) return;
+  if (g_ui.actions.togglePause)
+    g_ui.actions.togglePause(static_cast<uint8_t>(detailSlot));
 }

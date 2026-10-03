@@ -99,6 +99,25 @@ Sent when the user activates **Open DCA** on the device's menu screen while
 the app is connected. The app should open its DCA wizard/sheet. With no app
 connected the device only shows a "connect the app" toast.
 
+### `dca:pause:<i>` (pause/resume request, device → app)
+
+Sent when the user double-presses on a plan's **detail view** while the app
+is connected. `i` is the slot index in the last pushed table (0–3). The app
+toggles that plan active ↔ paused and rewrites the whole table back
+(`dca:count:` + `dca:plan:` writes). The device applies an optimistic local
+toggle (paused visuals right away) and the app's rewrite reconciles. With
+no app connected it only shows a "connect the app" toast.
+
+### `dca:new:<TICKER>:<amountSol>:<freqSec>` (create request, device → app)
+
+Sent from the device's **+ New plan** create screen (trailing card on the
+portfolio view) while the app is connected. `TICKER` is uppercase, ≤6
+chars; `amountSol` a float; `freqSec` one of `86400` (daily), `604800`
+(weekly), `2592000` (monthly). The app opens its DCA wizard prefilled so
+the user can confirm and sign on the phone. There is no ack — the device
+shows a "check the app" toast and returns to the portfolio view. With no
+app connected it shows a "connect the app" toast and stays on the form.
+
 ### Field ids
 
 **stage**: `egg` | `coinling` | `hodler` | `whale`
@@ -153,7 +172,7 @@ truncated away.
 | `streak:<n>` | Set displayed streak (persisted in NVS; also stamps the day so the offline day check keeps it) |
 | `<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>][:<subStage>]` | Full state snapshot (same shape as the notify string) — sets everything at once; the optional trailing fields update the plan count and 12-stage sub-stage |
 | `dca:count:<n>` | Declares that `n` (0–4) `dca:plan:` writes follow; all previous plan slots are wiped from NVS first |
-| `dca:plan:<i>:<enabled>:<next_buy_epoch>:<amount>:<TICKER>:<buys>:<holdings>[:<price_usd>]` | Write plan slot `i` (0–3): enabled 0/1, next-buy unix epoch, amount in SOL (float), ticker (clamped to 6 chars), completed buys, holdings held. The optional 8th field is the token's unit price in USD (drives the price/valuation display). Persisted in NVS, shown on the portfolio screen and the next-buy chip |
+| `dca:plan:<i>:<enabled>:<next_buy_epoch>:<amount>:<TICKER>:<buys>:<holdings>:<price_usd>` | Write plan slot `i` (0–3): enabled 0/1, next-buy unix epoch, amount in SOL (float), ticker (clamped to 6 chars), completed buys, holdings held, token unit price in USD (drives the price/valuation display; 0 when unknown). Current apps always send the 8th field; old firmware tolerates its absence. Paused plans arrive as `en=0, epoch=0` and render a PAUSED state (muted card, "PAUSED" on the detail view — never a countdown). A slot with price > 0 is marked app-priced: the device skips self-fetching that ticker's price (the app's quote is fresher; self-fetch stays the fallback for unpriced slots). Persisted in NVS, shown on the portfolio screen and the next-buy chip |
 | `dca:clear` | Wipe all plan slots (RAM + NVS) |
 | `dca:hit:<n>:<TICKER>` | A buy just executed: "+n TICKER" reward toast (app purple) + dance reaction + sparkle burst |
 | `solusd:<rate>` | SOL/USD rate (float) for the portfolio amount unit toggle (USD ⇄ SOL); persisted in NVS (`finagotchi`/`solUsd`) |
@@ -176,7 +195,9 @@ TICKER  $10.00  in 2d 14h
 
 If a plan is past its epoch with no new buys it is marked **overdue**:
 amber (warning) border + "overdue" text. If the wall clock was never
-synced, the countdown shows `--` instead of garbage.
+synced, the countdown shows `--` instead of garbage. Paused plans
+(`en=0, epoch=0`) render muted with a "paused" label — never a countdown —
+and are never overdue.
 
 The device runs a **single-button scheme** (the left button is dead on some
 units): the **right button** carries the UI — **short press = navigate**,
@@ -188,15 +209,26 @@ equivalent under it when the `solusd:` rate is known), then one card per
 plan — the actual token logo (official xStocks icons embedded at build
 time — see `tools/convert_token_logos.py`; unknown tickers get a
 procedural monogram chip), ticker, position value, next-buy countdown and
-holdings/buy info. Short presses walk the card focus (cyan ring); after
-the last card they move on to the **menu screen**, and from there back to
-the pet screen (pet → portfolio → menu → pet). A long press opens a
-per-token **detail view** and closes it again; with a live left button, a
-double-press toggles amounts between USD and SOL (needs the `solusd:` rate).
-Overdue cards are amber.
+holdings/buy info. Short presses walk the card focus (cyan ring) through
+the plans and a trailing **+ New plan** card; after it they move on to the
+**menu screen**, and from there back to the pet screen
+(pet → portfolio → menu → pet). A long press opens a per-token **detail
+view** and closes it again; with a live left button, a double-press
+toggles amounts between USD and SOL (needs the `solusd:` rate). Overdue
+cards are amber. On the detail view, a **double-press of either button
+toggles pause/resume** (`dca:pause:<i>`, optimistic local toggle — a
+single press still closes, deferred by the double window).
 While offline, the device fetches prices itself over HTTPS (Jupiter Price
-API + xStocks `price-data`, SOL/USD included) on the poll cadence. This
-view is local UI only — it never leaves the device.
+API + xStocks `price-data`, SOL/USD included) on the poll cadence, except
+slots the app priced itself. This view is local UI only — it never leaves
+the device.
+
+Activating **+ New plan** opens a small **create screen** — four focusable
+rows: Token (the xStocks the device ships mints/logos for), Amount
+(0.01 / 0.05 / 0.1 / 0.25 SOL), Frequency (daily / weekly / monthly) and
+**Create →**. Short presses move between fields, a long press (or the left
+button) cycles the focused field's value, and on **Create →** it sends
+`dca:new:` — no on-screen hints, the rows show name + current value.
 
 The **menu screen** mirrors the app's bottom action bar: a horizontal row
 of round icon buttons — **Accessory** (cycles the collectible locally,

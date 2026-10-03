@@ -25,6 +25,10 @@ struct Actions {
   void (*cycleItem)();                  // menu accessory row (item: push)
   void (*cycleMood)(float nowSec);      // menu mood row (mood: push)
   void (*openDca)();                    // menu "Open DCA" (BLE dca:req)
+  void (*togglePause)(uint8_t slot);    // detail double-press (BLE dca:pause:)
+  // Create-screen confirm; returns true when the request went out (app
+  // connected) so the UI can pop back to the portfolio.
+  bool (*createPlan)(const char* ticker, float amountSol, uint32_t freqSec);
 };
 
 void begin(TFT_eSPI* tft, FinagotchiPet* pet, const Actions& actions);
@@ -64,6 +68,9 @@ void enqueueRewardToast(const char* text);
 // Menu screen row labels (main.cpp keeps them in sync from blePushState).
 void setMenuAccessory(const char* name);
 void setMenuMood(const char* name);
+
+// Create-plan screen: the tickers the user can pick (main's xStocks table).
+void setCreateTickers(const char* const* tickers, uint8_t n);
 
 // Timed status overlay (center of screen, auto-hides after ms).
 void showOverlay(const char* msg, uint32_t ms);

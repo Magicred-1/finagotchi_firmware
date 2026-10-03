@@ -66,10 +66,18 @@ const char* uiStageName(uint8_t subStage) {
 }
 
 // Amber whenever past due: flagged by the poll, or the epoch simply passed.
+// Paused plans (disabled, epoch 0) are never overdue.
 bool uiPlanOverdue(uint8_t slot) {
   if (slot >= g_ui.planCount) return false;
+  if (!g_ui.plans[slot].enabled) return false;
   if (g_ui.overdue[slot]) return true;
   const DcaPlan& p = g_ui.plans[slot];
   return g_ui.epoch != 0 && p.nextBuyEpoch != 0 &&
          static_cast<int32_t>(p.nextBuyEpoch - g_ui.epoch) <= 0;
+}
+
+// Paused plans arrive as en=0, epoch=0 and render a PAUSED state, never a
+// countdown.
+bool uiPlanPaused(const DcaPlan& p) {
+  return !p.enabled || p.nextBuyEpoch == 0;
 }

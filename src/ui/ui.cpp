@@ -108,6 +108,7 @@ void ui::begin(TFT_eSPI* tft, FinagotchiPet* pet, const Actions& actions) {
   g_ui.petScreen = uiScreenPetCreate();
   g_ui.dcaScreen = uiScreenDcaCreate();
   g_ui.menuScreen = uiScreenMenuCreate();
+  g_ui.createScreen = uiScreenCreateCreate();
   uiInputInit();
   overlayInit();
 
@@ -199,6 +200,11 @@ void ui::setMenuAccessory(const char* name) {
 void ui::setMenuMood(const char* name) {
   if (!g_ui.ready) return;
   uiScreenMenuSetMood(name);
+}
+
+void ui::setCreateTickers(const char* const* tickers, uint8_t n) {
+  if (!g_ui.ready) return;
+  uiScreenCreateSetTickers(tickers, n);
 }
 
 void ui::showOverlay(const char* msg, uint32_t ms) {

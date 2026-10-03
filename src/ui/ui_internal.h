@@ -20,6 +20,7 @@ struct UiState {
   lv_obj_t*   petScreen = nullptr;
   lv_obj_t*   dcaScreen = nullptr;
   lv_obj_t*   menuScreen = nullptr;
+  lv_obj_t*   createScreen = nullptr;
   lv_group_t* group = nullptr;
 
   // DCA plan mirror (ui::setDcaPlan/clearDcaPlans)
@@ -40,6 +41,7 @@ void uiFmtAmount(const DcaPlan& p, char* buf, size_t n);   // honors amountInSol
 void uiFmtUsd(double usd, char* buf, size_t n);            // "$1,234.56" / "$12.3k"
 const char* uiStageName(uint8_t subStage);
 bool uiPlanOverdue(uint8_t slot);   // flagged, or epoch simply passed
+bool uiPlanPaused(const DcaPlan& p);  // disabled or epoch 0 -> PAUSED state
 double uiPlanValueUsd(const DcaPlan& p);   // holdings x price; <=0 = unknown
 
 // ui.cpp
@@ -78,6 +80,14 @@ bool uiScreenDcaDetailOpen();
 void uiScreenDcaCloseDetail();
 void uiScreenDcaToggleAmountUnit();
 bool uiScreenDcaFocusAdvance();          // false: no more cards -> next screen
+void uiScreenDcaTogglePause();           // detail double-press: pause/resume
+
+// screen_create.cpp ("+ New plan" form: token / amount / frequency / send)
+lv_obj_t* uiScreenCreateCreate();
+void uiScreenCreateShow();               // from the "+ New plan" card
+void uiScreenCreateFocusAdvance();       // left short: next field (wraps)
+void uiScreenCreateActivate(float nowSec); // right short: cycle value / send
+void uiScreenCreateSetTickers(const char* const* tickers, uint8_t n);
 
 // screen_menu.cpp (action menu)
 lv_obj_t* uiScreenMenuCreate();

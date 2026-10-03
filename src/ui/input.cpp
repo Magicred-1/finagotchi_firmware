@@ -11,13 +11,17 @@
 
   BTN2 = right (GPIO37) — primary:
     any screen:    short = navigate forward (pet -> portfolio -> menu -> pet;
-                   walks card/row focus within portfolio/menu first)
+                   walks card/row focus within portfolio/menu first; on the
+                   create screen: next field)
                    long  = action (same as BTN1 short: select / activate)
+    detail view:   double = pause/resume the plan (a single short still
+                   closes — deferred by the double window, see onDetailShort)
   BTN1 = left (GPIO4) — bonus action key:
     pet screen:       short  = sync now, double = cycle pet reaction
     portfolio screen: short  = open detail, double = toggle SOL <-> USD
-    detail view:      short  = close the detail view
+    detail view:      short  = close the detail view, double = pause/resume
     menu screen:      short  = run the focused action
+    create screen:    short  = cycle the focused field's value / send
     any non-pet:      long   = back to the pet screen
 
   The focus group only ever holds the visible objects of the ACTIVE screen
@@ -119,10 +123,30 @@ void keypadRead(lv_indev_t*, lv_indev_data_t* data) {
 
 // --- semantic actions --------------------------------------------------------
 
+// Detail-screen double-press: toggles pause/resume on either button. A
+// plain short press still closes the detail, but only after the double
+// window proves it wasn't a toggle — the close is deferred by up to
+// DOUBLE_PRESS_MS (the detail view is the one screen where a press that
+// would navigate away also has a double action, so it can't fire the
+// short immediately like the pet/portfolio doubles do).
+uint32_t detailShortAt = 0;   // pending close; 0 = none
+
+void onDetailShort() {
+  if (detailShortAt && millis() - detailShortAt < DOUBLE_PRESS_MS) {
+    detailShortAt = 0;
+    uiScreenDcaTogglePause();
+    Serial.println("detail double: pause toggle");
+  } else {
+    detailShortAt = millis();
+  }
+}
+
 void onBtn1Short(float nowSec) {
   lv_obj_t* act = lv_screen_active();
   if (uiScreenDcaDetailOpen()) {
-    uiScreenDcaCloseDetail();
+    onDetailShort();
+  } else if (act == g_ui.createScreen) {
+    uiScreenCreateActivate(nowSec);
   } else if (act == g_ui.menuScreen) {
     uiScreenMenuActivate(nowSec);
   } else if (act == g_ui.dcaScreen) {
@@ -154,8 +178,7 @@ void onBtn1Long() {
 void onBtn2Short() {
   lv_obj_t* act = lv_screen_active();
   if (uiScreenDcaDetailOpen()) {
-    uiScreenDcaCloseDetail();
-    Serial.println("BTN2: close detail");
+    onDetailShort();
   } else if (act == g_ui.petScreen) {
     uiScreenDcaShow();
     Serial.println("BTN2: portfolio screen");
@@ -166,6 +189,9 @@ void onBtn2Short() {
       uiScreenMenuShow();
       Serial.println("BTN2: menu screen");
     }
+  } else if (act == g_ui.createScreen) {
+    uiScreenCreateFocusAdvance();
+    Serial.println("BTN2: create: next field");
   } else if (act == g_ui.menuScreen) {
     if (uiScreenMenuFocusAdvance()) {
       Serial.println("BTN2: focus next row");
@@ -211,17 +237,19 @@ void uiInputInit() {
 void uiInputUpdate() {
   float nowSec = millis() / 1000.0f;
 
-  // DIAG (temporary): raw GPIO transitions, before debounce — separates
-  // "pin never changes" (hardware) from "logic drops the press" (firmware).
-  static bool dbgRaw1 = HIGH, dbgRaw2 = HIGH;
-  bool r1 = digitalRead(BUTTON_1_PIN);
-  bool r2 = digitalRead(BUTTON_2_PIN);
-  if (r1 != dbgRaw1) { dbgRaw1 = r1; Serial.printf("DBG BTN1 raw=%d\n", r1); }
-  if (r2 != dbgRaw2) { dbgRaw2 = r2; Serial.printf("DBG BTN2 raw=%d\n", r2); }
-
   bool long1, long2;
   bool short1 = handleButton(btn1, long1);
   bool short2 = handleButton(btn2, long2);
+
+  // Deferred detail close: the double window expired without a second
+  // press, so it was a plain short — close the detail (if still open).
+  if (detailShortAt && millis() - detailShortAt >= DOUBLE_PRESS_MS) {
+    detailShortAt = 0;
+    if (uiScreenDcaDetailOpen()) {
+      uiScreenDcaCloseDetail();
+      Serial.println("detail: close");
+    }
+  }
 
   // BTN1 short/double: the 500 ms double window only applies where the
   // screen has a double action (btn1HasDoubleHere) — otherwise every press
