@@ -68,8 +68,8 @@ pull-up); pressed = LOW. Active-low is what the firmware expects.
 
 | Button | GPIO | Function |
 |--------|------|----------|
-| Button 1 (left, action) | GPIO4 | Short press: context action — sync now on the pet page (asks the app over BLE when connected, otherwise polls the relay + prices over Wi-Fi), next plan card on the DCA page. Long press (1s): cycle mood. Double press: cycle reaction (jump → spin → glow → dance) |
-| Button 2 (right, navigate) | GPIO37 | Short press: switch page (pet ↔ DCA positions). Long press (1s): jump back to the pet page. Double press: resume carousel auto-rotate (drops a pinned plan) |
+| Button 1 (left, action) | GPIO4 | Pet screen — short: sync now (asks the app over BLE when connected, otherwise polls the relay + prices over Wi-Fi); double: cycle reaction (jump → spin → glow → dance); long (1s): cycle mood. DCA screen — short: open the focused card's detail view (or close it); double: toggle amounts SOL ↔ USD; long: cycle mood |
+| Button 2 (right, navigate) | GPIO37 | Pet screen — short: go to the DCA screen; double: advance the next-buy chip (manual rotate); long: no-op. DCA screen — short: focus the next card (or close the detail view); long (1s): back to the pet screen |
 
 > GPIO4 is now the left button — the battery voltage divider moved to GPIO5
 > (see below).
@@ -79,7 +79,7 @@ pull-up); pressed = LOW. Active-low is what the firmware expects.
 > module (N8R2) or pick a different pin in that case.
 
 > If your buttons are wired to different pins, edit `BUTTON_1_PIN` and
-> `BUTTON_2_PIN` in `src/main.cpp`.
+> `BUTTON_2_PIN` in `src/ui/input.cpp`.
 
 ## Battery sense (optional)
 

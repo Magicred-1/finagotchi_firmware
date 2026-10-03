@@ -46,6 +46,7 @@
 #include "config.h"
 #include "logo.h"
 #include "pet.h"
+#include "ui/ui.h"
 
 // Defaults so older config.h copies (pre-DCA) still build.
 #ifndef RELAY_HOST
@@ -139,13 +140,13 @@ void loadPlans() {
   }
   prefs.end();
   for (size_t i = 0; i < dcaCount; i++)
-    pet.setDcaPlan(static_cast<uint8_t>(i), plans[i], planOverdue[i]);
+    ui::setDcaPlan(static_cast<uint8_t>(i), plans[i], planOverdue[i]);
 
-  // SOL/USD rate for the amount toggle on the positions page (solusd:).
+  // SOL/USD rate for the amount unit toggle on the DCA screen (solusd:).
   prefs.begin("finagotchi", true);
   solUsdRate = prefs.getFloat("solUsd", 0.0f);
   prefs.end();
-  pet.setSolUsd(solUsdRate);
+  ui::setSolUsd(solUsdRate);
 }
 
 void savePlans() {
@@ -172,13 +173,13 @@ void wipePlans() {
   memset(plans, 0, sizeof(plans));
   memset(planOverdue, 0, sizeof(planOverdue));
   dcaCount = 0;
-  pet.clearDcaPlans();
+  ui::clearDcaPlans();
 }
 
 
 // ---------------------------------------------------------------------------
-// Demo seed (sim build only): placeholder xStocks plans so the DCA carousel
-// and positions page have content without an app/relay. Enabled via
+// Demo seed (sim build only): placeholder xStocks plans so the DCA cards
+// and next-buy chip have content without an app/relay. Enabled via
 // -D DCA_DEMO_SEED=1 (env:esp32-s3-sim) — never in the production build.
 // ---------------------------------------------------------------------------
 
@@ -205,10 +206,10 @@ void seedDemoPlans() {
   dcaCount = 3;
   for (size_t i = 0; i < dcaCount; i++) {
     planOverdue[i] = (i == 2);
-    pet.setDcaPlan(static_cast<uint8_t>(i), plans[i], planOverdue[i]);
+    ui::setDcaPlan(static_cast<uint8_t>(i), plans[i], planOverdue[i]);
   }
   dcaNudgePending = true;   // show the overdue mood nudge too
-  pet.setSolUsd(212.40f);   // demo SOL/USD rate for the amount toggle
+  ui::setSolUsd(212.40f);   // demo SOL/USD rate for the amount toggle
   Serial.println("DEMO: seeded placeholder plans (SPYX / GOOGLX / HOODX)");
 }
 #endif
@@ -228,7 +229,7 @@ void blePushState(PetState s) {
            static_cast<unsigned long>(points), happiness, dcaCount, subStage);
   pCharacteristic->setValue(buf);
   pCharacteristic->notify();
-  pet.setStats(streak, points, happiness);
+  ui::setStats(streak, points, happiness);
   Serial.printf("BLE -> %s\n", buf);
 }
 
@@ -257,7 +258,7 @@ void applySnapshot(PetState state, int sub, uint32_t s, uint8_t m, uint32_t p, u
   pet.setState(state, nowSec);
   if (sub >= 1) {
     subStage = static_cast<uint8_t>(sub > 12 ? 12 : sub);
-    pet.setSubStage(subStage);
+    ui::setSubStage(subStage);
   }
   streak = s;
   points = p;
@@ -290,7 +291,7 @@ void handleCommand(const char* cmd) {
     long n = strtol(name, &end, 10);
     if (end != name && *end == 0 && n >= 1 && n <= 12) {
       subStage = static_cast<uint8_t>(n);
-      pet.setSubStage(subStage);
+      ui::setSubStage(subStage);
       pet.setState(petStateForStage(static_cast<int>(n)), nowSec);
       blePushState(pet.state());
       return;
@@ -300,7 +301,7 @@ void handleCommand(const char* cmd) {
   else if (strncmp(cmd, "substage:", 9) == 0) {
     int v = atoi(cmd + 9);
     subStage = static_cast<uint8_t>(v < 1 ? 1 : (v > 12 ? 12 : v));
-    pet.setSubStage(subStage);
+    ui::setSubStage(subStage);
     blePushState(pet.state());
   }
   else if (strncmp(cmd, "react:", 6) == 0) {
@@ -400,7 +401,7 @@ void handleCommand(const char* cmd) {
       prefs.putBytes(key, &p, sizeof(DcaPlan));
       prefs.putUChar("dcaCount", dcaCount);
       prefs.end();
-      pet.setDcaPlan(static_cast<uint8_t>(i), p, false);
+      ui::setDcaPlan(static_cast<uint8_t>(i), p, false);
       Serial.printf("BLE: dca plan %u %s %.4g SOL next=%lu\n", i, p.ticker,
                     static_cast<double>(p.amountSol), epoch);
     } else {
@@ -418,18 +419,18 @@ void handleCommand(const char* cmd) {
     if (sscanf(cmd + 8, "%u:%6s", &n, tick) == 2) {
       char t[24];
       snprintf(t, sizeof(t), "+%u %s", n > 999 ? 999 : n, tick);
-      pet.enqueueToast(t, nowSec);
+      ui::enqueueToast(t);
       pet.react(PetReaction::REACT_DANCE, nowSec);
       pet.sparkleBurst(nowSec);
       Serial.printf("BLE: dca hit %s\n", t);
     }
   }
   else if (strncmp(cmd, "solusd:", 7) == 0) {
-    // SOL/USD rate for the positions-page amount toggle (persisted).
+    // SOL/USD rate for the DCA-screen amount unit toggle (persisted).
     float rate = strtof(cmd + 7, nullptr);
     if (rate > 0.0f) {
       solUsdRate = rate;
-      pet.setSolUsd(rate);
+      ui::setSolUsd(rate);
       prefs.begin("finagotchi", false);
       prefs.putFloat("solUsd", rate);
       prefs.end();
@@ -590,42 +591,9 @@ class ProvCallbacks : public BLECharacteristicCallbacks {
   }
 };
 
-// Screen overlay for pairing/status messages, drawn over the pet frame.
-char overlayMsg[40] = "";
-uint32_t overlayUntil = 0;
-
-void showOverlay(const char* msg, uint32_t ms) {
-  strncpy(overlayMsg, msg, sizeof(overlayMsg) - 1);
-  overlayMsg[sizeof(overlayMsg) - 1] = 0;
-  overlayUntil = millis() + ms;
-}
-
-void drawOverlay() {
-  int w = tft.width();
-  if (passkeyPending) {
-    tft.fillRoundRect(w / 2 - 80, 70, 160, 100, 8, TFT_NAVY);
-    tft.drawRoundRect(w / 2 - 80, 70, 160, 100, 8, TFT_CYAN);
-    tft.setTextDatum(TC_DATUM);
-    tft.setTextColor(TFT_CYAN, TFT_NAVY);
-    tft.setTextSize(1);
-    tft.drawString("pairing code", w / 2, 84);
-    char num[8];
-    snprintf(num, sizeof(num), "%06lu", static_cast<unsigned long>(pairingPasskey));
-    tft.setTextColor(TFT_WHITE, TFT_NAVY);
-    tft.setTextSize(3);
-    tft.drawString(num, w / 2, 105);
-    tft.setTextSize(1);
-    tft.setTextColor(TFT_LIGHTGREY, TFT_NAVY);
-    tft.drawString("enter it in the app", w / 2, 150);
-  } else if (overlayMsg[0] && static_cast<int32_t>(millis() - overlayUntil) < 0) {
-    tft.fillRoundRect(w / 2 - 90, 96, 180, 48, 8, TFT_NAVY);
-    tft.drawRoundRect(w / 2 - 90, 96, 180, 48, 8, TFT_CYAN);
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextColor(TFT_WHITE, TFT_NAVY);
-    tft.setTextSize(1);
-    tft.drawString(overlayMsg, w / 2, 120);
-  }
-}
+// Screen overlays (status messages + the pairing passkey panel) are LVGL
+// widgets on lv_layer_top() — see ui/ui.cpp. The passkey panel is driven
+// from loop() off passkeyPending/pairingPasskey.
 
 // Runs on the loop task: validate + persist "ssid\npass[\ndeviceToken]",
 // then reconnect. The device token (companion API, cloud state sync) is
@@ -646,7 +614,7 @@ void processProvision() {
   char* nl = strchr(buf, '\n');
   if (!nl) {
     Serial.println("PROV: rejected (expected \"ssid\\npass\")");
-    showOverlay("WiFi setup failed", 2500);
+    ui::showOverlay("WiFi setup failed", 2500);
     return;
   }
   *nl = 0;
@@ -663,13 +631,13 @@ void processProvision() {
   if (sl < 1 || sl > 32 || pl > 63 || (pl > 0 && pl < 8)) {
     Serial.printf("PROV: rejected (ssid %u chars, pass %u chars)\n",
                   static_cast<unsigned>(sl), static_cast<unsigned>(pl));
-    showOverlay("WiFi setup failed", 2500);
+    ui::showOverlay("WiFi setup failed", 2500);
     return;
   }
   size_t tl = token ? strlen(token) : 0;
   if (token && (tl < 1 || tl > 128)) {
     Serial.printf("PROV: rejected (token %u chars)\n", static_cast<unsigned>(tl));
-    showOverlay("WiFi setup failed", 2500);
+    ui::showOverlay("WiFi setup failed", 2500);
     return;
   }
 
@@ -692,7 +660,7 @@ void processProvision() {
                   ssid, token ? ", device token updated" : "");
     char msg[48];
     snprintf(msg, sizeof(msg), "Already on %s", ssid);
-    showOverlay(msg, 2500);
+    ui::showOverlay(msg, 2500);
     return;
   }
 
@@ -706,24 +674,24 @@ void processProvision() {
   if (token) strlcpy(deviceToken, token, sizeof(deviceToken));
   Serial.printf("PROV: credentials for '%s' saved%s, reconnecting...\n", ssid,
                 token ? " (+ device token)" : "");
-  showOverlay("WiFi saved, joining...", 4000);
+  ui::showOverlay("WiFi saved, joining...", 4000);
 
   WiFi.disconnect(true);
   timeSynced = setupWiFiTime();   // blocks up to ~10 s, once, user-triggered
   updateStreakFromTime();
-  showOverlay(timeSynced ? "Online!" : "WiFi failed", 2500);
+  ui::showOverlay(timeSynced ? "Online!" : "WiFi failed", 2500);
 }
 
 class SrvCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* s) override {
     appConnected = true;
-    pet.setSyncWait(false, millis() / 1000.0f);
+    ui::setSyncWait(false);
     Serial.println("App connected (demo paused).");
   }
   void onDisconnect(BLEServer* s) override {
     appConnected = false;
     pet.clearLook(millis() / 1000.0f);
-    pet.setSyncWait(true, millis() / 1000.0f);
+    ui::setSyncWait(true);
     dcaNudgePending = true;   // overdue nudge may apply again offline
     s->getAdvertising()->start();    // keep advertising for the next connection
     Serial.println("App disconnected (demo resumed).");
@@ -780,147 +748,58 @@ void setupBLE() {
 
 // ---------------------------------------------------------------------------
 // Hardware buttons (GPIO to GND, uses internal pull-ups)
+//
+// Debounce/press detection and the LVGL keypad indev live in ui/input.cpp
+// (final mapping documented there). main.cpp only owns the semantic actions
+// that touch BLE/pet state, registered with ui::begin() in setup().
 // ---------------------------------------------------------------------------
 
-constexpr uint8_t BUTTON_1_PIN = 4;   // left button
-constexpr uint8_t BUTTON_2_PIN = 37;  // right button
-
-constexpr uint32_t DEBOUNCE_MS   = 50;
-constexpr uint32_t LONG_PRESS_MS = 1000;
-
-struct Button {
-  uint8_t  pin;
-  bool     lastRaw;
-  bool     state;      // debounced state (LOW = pressed)
-  uint32_t lastChange;
-  uint32_t pressedAt;
-  bool     longFired;
-};
-
-Button btn1 = { BUTTON_1_PIN, HIGH, HIGH, 0, 0, false };
-Button btn2 = { BUTTON_2_PIN, HIGH, HIGH, 0, 0, false };
-
-// Reaction cycle for button 1
+// Reaction cycle for BTN1 double-press (pet screen)
 const std::array<PetReaction, 4> REACT_CYCLE = {
   PetReaction::REACT_JUMP, PetReaction::REACT_SPIN,
   PetReaction::REACT_GLOW, PetReaction::REACT_DANCE
 };
 uint8_t reactCycleIdx = 0;
 
-// Mood cycle for long press
+// Mood cycle for BTN1 long-press
 const std::array<PetMoodId, 5> MOOD_CYCLE = {
   PetMoodId::MOOD_CALM, PetMoodId::MOOD_HAPPY, PetMoodId::MOOD_EXCITED,
   PetMoodId::MOOD_SLEEPY, PetMoodId::MOOD_SAD
 };
 uint8_t moodCycleIdx = 0;
 
-void setupButtons() {
-  pinMode(btn1.pin, INPUT_PULLUP);
-  pinMode(btn2.pin, INPUT_PULLUP);
-  Serial.printf("Buttons: GPIO%d (action), GPIO%d (navigate)\n", btn1.pin, btn2.pin);
+// BTN1 short on the pet screen: sync now. With the app connected it is
+// authoritative, so ask it to resend state + plans ("sync:req"); standalone,
+// run the Wi-Fi sync (relay + prices) on the poll task.
+void actionSyncNow(float nowSec) {
+  (void)nowSec;
+  if (appConnected) {
+    pCharacteristic->setValue("sync:req");
+    pCharacteristic->notify();
+    blePushState(pet.state());   // restore the snapshot as the read value
+    ui::enqueueToast("syncing...");
+    Serial.println("BTN1: sync requested from app");
+  } else {
+    syncRequested = true;
+    ui::enqueueToast("syncing...");
+    Serial.println("BTN1: Wi-Fi sync requested");
+  }
 }
 
-// Returns true on short-press release, sets longFired on long press.
-bool handleButton(Button& b, bool& longPress) {
-  bool raw = digitalRead(b.pin);
-  uint32_t now = millis();
-
-  if (raw != b.lastRaw) {
-    b.lastChange = now;
-    b.lastRaw = raw;
-  }
-
-  longPress = false;
-
-  if ((now - b.lastChange) > DEBOUNCE_MS && raw != b.state) {
-    b.state = raw;
-    if (b.state == LOW) {           // pressed
-      b.pressedAt = now;
-      b.longFired = false;
-    } else {                        // released
-      if (!b.longFired && (now - b.pressedAt) < LONG_PRESS_MS) {
-        return true;                // short press
-      }
-    }
-  }
-
-  if (b.state == LOW && !b.longFired && (now - b.pressedAt) >= LONG_PRESS_MS) {
-    b.longFired = true;
-    longPress = true;               // long press detected
-  }
-
-  return false;
+void actionCycleReaction(float nowSec) {
+  PetReaction r = REACT_CYCLE[reactCycleIdx];
+  reactCycleIdx = (reactCycleIdx + 1) % REACT_CYCLE.size();
+  pet.react(r, nowSec);
+  Serial.printf("BTN1 double: reaction %u\n", static_cast<unsigned>(r));
 }
 
-void handleButtons(float nowSec) {
-  bool long1, long2;
-  bool short1 = handleButton(btn1, long1);
-  bool short2 = handleButton(btn2, long2);
-
-  // BTN1 = action, BTN2 = navigate (see WIRING.md).
-
-  // BTN1 short: context action — sync now on the pet page, next plan card
-  // on the DCA positions page. Double-press: cycle reactions.
-  static uint32_t lastShort1 = 0;
-  if (short1) {
-    if (millis() - lastShort1 < 500) {
-      lastShort1 = 0;
-      PetReaction r = REACT_CYCLE[reactCycleIdx];
-      reactCycleIdx = (reactCycleIdx + 1) % REACT_CYCLE.size();
-      pet.react(r, nowSec);
-      Serial.printf("BTN1 double: reaction %u\n", static_cast<unsigned>(r));
-    } else {
-      lastShort1 = millis();
-      if (pet.dcaPageVisible()) {
-        pet.nextDcaCard(nowSec);
-        Serial.println("BTN1: next DCA plan");
-      } else if (appConnected) {
-        // Wallet app connected over BLE: it is authoritative, so ask it to
-        // resend state + plans (see "sync:req" in BLE_PROTOCOL.md).
-        pCharacteristic->setValue("sync:req");
-        pCharacteristic->notify();
-        blePushState(pet.state());   // restore the snapshot as the read value
-        pet.enqueueToast("syncing...", nowSec);
-        Serial.println("BTN1: sync requested from app");
-      } else {
-        // Standalone: run the Wi-Fi sync (relay + prices) on the poll task.
-        syncRequested = true;
-        pet.enqueueToast("syncing...", nowSec);
-        Serial.println("BTN1: Wi-Fi sync requested");
-      }
-    }
-  }
-
-  // BTN2 short: switch page (pet <-> DCA positions). Double-press: resume
-  // the carousel auto-rotate (drops a pinned plan).
-  static uint32_t lastShort2 = 0;
-  if (short2) {
-    if (millis() - lastShort2 < 500) {
-      lastShort2 = 0;
-      pet.unpinDcaPlan();
-      Serial.println("BTN2 double: carousel auto-rotate");
-    } else {
-      lastShort2 = millis();
-      pet.toggleDcaPage();
-      Serial.printf("BTN2: page %s\n", pet.dcaPageVisible() ? "DCA" : "pet");
-    }
-  }
-
-  // BTN1 long press: cycle mood
-  if (long1) {
-    PetMoodId m = MOOD_CYCLE[moodCycleIdx];
-    moodCycleIdx = (moodCycleIdx + 1) % MOOD_CYCLE.size();
-    mood = static_cast<uint8_t>(m);
-    pet.setMood(m, nowSec);
-    blePushState(pet.state());
-    Serial.printf("BTN1 long: mood=%u\n", mood);
-  }
-
-  // BTN2 long press: jump back to the pet page
-  if (long2) {
-    pet.showPetPage();
-    Serial.println("BTN2 long: pet page");
-  }
+void actionCycleMood(float nowSec) {
+  PetMoodId m = MOOD_CYCLE[moodCycleIdx];
+  moodCycleIdx = (moodCycleIdx + 1) % MOOD_CYCLE.size();
+  mood = static_cast<uint8_t>(m);
+  pet.setMood(m, nowSec);
+  blePushState(pet.state());
+  Serial.printf("BTN1 long: mood=%u\n", mood);
 }
 
 // ---------------------------------------------------------------------------
@@ -950,7 +829,7 @@ void updateBattery() {
 
   int mv = static_cast<int>(analogReadMilliVolts(BATTERY_ADC_PIN) * BATTERY_DIVIDER);
   if (mv < BATTERY_PRESENT_MV) {   // divider reads nothing: USB-powered
-    pet.clearBattery();
+    ui::clearBattery();
     ema = -1.0f;
     return;
   }
@@ -960,7 +839,7 @@ void updateBattery() {
   int pct = static_cast<int>((ema - BATTERY_EMPTY_MV) * 100.0f /
                              (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
   pct = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
-  pet.setBattery(static_cast<uint8_t>(pct));
+  ui::setBattery(static_cast<uint8_t>(pct));
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,7 +962,7 @@ constexpr uint32_t DCA_POLL_MS = 30UL * 60UL * 1000UL;   // 30 min
 #define DCA_FIRST_POLL_MS 60000      // first poll 1 min after boot (sim: less)
 #endif
 
-// Toasts stashed by the poll task, drained to pet.enqueueToast on the loop
+// Toasts stashed by the poll task, drained to ui::enqueueToast on the loop
 // task (same pattern as cmdBuf: all pet access happens on the loop task).
 char toastStash[3][24];
 volatile uint8_t toastHead = 0;
@@ -1559,27 +1438,33 @@ void setup() {
   showSplash(1500);
 
   loadStats();               // restore streak/points before BLE advertises them
-  loadPlans();               // restore DCA plan slots (dcaN blobs)
   loadWiFiCreds();           // app-provisioned credentials override config.h
 
+  // Boot status is still drawn direct-to-TFT: LVGL takes over after Wi-Fi.
   showBootStatus("WiFi...");
   setupWiFiTime();
   updateStreakFromTime();    // may bump streak if a new day started
   showBootStatus(timeSynced ? "Time synced" : "Offline mode");
   delay(800);
 
+  pet.begin(&tft, 88.0f);    // smaller pet, room for the stats bar
+  pet.setState(PetState::PET_EGG, millis() / 1000.0f);
+
+  // LVGL takes over the display: pet canvas + chrome widgets. Button
+  // semantics that touch BLE/pet state stay here as callbacks.
+  ui::Actions actions = { actionSyncNow, actionCycleReaction, actionCycleMood };
+  ui::begin(&tft, &pet, actions);
+  ui::setSubStage(subStage);
+
+  loadPlans();               // restore DCA plan slots (dcaN blobs) -> UI
 #ifdef DCA_DEMO_SEED
   seedDemoPlans();           // sim build: placeholder xStocks plans
 #endif
 
-  pet.begin(&tft, 88.0f);    // smaller pet, room for the stats bar
-  pet.setState(PetState::PET_EGG, millis() / 1000.0f);
-
-  setupButtons();
   setupBattery();
   setupBLE();
   blePushState(pet.state());
-  pet.setSyncWait(true, millis() / 1000.0f);   // advertise -> waiting scene
+  ui::setSyncWait(true);     // advertise -> waiting scene
 
   // Standalone DCA mirror: polls the relay + price feeds while the app is
   // disconnected. 12 KB stack: TLS handshakes (WiFiClientSecure) are hungry.
@@ -1597,19 +1482,30 @@ void loop() {
   uint32_t nowMs = millis();
   float nowSec = nowMs / 1000.0f;
 
+  // Pet scene renders at the FRAME_MS cadence; LVGL (buttons, timers,
+  // screen flush) runs every pass.
   if (nowMs - lastFrame >= FRAME_MS) {
     lastFrame = nowMs;
-    pet.render(nowSec);
-    drawOverlay();   // pairing passkey / status messages ride over the frame
+    ui::renderPetFrame(nowSec);
   }
+  ui::update();
 
-  handleButtons(nowSec);
   updateBattery();
   if (cmdPending) processCommand();
   if (provPending) processProvision();
 
+  // Pairing passkey panel rides over everything while pairing is pending.
+  static bool passkeyShown = false;
+  if (passkeyPending && !passkeyShown) {
+    ui::showPasskey(pairingPasskey);
+    passkeyShown = true;
+  } else if (!passkeyPending && passkeyShown) {
+    ui::hidePasskey();
+    passkeyShown = false;
+  }
+
   // Wall clock for the DCA countdown text (0 = never synced -> "--").
-  pet.setEpoch(timeSynced ? static_cast<uint32_t>(time(nullptr)) : 0);
+  ui::setEpoch(timeSynced ? static_cast<uint32_t>(time(nullptr)) : 0);
 
   // Poll task handoffs: stashed gain toasts, then updated plan slots.
   while (toastTail != toastHead) {
@@ -1618,18 +1514,18 @@ void loop() {
     memcpy(t, toastStash[toastTail % 3], sizeof(t));
     toastTail++;
     portEXIT_CRITICAL(&toastMux);
-    pet.enqueueToast(t, nowSec);
+    ui::enqueueToast(t);
   }
   if (plansDirty) {
     plansDirty = false;
     savePlans();
     for (size_t i = 0; i < dcaCount; i++)
-      pet.setDcaPlan(static_cast<uint8_t>(i), plans[i], planOverdue[i]);
+      ui::setDcaPlan(static_cast<uint8_t>(i), plans[i], planOverdue[i]);
     dcaNudgePending = true;
   }
   if (priceDirty) {
     priceDirty = false;
-    pet.setSolUsd(solUsdRate);
+    ui::setSolUsd(solUsdRate);
     prefs.begin("finagotchi", false);
     prefs.putFloat("solUsd", solUsdRate);
     prefs.end();

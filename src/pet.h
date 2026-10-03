@@ -16,6 +16,12 @@
     burst on evolve
 
   render(now) is a pure function of time; setters are dated.
+
+  Scene engine ONLY: all chrome (stats bar, battery, DCA views, toasts,
+  sync beacon) lives in the LVGL UI layer (src/ui/). render() draws the
+  scene into the TFT_eSprite and does NOT push it to the panel — the UI
+  layer binds the framebuffer to an LVGL canvas and its flush owns the
+  display.
 */
 
 #pragma once
@@ -107,55 +113,21 @@ public:
   PetMoodId mood() const { return curMood; }
   PetItem item() const { return curItem; }
 
-  // 12-stage sub-stage (1-12) drives the on-screen stage badge and subtle
-  // visual tweaks while the base PetState stays one of the 4 engine forms.
-  void setSubStage(uint8_t subStage);
-  uint8_t subStage() const { return curSubStage; }
-
-  // Bottom stats bar: streak days / points / happiness (0-100).
-  void setStats(uint32_t streakDays, uint32_t points, uint8_t happiness);
-
-  // Top-right battery indicator (0-100). clearBattery() hides it (USB power,
-  // no battery sensed).
-  void setBattery(uint8_t pct);
-  void clearBattery();
-
-  // Waiting-for-sync scene: waiting mood + pulsing beacon overlay while the
-  // device advertises for the app. Restores the previous mood when done.
+  // Waiting-for-sync mood side-effect (waiting mood while the device
+  // advertises, previous mood restored after). The beacon visual is an
+  // lv_spinner in the UI layer (ui::setSyncWait wraps both).
   void setSyncWait(bool on, float nowSec);
   bool syncWaiting() const { return syncWait; }
 
-  // DCA plan carousel in the stats-bar area + "+n TICKER" gain toasts.
-  // setDcaPlan stores a copy; overdue marks the slot with an amber ring.
-  void setDcaPlan(uint8_t idx, const DcaPlan& p, bool overdue);
-  void clearDcaPlans();
-  uint8_t dcaPlanCount() const { return dcaCount; }
-
-  // Wall clock for the countdown text; 0 = never synced, shows "--".
-  void setEpoch(uint32_t epoch);
-
-  // SOL/USD rate for the positions page amount toggle (BLE solusd:,
-  // NVS-persisted); <= 0 = unknown, amount stays in SOL only.
-  void setSolUsd(float rate) { solUsd = rate; }
-
-  // Button hooks: long-press pins the next plan for 30 s, double-press
-  // resumes the 4 s auto-rotate.
-  void pinNextDcaPlan(float nowSec);
-  void unpinDcaPlan();
-
-  // dca:hit celebration: LevelUpAnimation sparkle burst + float-up toast.
+  // dca:hit celebration: LevelUpAnimation sparkle burst.
   void sparkleBurst(float nowSec) { burstT = nowSec; }
-  void enqueueToast(const char* text, float nowSec);
 
-  // Second page: full-screen DCA positions view with token logos.
-  // Buttons: BTN2 navigates pages, BTN1 is the context action (manual sync
-  // on the pet page, next plan card on the DCA page). Local UI only.
-  void toggleDcaPage() { pageDca = !pageDca; }
-  void showPetPage() { pageDca = false; }
-  bool dcaPageVisible() const { return pageDca; }
-  void nextDcaCard(float nowSec);   // BTN1 action on the DCA page
+  void render(float nowSec);        // draw one frame into the sprite (no push)
 
-  void render(float nowSec);        // draw one frame
+  // LVGL canvas bridge: the sprite framebuffer the scene renders into.
+  uint8_t* frameBuffer();
+  int16_t  frameWidth() const;
+  int16_t  frameHeight() const;
 
   // face.ts eyePoses output: position + tangent basis + depth
   struct EyePose { float x, y, a, b, c, d, depth; };
@@ -180,7 +152,6 @@ private:
   float       R = 105.0f;
 
   PetState  cur = PetState::PET_EGG;
-  uint8_t   curSubStage = 1;
   float     tCur = 0.0f;
 
   // Departure pose snapshot (engine.ts departFige): the pose visible at the
@@ -207,45 +178,9 @@ private:
   float     reactT = -10.0f;
   float     burstT = -10.0f;
 
-  // Bottom stats bar
-  uint32_t  statsStreak = 0;
-  uint32_t  statsPoints = 0;
-  uint8_t   statsHappy = 50;
-
-  // Battery indicator
-  uint8_t   batteryPct = 100;
-  bool      batteryKnown = false;
-
-  // Waiting-for-sync scene
+  // Waiting-for-sync mood side-effect
   bool      syncWait = false;
   PetMoodId preSyncMood = PetMoodId::MOOD_CALM;
-
-  // DCA plan carousel (stats-bar area)
-  DcaPlan   dca[kDcaMaxPlans] = {};
-  bool      dcaOverdue[kDcaMaxPlans] = {};
-  uint8_t   dcaCount = 0;             // slots in use (0..kDcaMaxPlans)
-  uint32_t  nowEpoch = 0;             // wall clock; 0 = never synced
-  uint8_t   dcaShow = 0;              // slot currently on screen
-  uint8_t   dcaPrevShow = 0;          // slot blending out
-  float     dcaShowT = -10.0f;        // last slot change (0.45 s blend)
-  float     dcaRotateT = 0.0f;        // last auto-rotate tick (4 s)
-  int8_t    dcaPinned = -1;           // >=0: pinned slot, overrides rotate
-  float     dcaPinUntil = 0.0f;
-
-  // Gain toasts: queue of 3 ("+n TICKER"), floats up from the stats bar
-  struct Toast { char text[24]; float t0; };
-  Toast     toasts[3] = {{ "", -100.0f }, { "", -100.0f }, { "", -100.0f }};
-
-  // Page switch: false = pet scene, true = DCA positions page
-  bool      pageDca = false;
-
-  // DCA positions card view (one plan per screen, slide transition)
-  uint8_t   dcaCard = 0;
-  uint8_t   dcaCardPrev = 0;
-  float     dcaCardT = -10.0f;
-
-  // SOL/USD rate for the amount toggle (0 = unknown -> SOL only)
-  float     solUsd = 0.0f;
 
   // screen-space draw buffers
   float dx[NRAD], dy[NRAD];
@@ -275,10 +210,4 @@ private:
   void  drawItem(const Anchor& an);   // anchored accessory artwork
   void  drawShirt(float cx, float cy);  // fitted tee from the body contour
   void  drawBurst(float nowSec, float cx, float cy);
-  void  drawStatsBar();
-  void  drawBattery();
-  void  drawSyncWait(float nowSec, float cx, float cy);
-  void  drawDcaLine(float nowSec);    // plan carousel line (stats-bar area)
-  void  drawToasts(float nowSec);     // gain toasts floating up
-  void  drawDcaPage(float nowSec);    // full-screen DCA positions view
 };
