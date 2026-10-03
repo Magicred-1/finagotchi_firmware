@@ -143,6 +143,7 @@ truncated away.
 | `substage:<1-12>` | Set the visible 12-stage name badge without changing the base shape |
 | `mood:<0-5>` | Blend to emotion (0.45 s ease) |
 | `item:<0-5>` | Equip collectible (instant) |
+| `bg:<name>` | Set the scene backdrop theme: `default` / `aurora` / `sunset` / `midnight` / `galaxy` / `gold` (mirrors the app's background picker). Optional — old apps never send it, unknown names are ignored; not persisted (the app is authoritative and can re-push on connect) |
 | `look:<yaw>,<pitch>` | Steer gaze, degrees (yaw ±30, pitch ±25) |
 | `look:off` | Resume idle gaze wander |
 | `react:jump` / `spin` / `glow` / `dance` | Play a reaction animation |
@@ -274,9 +275,11 @@ messages the success green (#5DE2A6).
 ## On-screen stats row
 
 The bottom of the pet screen shows a stats row: streak days, points
-(k-suffix over 10k), happiness — captions over values. Pet is scaled to
-R=88 and centered slightly above middle to make room. A hint bar above the
-stats shows what the two buttons do on the current screen.
+(k-suffix over 10k), and happiness as a small bar (the app's HappinessBar
+pattern). Above it, a slim stage track fills cyan toward the 12-stage cap
+(PetCanvas stageTrack). Pet is scaled to R=88 and centered slightly above
+middle to make room. A hint bar above the stats shows what the two buttons
+do on the current screen.
 
 The day-based streak check is paused while connected (the app is
 authoritative); it resumes on disconnect for offline mode.
@@ -291,6 +294,11 @@ mood; on disconnect the scene returns.
 
 ## Firmware rendering notes (what the device reproduces)
 
+- Scene backdrop: two-zone sky/ground, tinted per the app's
+  `BACKGROUND_COLORS` themes (exact rgba-over-#07111F composites), and the
+  PetCanvas ground shadow — a dark ellipse under the creature that mirrors
+  the idle float (tightens/fades as the pet lifts) and squashes with the
+  reaction scale
 - Radial bodies from `profiles.ts` (64 samples, same-angle morph lerp)
 - Sphere-projected eyes from `face.ts` (`eyePoses` tangent basis, real 3D
   foreshortening, depth fade approximated by blending toward the body color)

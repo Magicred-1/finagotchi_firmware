@@ -119,6 +119,16 @@ public:
   void setSyncWait(bool on, float nowSec);
   bool syncWaiting() const { return syncWait; }
 
+  // PetCanvas scene: two-zone sky/ground backdrop tinted per the app's
+  // BACKGROUND_COLORS themes (rgba composites over #07111F), plus the
+  // animated ground shadow that mirrors the idle float / reactions.
+  // 6 themes, default = index 0 (the app default).
+  void setSceneTheme(uint8_t id);
+  uint8_t sceneTheme() const { return curTheme; }
+  static const char* sceneThemeName(uint8_t id);
+  static int sceneThemeForName(const char* name);   // -1 when unknown
+  static constexpr uint8_t kSceneThemeCount = 6;
+
   // dca:hit celebration: LevelUpAnimation sparkle burst.
   void sparkleBurst(float nowSec) { burstT = nowSec; }
 
@@ -182,6 +192,11 @@ private:
   bool      syncWait = false;
   PetMoodId preSyncMood = PetMoodId::MOOD_CALM;
 
+  // Scene backdrop theme (PetCanvas BACKGROUND_COLORS composites, cached)
+  uint8_t   curTheme = 0;
+  uint16_t  skyColor = 0, groundColor = 0;
+  uint8_t   groundR = 0, groundG = 0, groundB = 0;   // for the shadow blend
+
   // screen-space draw buffers
   float dx[NRAD], dy[NRAD];
 
@@ -210,4 +225,6 @@ private:
   void  drawItem(const Anchor& an);   // anchored accessory artwork
   void  drawShirt(float cx, float cy);  // fitted tee from the body contour
   void  drawBurst(float nowSec, float cx, float cy);
+  void  drawBackdrop();               // sky/ground zones (scene theme)
+  void  drawShadow(float nowSec, float cx, float rScale);  // PetCanvas groundShadow
 };

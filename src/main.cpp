@@ -335,6 +335,17 @@ void handleCommand(const char* cmd) {
     pet.setMood(static_cast<PetMoodId>(mood), nowSec);
     blePushState(pet.state());
   }
+  else if (strncmp(cmd, "bg:", 3) == 0) {
+    // Scene backdrop theme (PetCanvas BACKGROUND_COLORS names). Optional:
+    // old apps never send it, unknown names are ignored.
+    int t = FinagotchiPet::sceneThemeForName(cmd + 3);
+    if (t >= 0) {
+      pet.setSceneTheme(static_cast<uint8_t>(t));
+      Serial.printf("BLE: scene theme '%s'\n", FinagotchiPet::sceneThemeName(static_cast<uint8_t>(t)));
+    } else {
+      Serial.printf("BLE: unknown bg '%s'\n", cmd + 3);
+    }
+  }
   else if (strncmp(cmd, "item:", 5) == 0) {
     item = static_cast<uint8_t>(atoi(cmd + 5));
     if (item >= kItemCount) item = 0;   // unknown ids degrade to none

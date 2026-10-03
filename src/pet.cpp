@@ -285,6 +285,36 @@ const std::array<ReactKey, 9> KEYS_DANCE = {{{0,1,0},{0.11f,1.06f,-14},{0.22f,0.
                                              {0.44f,0.94f,14},{0.55f,1.06f,-14},{0.66f,0.94f,14},
                                              {0.77f,1.04f,-8},{0.95f,1,0}}};
 
+// ---------------------------------------------------------------------------
+// PetCanvas scene themes — store.ts BACKGROUND_COLORS, verbatim. Each stop
+// is an rgba tint overlaid on the navy scene background #07111F; stop 1
+// tints the sky, stop 2 the ground band. Effective RGB565 colors are
+// composited in setSceneTheme().
+// ---------------------------------------------------------------------------
+
+struct SceneThemeDef {
+  const char* name;
+  uint8_t r1, g1, b1;  float a1;   // sky overlay
+  uint8_t r2, g2, b2;  float a2;   // ground overlay
+};
+
+const SceneThemeDef SCENE_THEMES[FinagotchiPet::kSceneThemeCount] = {
+  { "default",  93,226,166, 0.06f,   93,226,166, 0.12f },
+  { "aurora",   53,215,255, 0.08f,  192,140,255, 0.14f },
+  { "sunset",  255,142,158, 0.08f,  255,193, 94, 0.14f },
+  { "midnight", 30, 41, 59, 0.50f,   53,215,255, 0.10f },
+  { "galaxy",   99, 50,180, 0.18f,   53,215,255, 0.14f },
+  { "gold",    255,193, 94, 0.14f,  255,142, 74, 0.12f },
+};
+
+// rgba overlay composited over the app navy #07111F.
+void compositeOverNavy(uint8_t or_, uint8_t og, uint8_t ob, float a,
+                       uint8_t& r, uint8_t& g, uint8_t& b) {
+  r = static_cast<uint8_t>(0x07 * (1.0f - a) + or_ * a);
+  g = static_cast<uint8_t>(0x11 * (1.0f - a) + og * a);
+  b = static_cast<uint8_t>(0x1F * (1.0f - a) + ob * a);
+}
+
 } // namespace
 
 // ---------------------------------------------------------------------------
@@ -301,6 +331,28 @@ void FinagotchiPet::begin(TFT_eSPI* display, float scale) {
   if (spr->createSprite(tft->width(), tft->height()) == nullptr) {
     spr->createSprite(200, 200);   // RAM fallback
   }
+  setSceneTheme(0);   // app default background
+}
+
+void FinagotchiPet::setSceneTheme(uint8_t id) {
+  if (id >= kSceneThemeCount) id = 0;
+  curTheme = id;
+  const SceneThemeDef& t = SCENE_THEMES[id];
+  uint8_t r, g, b;
+  compositeOverNavy(t.r1, t.g1, t.b1, t.a1, r, g, b);
+  if (spr) skyColor = spr->color565(r, g, b);
+  compositeOverNavy(t.r2, t.g2, t.b2, t.a2, groundR, groundG, groundB);
+  if (spr) groundColor = spr->color565(groundR, groundG, groundB);
+}
+
+const char* FinagotchiPet::sceneThemeName(uint8_t id) {
+  return id < kSceneThemeCount ? SCENE_THEMES[id].name : SCENE_THEMES[0].name;
+}
+
+int FinagotchiPet::sceneThemeForName(const char* name) {
+  for (uint8_t i = 0; i < kSceneThemeCount; i++)
+    if (strcmp(name, SCENE_THEMES[i].name) == 0) return i;
+  return -1;
 }
 
 void FinagotchiPet::end() {
@@ -828,6 +880,38 @@ void FinagotchiPet::drawBurst(float nowSec, float cx, float cy) {
 
 // ---------------------------------------------------------------------------
 
+// PetCanvas backdrop: sky zone over the whole frame, ground band on the
+// bottom third, tinted per the scene theme (subtle — the creature stays
+// the focus).
+void FinagotchiPet::drawBackdrop() {
+  int w = spr->width(), h = spr->height();
+  spr->fillSprite(skyColor);
+  spr->fillRect(0, h * 2 / 3, w, h - h * 2 / 3, groundColor);
+}
+
+// PetCanvas groundShadow: a dark ellipse (#02060C) under the creature.
+// Mirrors the idle float exactly like the app (scaleX 1 - lift*0.12,
+// opacity base - lift*0.15 — the shadow tightens and fades as the pet
+// lifts), and squashes/fades with the reaction scale: a jump (rScale up
+// to 1.28) reads as airborne, a dance wobbles it. Blended over the live
+// ground color so it sits naturally in every theme.
+void FinagotchiPet::drawShadow(float nowSec, float cx, float rScale) {
+  float lift = sinf(fmodf(nowSec, 4.0f) / 4.0f * TWO_PI * 0.45f);   // = idle float phase
+  float react = clampf(2.0f - rScale, 0.6f, 1.0f);
+  float rx = R * 0.6f * (1.0f - lift * 0.12f) * react;
+  float ry = fmaxf(2.0f, R * 0.09f * react);
+  float alpha = clampf((0.55f - lift * 0.15f) * react, 0.15f, 0.75f);
+  int sy = static_cast<int>(spr->height() * 0.44f + R * 0.62f);
+  uint16_t col = spr->color565(
+      static_cast<uint8_t>(groundR * (1.0f - alpha) + 0x02 * alpha),
+      static_cast<uint8_t>(groundG * (1.0f - alpha) + 0x06 * alpha),
+      static_cast<uint8_t>(groundB * (1.0f - alpha) + 0x0C * alpha));
+  spr->fillEllipse(static_cast<int16_t>(cx), static_cast<int16_t>(sy),
+                   static_cast<int32_t>(rx), static_cast<int32_t>(ry), col);
+}
+
+// ---------------------------------------------------------------------------
+
 void FinagotchiPet::render(float nowSec) {
   if (!spr || !spr->created()) return;
 
@@ -890,15 +974,16 @@ void FinagotchiPet::render(float nowSec) {
   float cy = spr->height() * 0.44f + (pose.offY + driftY) * R + idleY;
   float rotC = cosf(rRot * DEG_TO_RAD), rotS = sinf(rRot * DEG_TO_RAD);
 
-  // App background is deep navy #07111F (PetCanvas).
-  uint16_t bgColor = spr->color565(0x07, 0x11, 0x1F);
   uint16_t bodyColor = spr->color565(static_cast<uint8_t>(pose.fr), static_cast<uint8_t>(pose.fg), static_cast<uint8_t>(pose.fb));
 
-  spr->fillSprite(bgColor);
+  // Scene: sky/ground backdrop, then the ground shadow under the creature
+  // (the glow and body draw over both).
+  drawBackdrop();
+  drawShadow(nowSec, cx, rScale);
 
   if (pose.hasGlow) {
     // PetBody glow: same path x1.15 behind the body at 22% opacity,
-    // blended over the navy background.
+    // blended over the scene background.
     uint16_t glowDim = spr->color565(
         static_cast<uint8_t>(pose.gr * 0.22f + 0x07 * 0.78f),
         static_cast<uint8_t>(pose.gg * 0.22f + 0x11 * 0.78f),

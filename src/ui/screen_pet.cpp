@@ -19,12 +19,14 @@ namespace {
 
 lv_obj_t* canvas;
 lv_obj_t* badgeLabel;
+lv_obj_t* stageTrack;
 lv_obj_t* battLabel;
 lv_obj_t* spinner;
 lv_obj_t* spinnerCaption;
 lv_obj_t* chip;
 lv_obj_t* chipLabel;
-lv_obj_t* statVal[3];
+lv_obj_t* statVal[2];
+lv_obj_t* happyBar;
 lv_timer_t* chipRotateTimer;
 
 uint8_t chipSlot = 0;
@@ -107,7 +109,8 @@ lv_obj_t* uiScreenPetCreate() {
                        pet->frameHeight(), LV_COLOR_FORMAT_RGB565_SWAPPED);
   lv_obj_center(canvas);
 
-  // Stage badge (top-left).
+  // Stage badge (top-left), with the slim stage/XP track under it
+  // (PetCanvas stageTrack: white 8% track, primary cyan fill, x/12).
   badgeLabel = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_TEXT);
   lv_obj_set_style_bg_color(badgeLabel, UI_COL_SURFACE, 0);
   lv_obj_set_style_bg_opa(badgeLabel, LV_OPA_COVER, 0);
@@ -115,6 +118,13 @@ lv_obj_t* uiScreenPetCreate() {
   lv_obj_set_style_pad_hor(badgeLabel, UI_SP2, 0);
   lv_obj_set_style_pad_ver(badgeLabel, UI_SP1, 0);
   lv_obj_align(badgeLabel, LV_ALIGN_TOP_LEFT, 10, 6);
+
+  stageTrack = lv_bar_create(scr);
+  lv_obj_set_size(stageTrack, 60, 4);
+  lv_obj_align(stageTrack, LV_ALIGN_TOP_LEFT, 12, 28);
+  lv_bar_set_range(stageTrack, 0, 12);
+  lv_obj_set_style_bg_color(stageTrack, lv_color_hex(0x1B2431), 0);   // white 8% / navy
+  lv_obj_set_style_bg_color(stageTrack, UI_COL_PRIMARY, LV_PART_INDICATOR);
 
   // Battery gauge (top-right): battery symbol + %, colored by level,
   // hidden on USB power.
@@ -158,10 +168,20 @@ lv_obj_t* uiScreenPetCreate() {
     lv_obj_t* cap = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_MUTED);
     lv_label_set_text(cap, CAPTIONS[i]);
     lv_obj_align(cap, LV_ALIGN_BOTTOM_MID, cols[i], -34);
-    statVal[i] = uiThemeLabel(scr, &lv_font_montserrat_14, UI_COL_TEXT);
-    lv_label_set_text(statVal[i], "0");
-    lv_obj_align(statVal[i], LV_ALIGN_BOTTOM_MID, cols[i], -19);
+    if (i < 2) {
+      statVal[i] = uiThemeLabel(scr, &lv_font_montserrat_14, UI_COL_TEXT);
+      lv_label_set_text(statVal[i], "0");
+      lv_obj_align(statVal[i], LV_ALIGN_BOTTOM_MID, cols[i], -19);
+    }
   }
+  // Happiness shows as a small bar (app's HappinessBar pattern) instead of
+  // a raw number; same rose accent the app uses for the heart.
+  happyBar = lv_bar_create(scr);
+  lv_obj_set_size(happyBar, 38, 6);
+  lv_obj_align(happyBar, LV_ALIGN_BOTTOM_MID, cols[2], -23);
+  lv_bar_set_range(happyBar, 0, 100);
+  lv_obj_set_style_bg_color(happyBar, lv_color_hex(0x1B2431), 0);
+  lv_obj_set_style_bg_color(happyBar, UI_COL_DANGER, LV_PART_INDICATOR);
 
   chipRotateTimer = lv_timer_create(chipRotate, 4000, nullptr);
   return scr;
@@ -183,14 +203,15 @@ void uiScreenPetSetStats(uint32_t streakDays, uint32_t points, uint8_t happiness
   lv_label_set_text(statVal[0], buf);
   uiFmtVal(points, buf, sizeof(buf));
   lv_label_set_text(statVal[1], buf);
-  snprintf(buf, sizeof(buf), "%u", happiness > 100 ? 100 : happiness);
-  lv_label_set_text(statVal[2], buf);
+  lv_bar_set_value(happyBar, happiness > 100 ? 100 : happiness, LV_ANIM_OFF);
 }
 
 void uiScreenPetSetSubStage(uint8_t subStage) {
   const char* name = uiStageName(subStage);
   lv_label_set_text(badgeLabel, name);
   lv_obj_set_hidden(badgeLabel, !name[0]);
+  lv_bar_set_value(stageTrack, subStage < 1 ? 1 : (subStage > 12 ? 12 : subStage),
+                   LV_ANIM_ON);
 }
 
 void uiScreenPetSetBattery(int pct) {
