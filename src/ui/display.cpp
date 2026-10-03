@@ -2,11 +2,11 @@
   display.cpp — LVGL v9 display driver over TFT_eSPI.
 
   The whole pipeline renders LV_COLOR_FORMAT_RGB565_SWAPPED (see lv_conf.h):
-  the pet's TFT_eSprite framebuffer and the token-logo PROGMEM arrays are
-  both stored in SPI wire order, so LVGL's draw buffer can be pushed to the
-  panel verbatim (no byte-swap pass anywhere). Two 240x30 partial draw
-  buffers (~28 KB) keep RAM in check; the flush is a blocking pushPixels,
-  same SPI cost as the old full-screen pushSprite.
+  the panel expects big-endian pixels and the pet's TFT_eSprite framebuffer
+  is already big-endian, so LVGL's draw buffer can be pushed to the panel
+  verbatim (no byte-swap pass anywhere). Two 240x30 partial draw buffers
+  (~28 KB) keep RAM in check; the flush is a blocking pushPixels, same SPI
+  cost as the old full-screen pushSprite.
 */
 
 #include "ui_internal.h"

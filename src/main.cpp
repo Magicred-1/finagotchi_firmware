@@ -419,7 +419,7 @@ void handleCommand(const char* cmd) {
     if (sscanf(cmd + 8, "%u:%6s", &n, tick) == 2) {
       char t[24];
       snprintf(t, sizeof(t), "+%u %s", n > 999 ? 999 : n, tick);
-      ui::enqueueToast(t);
+      ui::enqueueRewardToast(t);   // a buy landed: purple celebration toast
       pet.react(PetReaction::REACT_DANCE, nowSec);
       pet.sparkleBurst(nowSec);
       Serial.printf("BLE: dca hit %s\n", t);
@@ -1399,14 +1399,21 @@ uint32_t lastEvolve = 0;
 uint32_t lastStreakCheck = 0;
 
 void showSplash(uint32_t durationMs) {
-  tft.fillScreen(TFT_BLACK);
+  // App navy #07111F (app.json splash background; the logo bitmap is
+  // composited over the same color so the pushed rect is invisible).
+  uint16_t navy = tft.color565(0x07, 0x11, 0x1F);
+  tft.fillScreen(navy);
 
+  // The logo array holds native RGB565; swapBytes puts the bytes in SPI
+  // wire order for the push (the panel wants the high byte first).
   int16_t x = (tft.width() - FINAGOTCHI_LOGO_WIDTH) / 2;
   int16_t y = (tft.height() - FINAGOTCHI_LOGO_HEIGHT) / 2 - 10;
+  tft.setSwapBytes(true);
   tft.pushImage(x, y, FINAGOTCHI_LOGO_WIDTH, FINAGOTCHI_LOGO_HEIGHT, finagotchi_logo);
+  tft.setSwapBytes(false);
 
   tft.setTextDatum(TC_DATUM);
-  tft.setTextColor(TFT_LIGHTGREY, TFT_BLACK);
+  tft.setTextColor(TFT_LIGHTGREY, navy);
   tft.setTextSize(1);
   tft.drawString("(C) Finagotchi", tft.width() / 2, tft.height() - 30);
 
@@ -1415,7 +1422,7 @@ void showSplash(uint32_t durationMs) {
 
 void showBootStatus(const char* msg) {
   tft.setTextDatum(TC_DATUM);
-  tft.setTextColor(TFT_CYAN, TFT_BLACK);
+  tft.setTextColor(TFT_CYAN, tft.color565(0x07, 0x11, 0x1F));
   tft.setTextSize(1);
   tft.drawString(msg, tft.width() / 2, tft.height() - 16);
 }

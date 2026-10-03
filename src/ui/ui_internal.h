@@ -1,24 +1,14 @@
 /*
   ui_internal.h — shared state + cross-module hooks for the src/ui/ layer.
   Not part of the public bridge (that is ui.h); only the ui/*.cpp modules
-  include this.
+  include this. Colors/radii/spacing come from theme.h (app design tokens).
 */
 
 #pragma once
 
 #include <lvgl.h>
 #include "ui.h"
-
-// Palette (matches the app's #07111F navy scene).
-#define UI_NAVY  lv_color_hex(0x07111F)
-#define UI_TEXT  lv_color_hex(0xE6E6F0)
-#define UI_DIM   lv_color_hex(0x50647A)
-#define UI_LINE  lv_color_hex(0x2D2D3C)
-#define UI_MINT  lv_color_hex(0x78FFD6)
-#define UI_CYAN  lv_color_hex(0x22D3EE)
-#define UI_AMBER lv_color_hex(0xFBBF24)
-#define UI_PINK  lv_color_hex(0xF43F5E)
-#define UI_BADGE lv_color_hex(0x1E2D46)
+#include "theme.h"
 
 // Shared UI state, owned by ui.cpp.
 struct UiState {
@@ -37,7 +27,7 @@ struct UiState {
 
   uint32_t epoch = 0;          // wall clock; 0 = never synced
   float    solUsd = 0.0f;      // SOL/USD; <= 0 = unknown
-  bool     amountInSol = false; // BTN1 double on the DCA screen toggles
+  bool     amountInSol = false; // BTN1 double on the portfolio screen toggles
 };
 extern UiState g_ui;
 
@@ -45,8 +35,10 @@ extern UiState g_ui;
 void uiFmtVal(uint32_t v, char* buf, size_t n);
 void uiFmtCountdown(uint32_t nextBuyEpoch, uint32_t nowEpoch, char* buf, size_t n);
 void uiFmtAmount(const DcaPlan& p, char* buf, size_t n);   // honors amountInSol
+void uiFmtUsd(double usd, char* buf, size_t n);            // "$1,234.56" / "$12.3k"
 const char* uiStageName(uint8_t subStage);
 bool uiPlanOverdue(uint8_t slot);   // flagged, or epoch simply passed
+double uiPlanValueUsd(const DcaPlan& p);   // holdings x price; <=0 = unknown
 
 // display.cpp
 void uiDisplayInit(TFT_eSPI* tft);
@@ -62,16 +54,17 @@ void uiScreenPetSyncWait(bool on);
 void uiScreenPetSetStats(uint32_t streakDays, uint32_t points, uint8_t happiness);
 void uiScreenPetSetSubStage(uint8_t subStage);
 void uiScreenPetSetBattery(int pct);     // <0 hides (USB power)
-void uiScreenPetToast(const char* text); // toasts ride lv_layer_top()
+void uiScreenPetToast(const char* text, bool reward); // toasts ride lv_layer_top()
 void uiScreenPetPlansChanged();          // next-buy chip refresh
 void uiScreenPetChipAdvance();           // BTN2 double: manual rotate
 void uiScreenPetTick();                  // 1 s countdown refresh
 
-// screen_dca.cpp
+// screen_dca.cpp (portfolio / positions)
 lv_obj_t* uiScreenDcaCreate();
 void uiScreenDcaShow();                  // BTN2 short on the pet screen
 void uiScreenPetShow();                  // BTN2 long: back to the pet
 void uiScreenDcaPlansChanged();
+void uiScreenDcaHeaderChanged();         // totals: prices / SOL rate moved
 void uiScreenDcaTick();                  // 1 s countdown refresh
 bool uiScreenDcaDetailOpen();
 void uiScreenDcaCloseDetail();

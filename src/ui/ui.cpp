@@ -28,15 +28,15 @@ void overlayInit() {
   overlayBox = lv_obj_create(lv_layer_top());
   lv_obj_set_size(overlayBox, 180, 48);
   lv_obj_align(overlayBox, LV_ALIGN_CENTER, 0, 0);
-  lv_obj_set_style_bg_color(overlayBox, UI_NAVY, 0);
+  lv_obj_set_style_bg_color(overlayBox, UI_COL_BG, 0);
   lv_obj_set_style_bg_opa(overlayBox, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(overlayBox, 8, 0);
   lv_obj_set_style_border_width(overlayBox, 1, 0);
-  lv_obj_set_style_border_color(overlayBox, UI_CYAN, 0);
+  lv_obj_set_style_border_color(overlayBox, UI_COL_PRIMARY, 0);
   lv_obj_set_style_pad_all(overlayBox, 4, 0);
   lv_obj_set_scrollable(overlayBox, false);
   overlayLabel = lv_label_create(overlayBox);
-  lv_obj_set_style_text_color(overlayLabel, UI_TEXT, 0);
+  lv_obj_set_style_text_color(overlayLabel, UI_COL_TEXT, 0);
   lv_obj_set_style_text_align(overlayLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_center(overlayLabel);
   lv_obj_set_hidden(overlayBox, true);
@@ -48,27 +48,27 @@ void overlayInit() {
   passkeyBox = lv_obj_create(lv_layer_top());
   lv_obj_set_size(passkeyBox, 160, 100);
   lv_obj_align(passkeyBox, LV_ALIGN_CENTER, 0, -20);
-  lv_obj_set_style_bg_color(passkeyBox, UI_NAVY, 0);
+  lv_obj_set_style_bg_color(passkeyBox, UI_COL_BG, 0);
   lv_obj_set_style_bg_opa(passkeyBox, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(passkeyBox, 8, 0);
   lv_obj_set_style_border_width(passkeyBox, 1, 0);
-  lv_obj_set_style_border_color(passkeyBox, UI_CYAN, 0);
+  lv_obj_set_style_border_color(passkeyBox, UI_COL_PRIMARY, 0);
   lv_obj_set_scrollable(passkeyBox, false);
 
   lv_obj_t* cap = lv_label_create(passkeyBox);
   lv_obj_set_style_text_font(cap, &lv_font_montserrat_12, 0);
-  lv_obj_set_style_text_color(cap, UI_CYAN, 0);
+  lv_obj_set_style_text_color(cap, UI_COL_PRIMARY, 0);
   lv_label_set_text(cap, "pairing code");
   lv_obj_align(cap, LV_ALIGN_TOP_MID, 0, 6);
 
   passkeyNum = lv_label_create(passkeyBox);
   lv_obj_set_style_text_font(passkeyNum, &lv_font_montserrat_28, 0);
-  lv_obj_set_style_text_color(passkeyNum, UI_TEXT, 0);
+  lv_obj_set_style_text_color(passkeyNum, UI_COL_TEXT, 0);
   lv_obj_align(passkeyNum, LV_ALIGN_CENTER, 0, 0);
 
   lv_obj_t* sub = lv_label_create(passkeyBox);
   lv_obj_set_style_text_font(sub, &lv_font_montserrat_12, 0);
-  lv_obj_set_style_text_color(sub, UI_DIM, 0);
+  lv_obj_set_style_text_color(sub, UI_COL_MUTED, 0);
   lv_label_set_text(sub, "enter it in the app");
   lv_obj_align(sub, LV_ALIGN_BOTTOM_MID, 0, -6);
 
@@ -89,6 +89,7 @@ void ui::begin(TFT_eSPI* tft, FinagotchiPet* pet, const Actions& actions) {
 
   lv_init();
   uiDisplayInit(tft);
+  uiThemeInit();
   g_ui.group = lv_group_create();
   g_ui.petScreen = uiScreenPetCreate();
   g_ui.dcaScreen = uiScreenDcaCreate();
@@ -156,10 +157,15 @@ void ui::setEpoch(uint32_t epoch) {
 void ui::setSolUsd(float rate) {
   g_ui.solUsd = rate;
   if (rate <= 0.0f && g_ui.amountInSol) g_ui.amountInSol = false;
+  uiScreenDcaHeaderChanged();   // SOL equivalent + SOL-denominated labels
 }
 
 void ui::enqueueToast(const char* text) {
-  uiScreenPetToast(text);
+  uiScreenPetToast(text, false);
+}
+
+void ui::enqueueRewardToast(const char* text) {
+  uiScreenPetToast(text, true);   // dca:hit: app purple, the "magic moment"
 }
 
 void ui::showOverlay(const char* msg, uint32_t ms) {

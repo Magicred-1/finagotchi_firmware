@@ -1,15 +1,18 @@
 /*
-  screen_dca.cpp — LVGL DCA positions screen (replaces drawDcaPage):
-  - scrollable column of up to kDcaMaxPlans plan cards; each card shows the
-    token logo (lv_image from the PROGMEM RGB565 arrays in token_logos.h,
-    with a procedural monogram-chip fallback for unknown tickers), ticker,
-    buy amount (USD, or SOL after the BTN1-double unit toggle), next-buy
-    countdown and buys/held
-  - overdue plans get an amber border
+  screen_dca.cpp — LVGL Portfolio/Positions screen (app design language):
+  - header: total portfolio value = sum(holdings x price_usd) across plans,
+    big USD number with a SOL equivalent under it when the SOL/USD rate is
+    known (BLE solusd: / NVS / standalone price feed)
+  - scrollable column of up to kDcaMaxPlans position cards: token logo
+    (lv_image from the PROGMEM RGB565 arrays in token_logos.h, or a
+    monogram-chip fallback), ticker, position value (USD, or SOL after the
+    BTN1-double unit toggle), next-buy countdown, holdings/buy line
+  - overdue plans get the warning-amber treatment
   - focus group driven by the keypad indev: BTN2 short focuses the next
-    card (framework focus visuals), BTN1 short opens the detail view
-  - detail view: big price, stats grid, countdown + progress bar
+    card (cyan framework focus ring), BTN1 short opens/closes the detail
+  - detail view: price, stats grid, countdown + progress bar
   - empty state with a hint when no plans are mirrored
+  - bottom hint bars on both screens ("1: open   2: next" / "1: back")
 */
 
 #include "ui_internal.h"
@@ -17,7 +20,12 @@
 
 namespace {
 
-// --- token logos (PROGMEM RGB565 arrays, SPI wire order -> SWAPPED cf) ------
+// --- token logos ---------------------------------------------------------------
+// The token_logos.h arrays hold NATIVE (little-endian) RGB565 — verified
+// against the source PNGs. LVGL renders into a big-endian (SWAPPED) draw
+// buffer for the panel, so native descriptors let the blend unit do the
+// byte swap. (Marking them SWAPPED would push bytes verbatim and swap the
+// colors on the panel.)
 
 struct LogoDsc { const char* ticker; lv_image_dsc_t dsc; };
 LogoDsc logos[TOKEN_LOGO_COUNT];
@@ -30,7 +38,7 @@ void buildLogos() {
     logos[i].ticker = TOKEN_LOGOS[i].ticker;
     lv_image_dsc_t& d = logos[i].dsc;
     d.header.magic = LV_IMAGE_HEADER_MAGIC;
-    d.header.cf = LV_COLOR_FORMAT_RGB565_SWAPPED;
+    d.header.cf = LV_COLOR_FORMAT_RGB565;
     d.header.flags = 0;
     d.header.w = TOKEN_LOGO_SIZE;
     d.header.h = TOKEN_LOGO_SIZE;
@@ -107,11 +115,13 @@ lv_color_t tokenColor(const char* ticker) {
 
 lv_obj_t* listScr;
 lv_obj_t* detailScr;
+lv_obj_t* totalVal;
+lv_obj_t* totalSol;
 lv_obj_t* card[kDcaMaxPlans];
 lv_obj_t* cardLogo[kDcaMaxPlans];    // lv_image (logo) — hidden for monograms
 lv_obj_t* cardChip[kDcaMaxPlans];    // monogram fallback circle label
 lv_obj_t* cardTicker[kDcaMaxPlans];
-lv_obj_t* cardAmount[kDcaMaxPlans];
+lv_obj_t* cardValue[kDcaMaxPlans];
 lv_obj_t* cardCountdown[kDcaMaxPlans];
 lv_obj_t* cardSub[kDcaMaxPlans];
 lv_obj_t* emptyLabel;
@@ -126,21 +136,9 @@ lv_obj_t* dCountdown;
 lv_obj_t* dBar;
 
 int8_t detailSlot = -1;
+uint8_t lastPlanCount = 0;
 
 void openDetail(uint8_t slot);   // defined below
-
-lv_obj_t* makeLabel(lv_obj_t* parent, const lv_font_t* font, lv_color_t color) {
-  lv_obj_t* l = lv_label_create(parent);
-  lv_obj_set_style_text_font(l, font, 0);
-  lv_obj_set_style_text_color(l, color, 0);
-  return l;
-}
-
-void styleScreen(lv_obj_t* scr) {
-  lv_obj_set_style_bg_color(scr, UI_NAVY, 0);
-  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-  lv_obj_set_scrollable(scr, false);
-}
 
 // Monogram chip fallback: white initials on the token color (48 px circle).
 void fillChip(lv_obj_t* chip, const char* ticker) {
@@ -150,6 +148,44 @@ void fillChip(lv_obj_t* chip, const char* ticker) {
   else { init[0] = ticker[0]; init[1] = ticker[1]; }
   lv_label_set_text(chip, init);
   lv_obj_set_style_bg_color(chip, tokenColor(ticker), 0);
+}
+
+// Position value text, honoring the SOL/USD unit toggle ("--" unknown).
+void fmtValue(const DcaPlan& p, char* buf, size_t n) {
+  double usd = uiPlanValueUsd(p);
+  if (usd <= 0.0) { strlcpy(buf, "--", n); return; }
+  if (g_ui.amountInSol && g_ui.solUsd > 0.0f)
+    snprintf(buf, n, "%.4g SOL", usd / static_cast<double>(g_ui.solUsd));
+  else
+    uiFmtUsd(usd, buf, n);
+}
+
+// --- header: total portfolio value + SOL equivalent ----------------------------
+
+void headerFill() {
+  double total = 0.0;
+  bool anyPrice = false;
+  for (size_t i = 0; i < g_ui.planCount; i++) {
+    double v = uiPlanValueUsd(g_ui.plans[i]);
+    if (v > 0.0) { total += v; anyPrice = true; }
+  }
+  char buf[20];
+  if (anyPrice) {
+    uiFmtUsd(total, buf, sizeof(buf));
+    lv_obj_set_style_text_color(totalVal, UI_COL_TEXT, 0);
+  } else {
+    strlcpy(buf, g_ui.planCount > 0 ? "$--" : "$0.00", sizeof(buf));
+    lv_obj_set_style_text_color(totalVal, UI_COL_MUTED, 0);
+  }
+  lv_label_set_text(totalVal, buf);
+
+  if (anyPrice && g_ui.solUsd > 0.0f) {
+    snprintf(buf, sizeof(buf), "~%.2f SOL", total / static_cast<double>(g_ui.solUsd));
+    lv_label_set_text(totalSol, buf);
+    lv_obj_set_hidden(totalSol, false);
+  } else {
+    lv_obj_set_hidden(totalSol, true);
+  }
 }
 
 // Fill one card from its plan slot.
@@ -169,23 +205,24 @@ void cardFill(uint8_t slot) {
   }
 
   lv_label_set_text(cardTicker[slot], p.ticker);
-  lv_obj_set_style_text_color(cardTicker[slot], p.enabled ? UI_TEXT : UI_DIM, 0);
+  lv_obj_set_style_text_color(cardTicker[slot], p.enabled ? UI_COL_TEXT : UI_COL_MUTED, 0);
 
   char buf[24];
-  uiFmtAmount(p, buf, sizeof(buf));
-  lv_label_set_text(cardAmount[slot], buf);
+  fmtValue(p, buf, sizeof(buf));
+  lv_label_set_text(cardValue[slot], buf);
 
   char cd[12];
   uiFmtCountdown(p.nextBuyEpoch, g_ui.epoch, cd, sizeof(cd));
   lv_label_set_text(cardCountdown[slot], cd);
-  lv_obj_set_style_text_color(cardCountdown[slot], od ? UI_AMBER : UI_TEXT, 0);
+  lv_obj_set_style_text_color(cardCountdown[slot], od ? UI_COL_WARNING : UI_COL_MUTED, 0);
 
-  snprintf(buf, sizeof(buf), "%lu buys  %lu held",
-           static_cast<unsigned long>(p.buys),
-           static_cast<unsigned long>(p.holdingsHeld));
+  char amt[16];
+  uiFmtAmount(p, amt, sizeof(amt));
+  snprintf(buf, sizeof(buf), "%lu held  %s/buy",
+           static_cast<unsigned long>(p.holdingsHeld), amt);
   lv_label_set_text(cardSub[slot], buf);
 
-  lv_obj_set_style_border_color(card[slot], od ? UI_AMBER : UI_LINE, 0);
+  lv_obj_set_style_border_color(card[slot], od ? UI_COL_WARNING : UI_COL_BORDER, 0);
 }
 
 void cardClicked(lv_event_t* e) {
@@ -218,10 +255,10 @@ void detailFill() {
     char pr[16];
     snprintf(pr, sizeof(pr), "$%.2f", static_cast<double>(p.priceUsd));
     lv_label_set_text(dPrice, pr);
-    lv_obj_set_style_text_color(dPrice, UI_MINT, 0);
+    lv_obj_set_style_text_color(dPrice, UI_COL_TEXT, 0);
   } else {
     lv_label_set_text(dPrice, "$--");
-    lv_obj_set_style_text_color(dPrice, UI_DIM, 0);
+    lv_obj_set_style_text_color(dPrice, UI_COL_MUTED, 0);
   }
 
   char buf[20];
@@ -231,19 +268,13 @@ void detailFill() {
   lv_label_set_text(dStatVal[1], buf);
   snprintf(buf, sizeof(buf), "%lu", static_cast<unsigned long>(p.holdingsHeld));
   lv_label_set_text(dStatVal[2], buf);
-  if (p.priceUsd > 0.0f) {
-    char val[12];
-    uiFmtVal(static_cast<uint32_t>(p.holdingsHeld * p.priceUsd), val, sizeof(val));
-    snprintf(buf, sizeof(buf), "~$%s", val);
-  } else {
-    strlcpy(buf, "--", sizeof(buf));
-  }
+  fmtValue(p, buf, sizeof(buf));
   lv_label_set_text(dStatVal[3], buf);
 
   char cd[12];
   uiFmtCountdown(p.nextBuyEpoch, g_ui.epoch, cd, sizeof(cd));
   lv_label_set_text(dCountdown, cd);
-  lv_obj_set_style_text_color(dCountdown, od ? UI_AMBER : UI_TEXT, 0);
+  lv_obj_set_style_text_color(dCountdown, od ? UI_COL_WARNING : UI_COL_TEXT, 0);
 
   bool unknown = (g_ui.epoch == 0 || p.nextBuyEpoch == 0);
   int32_t rem = unknown ? 0 : static_cast<int32_t>(p.nextBuyEpoch - g_ui.epoch);
@@ -257,7 +288,7 @@ void detailFill() {
     pct = static_cast<int32_t>(frac * 100.0f);
   }
   lv_bar_set_value(dBar, pct, LV_ANIM_OFF);
-  lv_obj_set_style_bg_color(dBar, od ? UI_AMBER : UI_MINT, LV_PART_INDICATOR);
+  lv_obj_set_style_bg_color(dBar, od ? UI_COL_WARNING : UI_COL_PRIMARY, LV_PART_INDICATOR);
 }
 
 void openDetail(uint8_t slot) {
@@ -271,26 +302,26 @@ void openDetail(uint8_t slot) {
 lv_obj_t* uiScreenDcaCreate() {
   buildLogos();
 
-  // --- list screen ---
+  // --- portfolio list screen ---
   listScr = lv_obj_create(nullptr);
-  styleScreen(listScr);
+  uiThemeScreen(listScr);
 
-  lv_obj_t* title = makeLabel(listScr, &lv_font_montserrat_12, UI_DIM);
-  lv_label_set_text(title, "DCA POSITIONS");
-  lv_obj_align(title, LV_ALIGN_TOP_LEFT, 12, 8);
+  lv_obj_t* title = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_MUTED);
+  lv_label_set_text(title, "PORTFOLIO");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
 
-  lv_obj_t* line = lv_obj_create(listScr);
-  lv_obj_set_size(line, 216, 1);
-  lv_obj_align(line, LV_ALIGN_TOP_MID, 0, 24);
-  lv_obj_set_style_bg_color(line, UI_LINE, 0);
-  lv_obj_set_style_bg_opa(line, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(line, 0, 0);
-  lv_obj_set_scrollable(line, false);
+  totalVal = uiThemeLabel(listScr, &lv_font_montserrat_28, UI_COL_TEXT);
+  lv_label_set_text(totalVal, "$0.00");
+  lv_obj_align(totalVal, LV_ALIGN_TOP_MID, 0, 26);
+
+  totalSol = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_MUTED);
+  lv_obj_align(totalSol, LV_ALIGN_TOP_MID, 0, 58);
+  lv_obj_set_hidden(totalSol, true);
 
   // Scrollable card column.
   lv_obj_t* col = lv_obj_create(listScr);
-  lv_obj_set_size(col, 240, 186);
-  lv_obj_align(col, LV_ALIGN_TOP_MID, 0, 28);
+  lv_obj_set_size(col, 240, 138);
+  lv_obj_align(col, LV_ALIGN_TOP_MID, 0, 76);
   lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(col, 0, 0);
   lv_obj_set_style_pad_all(col, 2, 0);
@@ -301,113 +332,101 @@ lv_obj_t* uiScreenDcaCreate() {
 
   for (size_t i = 0; i < kDcaMaxPlans; i++) {
     card[i] = lv_obj_create(col);
-    lv_obj_set_size(card[i], 208, 68);
-    lv_obj_set_style_bg_color(card[i], UI_BADGE, 0);
-    lv_obj_set_style_bg_opa(card[i], LV_OPA_COVER, 0);
-    lv_obj_set_style_radius(card[i], 10, 0);
-    lv_obj_set_style_border_width(card[i], 1, 0);
-    lv_obj_set_style_border_color(card[i], UI_LINE, 0);
-    lv_obj_set_style_border_color(card[i], UI_CYAN, LV_STATE_FOCUSED);
-    lv_obj_set_style_border_width(card[i], 2, LV_STATE_FOCUSED);
-    lv_obj_set_style_pad_all(card[i], 0, 0);
-    lv_obj_set_scrollable(card[i], false);
+    lv_obj_set_size(card[i], 208, 62);
+    uiThemeCard(card[i]);
     lv_obj_set_clickable(card[i], true);
     lv_obj_set_user_data(card[i], reinterpret_cast<void*>(static_cast<intptr_t>(i)));
     lv_obj_add_event_cb(card[i], cardClicked, LV_EVENT_CLICKED, nullptr);
     lv_group_add_obj(g_ui.group, card[i]);
 
     cardLogo[i] = lv_image_create(card[i]);
-    lv_obj_align(cardLogo[i], LV_ALIGN_LEFT_MID, 8, 0);
+    lv_obj_align(cardLogo[i], LV_ALIGN_LEFT_MID, 7, 0);
 
-    cardChip[i] = makeLabel(card[i], &lv_font_montserrat_16, lv_color_white());
+    cardChip[i] = uiThemeLabel(card[i], &lv_font_montserrat_16, lv_color_white());
     lv_obj_set_size(cardChip[i], 48, 48);
-    lv_obj_align(cardChip[i], LV_ALIGN_LEFT_MID, 8, 0);
+    lv_obj_align(cardChip[i], LV_ALIGN_LEFT_MID, 7, 0);
     lv_obj_set_style_bg_opa(cardChip[i], LV_OPA_COVER, 0);
     lv_obj_set_style_radius(cardChip[i], LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_text_align(cardChip[i], LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(cardChip[i], 14, 0);
 
-    cardTicker[i] = makeLabel(card[i], &lv_font_montserrat_16, UI_TEXT);
-    lv_obj_align(cardTicker[i], LV_ALIGN_TOP_LEFT, 64, 6);
+    cardTicker[i] = uiThemeLabel(card[i], &lv_font_montserrat_16, UI_COL_TEXT);
+    lv_obj_align(cardTicker[i], LV_ALIGN_TOP_LEFT, 62, 7);
 
-    cardAmount[i] = makeLabel(card[i], &lv_font_montserrat_14, UI_MINT);
-    lv_obj_align(cardAmount[i], LV_ALIGN_TOP_LEFT, 64, 27);
+    cardValue[i] = uiThemeLabel(card[i], &lv_font_montserrat_16, UI_COL_TEXT);
+    lv_obj_align(cardValue[i], LV_ALIGN_TOP_LEFT, 62, 27);
 
-    cardSub[i] = makeLabel(card[i], &lv_font_montserrat_12, UI_DIM);
-    lv_obj_align(cardSub[i], LV_ALIGN_TOP_LEFT, 64, 47);
+    cardSub[i] = uiThemeLabel(card[i], &lv_font_montserrat_12, UI_COL_MUTED);
+    lv_obj_align(cardSub[i], LV_ALIGN_TOP_LEFT, 62, 45);
 
-    cardCountdown[i] = makeLabel(card[i], &lv_font_montserrat_14, UI_TEXT);
-    lv_obj_align(cardCountdown[i], LV_ALIGN_TOP_RIGHT, -8, 6);
+    cardCountdown[i] = uiThemeLabel(card[i], &lv_font_montserrat_12, UI_COL_MUTED);
+    lv_obj_align(cardCountdown[i], LV_ALIGN_TOP_RIGHT, -8, 10);
 
     lv_obj_set_hidden(card[i], true);
   }
 
-  emptyLabel = makeLabel(listScr, &lv_font_montserrat_14, UI_DIM);
+  emptyLabel = uiThemeLabel(listScr, &lv_font_montserrat_14, UI_COL_MUTED);
   lv_label_set_text(emptyLabel, "no DCA plans yet");
-  lv_obj_align(emptyLabel, LV_ALIGN_CENTER, 0, -10);
-  emptyHint = makeLabel(listScr, &lv_font_montserrat_12, UI_DIM);
-  lv_label_set_text(emptyHint, "open the Finagotchi app");
-  lv_obj_align(emptyHint, LV_ALIGN_CENTER, 0, 10);
+  lv_obj_align(emptyLabel, LV_ALIGN_CENTER, 0, 0);
+  emptyHint = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_MUTED);
+  lv_label_set_text(emptyHint, "open the app to start a DCA plan");
+  lv_obj_align(emptyHint, LV_ALIGN_CENTER, 0, 18);
 
-  lv_obj_t* hint = makeLabel(listScr, &lv_font_montserrat_12, UI_DIM);
-  lv_label_set_text(hint, "btn1: open   btn2: next");
-  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -6);
+  uiHintBarSet(uiHintBarCreate(listScr, -10), "1: open   2: next");
 
   // --- detail screen ---
   detailScr = lv_obj_create(nullptr);
-  styleScreen(detailScr);
+  uiThemeScreen(detailScr);
 
   dLogo = lv_image_create(detailScr);
-  lv_obj_align(dLogo, LV_ALIGN_TOP_LEFT, 24, 32);
+  lv_obj_align(dLogo, LV_ALIGN_TOP_LEFT, 24, 28);
 
-  dChip = makeLabel(detailScr, &lv_font_montserrat_20, lv_color_white());
+  dChip = uiThemeLabel(detailScr, &lv_font_montserrat_20, lv_color_white());
   lv_obj_set_size(dChip, 48, 48);
-  lv_obj_align(dChip, LV_ALIGN_TOP_LEFT, 24, 32);
+  lv_obj_align(dChip, LV_ALIGN_TOP_LEFT, 24, 28);
   lv_obj_set_style_bg_opa(dChip, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(dChip, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_text_align(dChip, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_pad_top(dChip, 12, 0);
 
-  dTicker = makeLabel(detailScr, &lv_font_montserrat_20, UI_TEXT);
-  lv_obj_align(dTicker, LV_ALIGN_TOP_LEFT, 84, 34);
+  dTicker = uiThemeLabel(detailScr, &lv_font_montserrat_20, UI_COL_TEXT);
+  lv_obj_align(dTicker, LV_ALIGN_TOP_LEFT, 84, 30);
 
-  dPrice = makeLabel(detailScr, &lv_font_montserrat_28, UI_MINT);
-  lv_obj_align(dPrice, LV_ALIGN_TOP_LEFT, 84, 58);
+  dPrice = uiThemeLabel(detailScr, &lv_font_montserrat_28, UI_COL_TEXT);
+  lv_obj_align(dPrice, LV_ALIGN_TOP_LEFT, 84, 54);
 
   static const char* STAT_CAPTIONS[4] = { "BUY", "BUYS", "HELD", "VALUE" };
-  const int statX[4] = { 16, 128, 16, 128 };
-  const int statY[4] = { 108, 108, 152, 152 };
+  const int statX[4] = { 24, 128, 24, 128 };
+  const int statY[4] = { 104, 104, 148, 148 };
   for (int i = 0; i < 4; i++) {
-    lv_obj_t* cap = makeLabel(detailScr, &lv_font_montserrat_12, UI_DIM);
+    lv_obj_t* cap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
     lv_label_set_text(cap, STAT_CAPTIONS[i]);
     lv_obj_align(cap, LV_ALIGN_TOP_LEFT, statX[i], statY[i]);
-    dStatVal[i] = makeLabel(detailScr, &lv_font_montserrat_14,
-                            (i == 0 || i == 3) ? UI_MINT : UI_TEXT);
+    dStatVal[i] = uiThemeLabel(detailScr, &lv_font_montserrat_14, UI_COL_TEXT);
     lv_obj_align(dStatVal[i], LV_ALIGN_TOP_LEFT, statX[i], statY[i] + 15);
   }
 
-  lv_obj_t* nbCap = makeLabel(detailScr, &lv_font_montserrat_12, UI_DIM);
+  lv_obj_t* nbCap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(nbCap, "NEXT BUY");
-  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 16, 196);
+  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 24, 192);
 
-  dCountdown = makeLabel(detailScr, &lv_font_montserrat_16, UI_TEXT);
-  lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -16, 192);
+  dCountdown = uiThemeLabel(detailScr, &lv_font_montserrat_16, UI_COL_TEXT);
+  lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -24, 188);
 
   dBar = lv_bar_create(detailScr);
-  lv_obj_set_size(dBar, 208, 6);
-  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 216);
+  lv_obj_set_size(dBar, 192, 6);
+  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 212);
   lv_bar_set_range(dBar, 0, 100);
-  lv_obj_set_style_bg_color(dBar, UI_LINE, 0);
+  lv_obj_set_style_bg_color(dBar, UI_COL_BORDER, 0);
 
-  lv_obj_t* dHint = makeLabel(detailScr, &lv_font_montserrat_12, UI_DIM);
-  lv_label_set_text(dHint, "btn1/btn2: back");
-  lv_obj_align(dHint, LV_ALIGN_BOTTOM_MID, 0, -4);
+  uiHintBarSet(uiHintBarCreate(detailScr, -10), "1: back   2: back");
 
   return listScr;
 }
 
 void uiScreenDcaShow() {
   detailSlot = -1;
+  headerFill();
   lv_screen_load_anim(listScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
 
@@ -426,19 +445,25 @@ void uiScreenDcaPlansChanged() {
     }
   }
   bool empty = g_ui.planCount == 0;
-  if (empty) {
-    lv_obj_set_hidden(emptyLabel, false);
-    lv_obj_set_hidden(emptyHint, false);
-  } else {
-    lv_obj_set_hidden(emptyLabel, true);
-    lv_obj_set_hidden(emptyHint, true);
-    lv_group_focus_obj(card[0]);
+  lv_obj_set_hidden(emptyLabel, !empty);
+  lv_obj_set_hidden(emptyHint, !empty);
+  // Refocus the first card only when the plan set itself changed — a price
+  // refresh must not yank focus away from the card the user is browsing.
+  if (g_ui.planCount != lastPlanCount) {
+    lastPlanCount = g_ui.planCount;
+    if (!empty) lv_group_focus_obj(card[0]);
   }
+  headerFill();
   if (detailSlot >= 0) {
     if (detailSlot < static_cast<int8_t>(g_ui.planCount)) detailFill();
     else uiScreenDcaCloseDetail();
   }
   uiScreenPetPlansChanged();
+}
+
+void uiScreenDcaHeaderChanged() {
+  headerFill();
+  if (g_ui.amountInSol) uiScreenDcaTick();   // SOL-denominated labels moved
 }
 
 void uiScreenDcaTick() {

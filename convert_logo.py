@@ -2,32 +2,36 @@
 
 Processing steps:
   1. Background removal:
-     - RGBA artwork with real transparency: alpha-composite over black.
+     - RGBA artwork with real transparency: alpha-composite over the app
+       navy #07111F (matches the splash background, app.json).
      - Opaque artwork: flood-fill the white background (connected to the
-       image border) to black, so white letters INSIDE a dark outline are
+       image border) to navy, so white letters INSIDE a dark outline are
        preserved, then remove the bright anti-aliased fringe ring.
   2. Crop to the artwork bounding box.
   3. Resize to fit the 240x240 display (LANCZOS).
-  4. Emit RGB565 C array.
+  4. Emit native RGB565 C array — showSplash() pushes it with
+     tft.setSwapBytes(true), which puts the bytes in SPI wire order.
 """
 from PIL import Image, ImageDraw
+from typing import Optional
 import sys
 
 INPUT = "finagotchi_logo.png"
 OUTPUT = "src/logo.h"
+NAVY = (0x07, 0x11, 0x1F)     # app background / splash color
 MAX_W, MAX_H = 236, 160     # fits 240x240 with a small margin
 FLOOD_THRESH = 60           # tolerance for "white" during flood fill
 FRINGE_LEVEL = 200          # pixels brighter than this next to background get cut
 
 
-def flatten_alpha(img: Image.Image) -> Image.Image | None:
-    """Alpha-composite over black if the image has real transparency."""
+def flatten_alpha(img: Image.Image) -> Optional[Image.Image]:
+    """Alpha-composite over navy if the image has real transparency."""
     rgba = img.convert("RGBA")
     if img.mode not in ("RGBA", "LA") and "transparency" not in img.info:
         return None
     if rgba.getchannel("A").getextrema()[0] == 255:
         return None                 # fully opaque, no transparency to use
-    bg = Image.new("RGB", rgba.size, (0, 0, 0))
+    bg = Image.new("RGB", rgba.size, NAVY)
     bg.paste(rgba, mask=rgba.getchannel("A"))
     return bg
 
@@ -39,9 +43,9 @@ def remove_background(img: Image.Image) -> Image.Image:
         (w // 2, 0), (w // 2, h - 1), (0, h // 2), (w - 1, h // 2),
     ]
     for s in seeds:
-        ImageDraw.floodfill(img, s, (0, 0, 0), thresh=FLOOD_THRESH)
+        ImageDraw.floodfill(img, s, NAVY, thresh=FLOOD_THRESH)
 
-    # De-fringe: bright pixels touching the (now black) background -> black.
+    # De-fringe: bright pixels touching the (now navy) background -> navy.
     px = img.load()
     for y in range(h):
         for x in range(w):
@@ -51,9 +55,8 @@ def remove_background(img: Image.Image) -> Image.Image:
             # has a pure-background neighbor?
             for nx, ny in ((x-1, y), (x+1, y), (x, y-1), (x, y+1)):
                 if 0 <= nx < w and 0 <= ny < h:
-                    nr, ng, nb = px[nx, ny]
-                    if nr == 0 and ng == 0 and nb == 0:
-                        px[x, y] = (0, 0, 0)
+                    if px[nx, ny] == NAVY:
+                        px[x, y] = NAVY
                         break
     return img
 

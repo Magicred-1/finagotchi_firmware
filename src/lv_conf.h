@@ -3,10 +3,12 @@
 
   Anything left out falls back to the defaults in lv_conf_internal.h — only
   the settings this firmware actually cares about are pinned here:
-  - RGB565_SWAPPED render format: the TFT_eSprite framebuffer AND the
-    token_logo PROGMEM arrays are both stored byte-swapped (SPI wire order),
-    so rendering swapped end-to-end makes the pet canvas and the logo images
-    straight copies and lets the flush push bytes verbatim (no swap passes).
+  - RGB565_SWAPPED render format: the panel expects big-endian pixels and
+    LVGL can render them directly, so the flush pushes bytes verbatim (no
+    swap pass anywhere). The pet's TFT_eSprite framebuffer is already
+    big-endian (canvas uses the SWAPPED format too); token-logo PROGMEM
+    arrays are native little-endian and use normal RGB565 image
+    descriptors — the blend unit swaps them during composition.
   - heap via the C library (shares the ESP32 heap with BLE/Wi-Fi instead of
     a fixed LVGL pool)
   - log routed through a print callback (registered in ui/display.cpp)

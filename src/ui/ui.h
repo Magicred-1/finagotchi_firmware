@@ -54,7 +54,9 @@ void setEpoch(uint32_t epoch);
 void setSolUsd(float rate);
 
 // Gain/status toast ("+n TICKER", "synced", ...), floats up and fades.
+// Reward variant is app purple — the dca:hit "magic moment".
 void enqueueToast(const char* text);
+void enqueueRewardToast(const char* text);
 
 // Timed status overlay (center of screen, auto-hides after ms).
 void showOverlay(const char* msg, uint32_t ms);

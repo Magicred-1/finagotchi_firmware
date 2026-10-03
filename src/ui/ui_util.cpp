@@ -34,6 +34,18 @@ void uiFmtAmount(const DcaPlan& p, char* buf, size_t n) {
     snprintf(buf, n, "$%.2f", static_cast<double>(p.amountSol));
 }
 
+// USD money text: "$12.3k" for five figures and up, "$123.45" below.
+void uiFmtUsd(double usd, char* buf, size_t n) {
+  if (usd >= 10000.0) snprintf(buf, n, "$%.1fk", usd / 1000.0);
+  else snprintf(buf, n, "$%.2f", usd);
+}
+
+// Position value of one plan in USD; <= 0 when the price is unknown.
+double uiPlanValueUsd(const DcaPlan& p) {
+  if (p.priceUsd <= 0.0f) return 0.0;
+  return static_cast<double>(p.holdingsHeld) * static_cast<double>(p.priceUsd);
+}
+
 // 12-stage name lookup used by the on-screen stage badge.
 const char* uiStageName(uint8_t subStage) {
   switch (subStage) {

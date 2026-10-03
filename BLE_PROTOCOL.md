@@ -134,10 +134,10 @@ truncated away.
 | `streak:<n>` | Set displayed streak (persisted in NVS; also stamps the day so the offline day check keeps it) |
 | `<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>][:<subStage>]` | Full state snapshot (same shape as the notify string) — sets everything at once; the optional trailing fields update the plan count and 12-stage sub-stage |
 | `dca:count:<n>` | Declares that `n` (0–4) `dca:plan:` writes follow; all previous plan slots are wiped from NVS first |
-| `dca:plan:<i>:<enabled>:<next_buy_epoch>:<amount>:<TICKER>:<buys>:<holdings>[:<price_usd>]` | Write plan slot `i` (0–3): enabled 0/1, next-buy unix epoch, amount in SOL (float), ticker (clamped to 6 chars), completed buys, holdings held. The optional 8th field is the token's unit price in USD (drives the price/valuation display). Persisted in NVS, shown in the carousel |
+| `dca:plan:<i>:<enabled>:<next_buy_epoch>:<amount>:<TICKER>:<buys>:<holdings>[:<price_usd>]` | Write plan slot `i` (0–3): enabled 0/1, next-buy unix epoch, amount in SOL (float), ticker (clamped to 6 chars), completed buys, holdings held. The optional 8th field is the token's unit price in USD (drives the price/valuation display). Persisted in NVS, shown on the portfolio screen and the next-buy chip |
 | `dca:clear` | Wipe all plan slots (RAM + NVS) |
-| `dca:hit:<n>:<TICKER>` | A buy just executed: "+n TICKER" gain toast + dance reaction + sparkle burst |
-| `solusd:<rate>` | SOL/USD rate (float) for the positions-page amount toggle; persisted in NVS (`finagotchi`/`solUsd`) |
+| `dca:hit:<n>:<TICKER>` | A buy just executed: "+n TICKER" reward toast (app purple) + dance reaction + sparkle burst |
+| `solusd:<rate>` | SOL/USD rate (float) for the portfolio amount unit toggle (USD ⇄ SOL); persisted in NVS (`finagotchi`/`solUsd`) |
 | `epoch:<sec>` | Fallback wall-clock set (unix seconds). Only applied if NTP has never synced; ignored afterwards |
 
 Writes may use write-with-response or write-without-response — the
@@ -148,30 +148,32 @@ are logged as `BLE: unknown command` on the serial monitor.
 
 The device mirrors up to **4 DCA plans** from the app, persisted in NVS
 (`finagotchi` namespace: `dcaCount` + `dca0`..`dca3` blobs) so they survive
-reboots. When plans exist, a carousel line rotates one plan every 4 s in the
-stats-bar area (0.45 s slide/fade blend, like the mood blends):
+reboots. When plans exist, a next-buy chip on the pet screen rotates one
+plan every 4 s (cross-fade blend):
 
 ```
-TICKER  0.25 SOL  in 2d 14h
+TICKER  $10.00  in 2d 14h
 ```
 
-with a small progress ring on the left filling toward `next_buy_epoch`. If a
-plan is past its epoch with no new buys it is marked **overdue**: amber ring
-+ "overdue" text. If the wall clock was never synced, the countdown shows
-`--` instead of garbage. Button 2 long-press pins a plan (30 s), a
-double-press resumes auto-rotate.
+If a plan is past its epoch with no new buys it is marked **overdue**:
+amber (warning) border + "overdue" text. If the wall clock was never
+synced, the countdown shows `--` instead of garbage. Button 2 double-press
+advances the chip to the next plan.
 
-A second, full-screen **DCA positions page** shows one plan per card: the
-actual token logo (official xStocks icons embedded at build time — see
-`tools/convert_token_logos.py`; unknown tickers get a procedural monogram
-chip), the token's USD unit price in a large font, a stats grid (buy amount
-alternating SOL/USD every 3 s — USD needs the `solusd:` rate — buys, held,
-held value), and the next-buy countdown with a progress bar. Button 1
-(action) pages through plans with a 0.45 s slide transition; overdue cards
-pulse amber. While offline, the device fetches prices itself over HTTPS
-(xStocks `price-data` + CoinGecko SOL/USD) on the poll cadence. This page is
-local UI only — it never leaves the device. Navigation: button 2 (navigate)
-short-press switches pages.
+Button 2 short-press opens the full-screen **portfolio view**: a header
+with the total portfolio value (Σ holdings × price in USD, with a SOL
+equivalent under it when the `solusd:` rate is known), then one card per
+plan — the actual token logo (official xStocks icons embedded at build
+time — see `tools/convert_token_logos.py`; unknown tickers get a
+procedural monogram chip), ticker, position value, next-buy countdown and
+holdings/buy info. Button 2 cycles the card focus (cyan ring), button 1
+opens a per-token **detail view** (unit price, buy amount, buys, held,
+value, countdown + progress bar) and closes it again; button 2 long-press
+returns to the pet screen. Button 1 double-press toggles amounts between
+USD and SOL (needs the `solusd:` rate). Overdue cards are amber. While
+offline, the device fetches prices itself over HTTPS (Jupiter Price API +
+xStocks `price-data`, SOL/USD included) on the poll cadence. This view is
+local UI only — it never leaves the device.
 
 The notify/read snapshot gains an **optional 7th field** — the number of
 active plan slots — and an **optional 8th field** — the 12-stage
@@ -236,35 +238,29 @@ Authorization: Bearer <deviceToken>
 ### Gain toasts
 
 `dca:hit:` (connected) and offline buy detection (standalone) spawn a gain
-toast: "+n TICKER" in mint cyan (120,255,214), font 2, centered, spawning at
-the stats bar, floating up ~40 px with easeOutCubic over 1.2 s, holding
-0.6 s, then fading 0.7 s by lerping the text color toward the scene navy
-`#07111F` (no per-glyph alpha in TFT_eSPI). Queue holds 3; a 4th replaces
-the oldest.
+toast: "+n TICKER" centered on screen, floating up ~40 px with ease-out over
+1.2 s, holding 0.6 s, then fading out over 0.7 s (LVGL alpha). Buy hits use
+the app's reward purple (#9945FF), poll-detected offline buys and status
+messages the success green (#5DE2A6).
 
 
-## On-screen stats bar
+## On-screen stats row
 
-The bottom of the TFT shows a stats bar: flame + streak days, sparkle +
-points (k-suffix over 10k), heart + happiness. Pet is scaled to R=88 and
-centered slightly above middle to make room.
+The bottom of the pet screen shows a stats row: streak days, points
+(k-suffix over 10k), happiness — captions over values. Pet is scaled to
+R=88 and centered slightly above middle to make room. A hint bar above the
+stats shows what the two buttons do on the current screen.
 
-The stats bar is **only shown while the app is connected** — the stats are
-app-driven, so while disconnected the device shows the waiting-for-sync
-scene instead. The day-based streak check is also paused while connected
-(the app is authoritative); it resumes on disconnect for offline mode.
+The day-based streak check is paused while connected (the app is
+authoritative); it resumes on disconnect for offline mode.
 
 ## Waiting-for-sync scene
 
-While the device advertises (no app connected), it shows a waiting-for-sync
-scene in place of the stats bar: the pet blends to the `waiting` mood
-(0.45 s, like any `mood:` write) and an orbit animation plays around it —
-two cyan comets circling the pet with fading dotted tails (3 s revolution,
-half a revolution apart) over a slowly breathing orbit ring. A caption sits
-at the bottom: "waiting for connection…" (cycling ellipsis) with an "open
-the Finagotchi app" subtitle. On connect the scene disappears (the stats
-bar returns) and the pet blends back to its previous mood; on disconnect
-the scene returns.
+While the device advertises (no app connected), the pet blends to the
+`waiting` mood (0.45 s, like any `mood:` write) and a spinner with a
+"waiting for connection" caption plays at the top of the screen (LVGL).
+On connect the spinner disappears and the pet blends back to its previous
+mood; on disconnect the scene returns.
 
 ## Firmware rendering notes (what the device reproduces)
 

@@ -1,13 +1,16 @@
 /*
   screen_pet.cpp — LVGL pet screen: a full-screen canvas bound to the pet
-  engine's TFT_eSprite framebuffer (the sprite holds ONLY the pet scene now),
-  with the chrome rebuilt as LVGL widgets layered above:
+  engine's TFT_eSprite framebuffer (the sprite holds ONLY the pet scene),
+  with the chrome rebuilt as LVGL widgets in the app's design language
+  (theme.h):
   - stage badge (top-left) and battery gauge (top-right)
-  - sync spinner + caption while advertising (replaces drawSyncWait)
-  - next-buy chip: auto-rotating plan line with cross-fade, amber border
-    when overdue (replaces drawDcaLine)
-  - stats bar: streak / points / happiness (replaces drawStatsBar)
-  - gain toasts on lv_layer_top (replaces drawToasts)
+  - sync spinner + caption while advertising
+  - next-buy chip: auto-rotating plan pill with cross-fade, warning border
+    when overdue
+  - stats: streak / points / happiness (captions over values)
+  - bottom hint bar ("1: sync   2: portfolio"), floated above the stats so
+    it stays inside the round panel's inscribed circle
+  - gain/reward toasts on lv_layer_top (success green, dca:hit purple)
 */
 
 #include "ui_internal.h"
@@ -17,7 +20,6 @@ namespace {
 lv_obj_t* canvas;
 lv_obj_t* badgeLabel;
 lv_obj_t* battLabel;
-lv_obj_t* battBar;
 lv_obj_t* spinner;
 lv_obj_t* spinnerCaption;
 lv_obj_t* chip;
@@ -26,13 +28,6 @@ lv_obj_t* statVal[3];
 lv_timer_t* chipRotateTimer;
 
 uint8_t chipSlot = 0;
-
-lv_obj_t* makeLabel(lv_obj_t* parent, const lv_font_t* font, lv_color_t color) {
-  lv_obj_t* l = lv_label_create(parent);
-  lv_obj_set_style_text_font(l, font, 0);
-  lv_obj_set_style_text_color(l, color, 0);
-  return l;
-}
 
 // --- next-buy chip -----------------------------------------------------------
 
@@ -49,8 +44,9 @@ void chipFill() {
 
   bool od = uiPlanOverdue(chipSlot);
   lv_label_set_text(chipLabel, buf);
-  lv_obj_set_style_text_color(chipLabel, p.enabled ? (od ? UI_AMBER : UI_TEXT) : UI_DIM, 0);
-  lv_obj_set_style_border_color(chip, od ? UI_AMBER : UI_LINE, 0);
+  lv_obj_set_style_text_color(chipLabel,
+      p.enabled ? (od ? UI_COL_WARNING : UI_COL_TEXT) : UI_COL_MUTED, 0);
+  lv_obj_set_style_border_color(chip, od ? UI_COL_WARNING : UI_COL_BORDER, 0);
   lv_obj_set_hidden(chip, false);
 }
 
@@ -102,81 +98,69 @@ void toastDone(lv_anim_t* a) {
 lv_obj_t* uiScreenPetCreate() {
   FinagotchiPet* pet = g_ui.pet;
   lv_obj_t* scr = lv_obj_create(nullptr);
-  lv_obj_set_style_bg_color(scr, UI_NAVY, 0);
-  lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-  lv_obj_set_scrollable(scr, false);
+  uiThemeScreen(scr);
 
   // Pet scene canvas: straight view onto the sprite framebuffer (both are
-  // RGB565 in SPI wire order -> LV_COLOR_FORMAT_RGB565_SWAPPED).
+  // big-endian RGB565 -> LV_COLOR_FORMAT_RGB565_SWAPPED).
   canvas = lv_canvas_create(scr);
   lv_canvas_set_buffer(canvas, pet->frameBuffer(), pet->frameWidth(),
                        pet->frameHeight(), LV_COLOR_FORMAT_RGB565_SWAPPED);
   lv_obj_center(canvas);
 
   // Stage badge (top-left).
-  badgeLabel = makeLabel(scr, &lv_font_montserrat_12, UI_TEXT);
-  lv_obj_set_style_bg_color(badgeLabel, UI_BADGE, 0);
+  badgeLabel = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_TEXT);
+  lv_obj_set_style_bg_color(badgeLabel, UI_COL_SURFACE, 0);
   lv_obj_set_style_bg_opa(badgeLabel, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(badgeLabel, 4, 0);
-  lv_obj_set_style_pad_hor(badgeLabel, 6, 0);
-  lv_obj_set_style_pad_ver(badgeLabel, 3, 0);
+  lv_obj_set_style_radius(badgeLabel, UI_RADIUS_SMALL, 0);
+  lv_obj_set_style_pad_hor(badgeLabel, UI_SP2, 0);
+  lv_obj_set_style_pad_ver(badgeLabel, UI_SP1, 0);
   lv_obj_align(badgeLabel, LV_ALIGN_TOP_LEFT, 10, 6);
 
-  // Battery gauge (top-right): % label + level bar, hidden on USB power.
-  battLabel = makeLabel(scr, &lv_font_montserrat_12, UI_TEXT);
-  lv_obj_align(battLabel, LV_ALIGN_TOP_RIGHT, -38, 8);
-  battBar = lv_bar_create(scr);
-  lv_obj_set_size(battBar, 26, 9);
-  lv_obj_align(battBar, LV_ALIGN_TOP_RIGHT, -8, 10);
-  lv_bar_set_range(battBar, 0, 100);
-  lv_obj_set_style_bg_color(battBar, UI_LINE, 0);
-  lv_obj_set_style_bg_color(battBar, UI_MINT, LV_PART_INDICATOR);
+  // Battery gauge (top-right): battery symbol + %, colored by level,
+  // hidden on USB power.
+  battLabel = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_MUTED);
+  lv_obj_align(battLabel, LV_ALIGN_TOP_RIGHT, -10, 8);
 
   // Sync spinner + caption (advertising scene).
   spinner = lv_spinner_create(scr);
   lv_spinner_set_anim_params(spinner, 1000, 270);
   lv_obj_set_size(spinner, 26, 26);
   lv_obj_align(spinner, LV_ALIGN_TOP_MID, 0, 26);
-  lv_obj_set_style_arc_color(spinner, UI_CYAN, LV_PART_INDICATOR);
-  spinnerCaption = makeLabel(scr, &lv_font_montserrat_12, UI_DIM);
+  lv_obj_set_style_arc_color(spinner, UI_COL_PRIMARY, LV_PART_INDICATOR);
+  spinnerCaption = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(spinnerCaption, "waiting for connection");
   lv_obj_align(spinnerCaption, LV_ALIGN_TOP_MID, 0, 58);
   lv_obj_set_hidden(spinner, true);
   lv_obj_set_hidden(spinnerCaption, true);
 
-  // Next-buy chip (above the stats bar).
+  // Next-buy chip (pill, above the stats/hint rows).
   chip = lv_obj_create(scr);
   lv_obj_set_size(chip, 196, 30);
-  lv_obj_align(chip, LV_ALIGN_BOTTOM_MID, 0, -46);
-  lv_obj_set_style_bg_color(chip, UI_BADGE, 0);
+  lv_obj_align(chip, LV_ALIGN_BOTTOM_MID, 0, -64);
+  lv_obj_set_style_bg_color(chip, UI_COL_SURFACE, 0);
   lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(chip, 8, 0);
+  lv_obj_set_style_radius(chip, UI_RADIUS_PILL, 0);
   lv_obj_set_style_border_width(chip, 1, 0);
-  lv_obj_set_style_border_color(chip, UI_LINE, 0);
+  lv_obj_set_style_border_color(chip, UI_COL_BORDER, 0);
   lv_obj_set_style_pad_all(chip, 0, 0);
   lv_obj_set_scrollable(chip, false);
-  chipLabel = makeLabel(chip, &lv_font_montserrat_14, UI_TEXT);
+  chipLabel = uiThemeLabel(chip, &lv_font_montserrat_14, UI_COL_TEXT);
   lv_obj_center(chipLabel);
   lv_obj_set_hidden(chip, true);
 
-  // Stats bar: separator + 3 columns (value over caption).
-  lv_obj_t* sep = lv_obj_create(scr);
-  lv_obj_set_size(sep, 220, 1);
-  lv_obj_align(sep, LV_ALIGN_BOTTOM_MID, 0, -36);
-  lv_obj_set_style_bg_color(sep, UI_LINE, 0);
-  lv_obj_set_style_bg_opa(sep, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(sep, 0, 0);
-  lv_obj_set_scrollable(sep, false);
+  // Bottom rows, stacked to stay inside the round panel's inscribed circle:
+  // hint (y 186-198), captions (y 200-212), values (y 213-227).
+  uiHintBarSet(uiHintBarCreate(scr, -48), "1: sync   2: portfolio");
 
   static const char* CAPTIONS[3] = { "streak", "points", "happy" };
-  const int cols[3] = { -80, 0, 80 };
+  const int cols[3] = { -44, 0, 44 };
   for (int i = 0; i < 3; i++) {
-    statVal[i] = makeLabel(scr, &lv_font_montserrat_16, UI_TEXT);
-    lv_label_set_text(statVal[i], "0");
-    lv_obj_align(statVal[i], LV_ALIGN_BOTTOM_MID, cols[i], -18);
-    lv_obj_t* cap = makeLabel(scr, &lv_font_montserrat_12, UI_DIM);
+    lv_obj_t* cap = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_MUTED);
     lv_label_set_text(cap, CAPTIONS[i]);
-    lv_obj_align(cap, LV_ALIGN_BOTTOM_MID, cols[i], -4);
+    lv_obj_align(cap, LV_ALIGN_BOTTOM_MID, cols[i], -34);
+    statVal[i] = uiThemeLabel(scr, &lv_font_montserrat_14, UI_COL_TEXT);
+    lv_label_set_text(statVal[i], "0");
+    lv_obj_align(statVal[i], LV_ALIGN_BOTTOM_MID, cols[i], -19);
   }
 
   chipRotateTimer = lv_timer_create(chipRotate, 4000, nullptr);
@@ -189,13 +173,8 @@ void uiScreenPetFrame(float nowSec) {
 }
 
 void uiScreenPetSyncWait(bool on) {
-  if (on) {
-    lv_obj_set_hidden(spinner, false);
-    lv_obj_set_hidden(spinnerCaption, false);
-  } else {
-    lv_obj_set_hidden(spinner, true);
-    lv_obj_set_hidden(spinnerCaption, true);
-  }
+  lv_obj_set_hidden(spinner, !on);
+  lv_obj_set_hidden(spinnerCaption, !on);
 }
 
 void uiScreenPetSetStats(uint32_t streakDays, uint32_t points, uint8_t happiness) {
@@ -211,36 +190,37 @@ void uiScreenPetSetStats(uint32_t streakDays, uint32_t points, uint8_t happiness
 void uiScreenPetSetSubStage(uint8_t subStage) {
   const char* name = uiStageName(subStage);
   lv_label_set_text(badgeLabel, name);
-  if (name[0]) lv_obj_set_hidden(badgeLabel, false);
-  else lv_obj_set_hidden(badgeLabel, true);
+  lv_obj_set_hidden(badgeLabel, !name[0]);
 }
 
 void uiScreenPetSetBattery(int pct) {
   if (pct < 0) {
     lv_obj_set_hidden(battLabel, true);
-    lv_obj_set_hidden(battBar, true);
     return;
   }
   pct = pct > 100 ? 100 : pct;
-  char buf[5];
-  snprintf(buf, sizeof(buf), "%d", pct);
+  const char* sym = pct > 75 ? LV_SYMBOL_BATTERY_FULL :
+                    pct > 50 ? LV_SYMBOL_BATTERY_3 :
+                    pct > 25 ? LV_SYMBOL_BATTERY_2 : LV_SYMBOL_BATTERY_1;
+  char buf[12];
+  snprintf(buf, sizeof(buf), "%s %d", sym, pct);
   lv_label_set_text(battLabel, buf);
-  lv_bar_set_value(battBar, pct, LV_ANIM_OFF);
-  // Green > 60%, amber 25-60%, red below (same thresholds as the old gauge).
-  lv_color_t c = pct > 60 ? UI_MINT : (pct > 25 ? UI_AMBER : UI_PINK);
-  lv_obj_set_style_bg_color(battBar, c, LV_PART_INDICATOR);
+  lv_color_t c = pct > 60 ? UI_COL_SUCCESS : (pct > 25 ? UI_COL_WARNING : UI_COL_DANGER);
+  lv_obj_set_style_text_color(battLabel, c, 0);
   lv_obj_set_hidden(battLabel, false);
-  lv_obj_set_hidden(battBar, false);
 }
 
-void uiScreenPetToast(const char* text) {
-  lv_obj_t* t = makeLabel(lv_layer_top(), &lv_font_montserrat_16, UI_MINT);
+void uiScreenPetToast(const char* text, bool reward) {
+  lv_color_t col = reward ? UI_COL_PURPLE : UI_COL_SUCCESS;
+  lv_obj_t* t = uiThemeLabel(lv_layer_top(), &lv_font_montserrat_16, col);
   lv_label_set_text(t, text);
-  lv_obj_set_style_bg_color(t, UI_NAVY, 0);
+  lv_obj_set_style_bg_color(t, UI_COL_SURFACE, 0);
   lv_obj_set_style_bg_opa(t, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(t, 6, 0);
-  lv_obj_set_style_pad_hor(t, 8, 0);
-  lv_obj_set_style_pad_ver(t, 4, 0);
+  lv_obj_set_style_radius(t, UI_RADIUS_PILL, 0);
+  lv_obj_set_style_border_width(t, 1, 0);
+  lv_obj_set_style_border_color(t, col, 0);
+  lv_obj_set_style_pad_hor(t, 10, 0);
+  lv_obj_set_style_pad_ver(t, 5, 0);
   lv_obj_align(t, LV_ALIGN_CENTER, 0, 48);
 
   // Float up ~40 px over 1.2 s (ease out), hold, fade 0.7 s, then delete —
