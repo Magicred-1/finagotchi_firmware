@@ -192,13 +192,15 @@ While offline, the device fetches prices itself over HTTPS (Jupiter Price
 API + xStocks `price-data`, SOL/USD included) on the poll cadence. This
 view is local UI only — it never leaves the device.
 
-The **menu screen** holds four action rows: **Feed pet** (`feed:req`),
-**Accessory** (cycles the collectible locally, mirrored in the notify
-snapshot), **Mood** (cycles the emotion locally, mirrored likewise) and
-**Open DCA** (`dca:req`). Button 2 walks the row focus, button 1 runs the
-focused row. On any screen, a long press of either button returns straight
-to the pet screen; every screen's bottom hint bar shows the current
-actions including that escape.
+The **menu screen** mirrors the app's bottom action bar: a horizontal row
+of round icon buttons — **Accessory** (cycles the collectible locally,
+mirrored in the notify snapshot), **Mood** (cycles the emotion locally,
+mirrored likewise), **Feed pet** (primary cyan button, `feed:req`) and
+**Open DCA** (`dca:req`) — with a caption naming the focused action above
+the row. Button 2 walks the focus left-to-right, button 1 runs the focused
+action. On any screen, a long press of either button returns straight to
+the pet screen; every screen's bottom hint bar shows the current actions
+including that escape.
 
 The notify/read snapshot gains an **optional 7th field** — the number of
 active plan slots — and an **optional 8th field** — the 12-stage
