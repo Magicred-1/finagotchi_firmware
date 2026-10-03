@@ -68,11 +68,12 @@ pull-up); pressed = LOW. Active-low is what the firmware expects.
 
 | Button | GPIO | Function |
 |--------|------|----------|
-| Button 1 (left, action) | GPIO4 | Pet screen — short: sync now (asks the app over BLE when connected, otherwise polls the relay + prices over Wi-Fi); double: cycle reaction (jump → spin → glow → dance); long: no-op. Portfolio — short: open the focused card's detail view; double: toggle amounts USD ↔ SOL; long: back to pet. Detail — short: close. Menu — short: run the focused row (Feed pet / Accessory / Mood / Open DCA) |
-| Button 2 (right, navigate) | GPIO37 | Walks everything: pet → portfolio → menu → pet. Pet screen — short: portfolio; double: advance the next-buy chip. Portfolio — short: focus next card, after the last card: menu. Menu — short: focus next row, after the last row: pet. Detail — short: close. **Long press on any screen: straight back to the pet screen** |
+| Right button (primary) | GPIO37 | Carries the whole UI. **Short press = navigate**: walks everything pet → portfolio → menu → pet (moves card/row focus within portfolio/menu first). **Long press = action**: selects — sync on the pet screen, open/close card detail on portfolio, run the focused action on the menu (Feed pet / Accessory / Mood / Open DCA) |
+| Left button (bonus) | GPIO4 | Action key — works if the button is electrically alive (some units ship with it dead). Short: same as a right-button long press (sync / open detail / run action). Double: cycle reaction on the pet screen, toggle amounts USD ↔ SOL on portfolio. Long: back to the pet screen |
 
-> GPIO4 is now the left button — the battery voltage divider moved to GPIO5
-> (see below).
+> Single-button scheme: the right button alone drives the device — short to
+> move, long to select, and screens cycle so home is always a few presses
+> away. The UI shows no button hints — state captions only.
 
 > On ESP32-S3 modules with **octal PSRAM** (e.g. N16R8), GPIO 33–37 are used
 > by the PSRAM bus — GPIO37 won't work as a button there. Use a quad-PSRAM

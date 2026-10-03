@@ -7,10 +7,11 @@
   - sync spinner + caption while advertising
   - next-buy chip: auto-rotating plan pill with cross-fade, warning border
     when overdue
-  - stats: streak / points / happiness (captions over values)
-  - bottom hint bar ("1: sync   2: portfolio"), floated above the stats so
-    it stays inside the round panel's inscribed circle
+  - stats: streak / points / happiness bar (captions over values)
   - gain/reward toasts on lv_layer_top (success green, dca:hit purple)
+
+  No button-hint text anywhere: the control model is dead simple
+  (left = move, right = select) and the UI is instruction-free.
 */
 
 #include "ui_internal.h"
@@ -143,10 +144,10 @@ lv_obj_t* uiScreenPetCreate() {
   lv_obj_set_hidden(spinner, true);
   lv_obj_set_hidden(spinnerCaption, true);
 
-  // Next-buy chip (pill, above the stats/hint rows).
+  // Next-buy chip (pill, above the stats rows).
   chip = lv_obj_create(scr);
   lv_obj_set_size(chip, 196, 30);
-  lv_obj_align(chip, LV_ALIGN_BOTTOM_MID, 0, -64);
+  lv_obj_align(chip, LV_ALIGN_BOTTOM_MID, 0, -56);
   lv_obj_set_style_bg_color(chip, UI_COL_SURFACE, 0);
   lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(chip, UI_RADIUS_PILL, 0);
@@ -158,10 +159,8 @@ lv_obj_t* uiScreenPetCreate() {
   lv_obj_center(chipLabel);
   lv_obj_set_hidden(chip, true);
 
-  // Bottom rows, stacked to stay inside the round panel's inscribed circle:
-  // hint (y 186-198), captions (y 200-212), values (y 213-227).
-  uiHintBarSet(uiHintBarCreate(scr, -48), "1: sync   2: portfolio");
-
+  // Bottom stats, stacked to stay inside the round panel's inscribed
+  // circle: captions (y 200-212), values (y 213-227).
   static const char* CAPTIONS[3] = { "streak", "points", "happy" };
   const int cols[3] = { -44, 0, 44 };
   for (int i = 0; i < 3; i++) {

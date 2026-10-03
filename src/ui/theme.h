@@ -49,11 +49,3 @@ void uiThemeCard(lv_obj_t* obj);
 
 // Caption/value label pair helpers (muted caption over white value).
 lv_obj_t* uiThemeLabel(lv_obj_t* parent, const lv_font_t* font, lv_color_t color);
-
-// Bottom hint bar: one tiny centered muted label showing what the buttons
-// do on the CURRENT screen ("1: sync   2: portfolio"). Kept short on
-// purpose: near the bottom edge of the round panel only a narrow strip of
-// the inscribed circle is visible. yOff lets dense screens (pet) float it
-// above their bottom rows. Update with uiHintBarSet on state changes.
-lv_obj_t* uiHintBarCreate(lv_obj_t* parent, int32_t yOff);
-void uiHintBarSet(lv_obj_t* bar, const char* text);

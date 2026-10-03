@@ -72,7 +72,8 @@ one of the four base creature forms.
 
 ### `sync:req` (manual sync request)
 
-When the user short-presses button 1 (action) on the pet page while the app
+When the user long-presses the right button (or short-presses the left,
+where wired) on the pet screen while the app
 is connected, the device notifies the literal string `sync:req` instead of a
 state snapshot (it never starts with a stage name, so old apps parse it as
 garbage and ignore it). The app should respond by resending a full state
@@ -175,20 +176,24 @@ TICKER  $10.00  in 2d 14h
 
 If a plan is past its epoch with no new buys it is marked **overdue**:
 amber (warning) border + "overdue" text. If the wall clock was never
-synced, the countdown shows `--` instead of garbage. Button 2 double-press
-advances the chip to the next plan.
+synced, the countdown shows `--` instead of garbage.
 
-Button 2 short-press opens the full-screen **portfolio view**: a header
+The device runs a **single-button scheme** (the left button is dead on some
+units): the **right button** carries the UI — **short press = navigate**,
+**long press = action** — and the left button, where alive, is a bonus
+action key. No on-screen button hints, state captions only. A short press
+of the right button opens the full-screen **portfolio view**: a header
 with the total portfolio value (Σ holdings × price in USD, with a SOL
 equivalent under it when the `solusd:` rate is known), then one card per
 plan — the actual token logo (official xStocks icons embedded at build
 time — see `tools/convert_token_logos.py`; unknown tickers get a
 procedural monogram chip), ticker, position value, next-buy countdown and
-holdings/buy info. Button 2 walks the card focus (cyan ring); after the
-last card it moves on to the **menu screen**, and from there back to the
-pet screen (pet → portfolio → menu → pet). Button 1 opens a per-token
-**detail view** and closes it again; button 1 double-press toggles amounts
-between USD and SOL (needs the `solusd:` rate). Overdue cards are amber.
+holdings/buy info. Short presses walk the card focus (cyan ring); after
+the last card they move on to the **menu screen**, and from there back to
+the pet screen (pet → portfolio → menu → pet). A long press opens a
+per-token **detail view** and closes it again; with a live left button, a
+double-press toggles amounts between USD and SOL (needs the `solusd:` rate).
+Overdue cards are amber.
 While offline, the device fetches prices itself over HTTPS (Jupiter Price
 API + xStocks `price-data`, SOL/USD included) on the poll cadence. This
 view is local UI only — it never leaves the device.
@@ -198,10 +203,9 @@ of round icon buttons — **Accessory** (cycles the collectible locally,
 mirrored in the notify snapshot), **Mood** (cycles the emotion locally,
 mirrored likewise), **Feed pet** (primary cyan button, `feed:req`) and
 **Open DCA** (`dca:req`) — with a caption naming the focused action above
-the row. Button 2 walks the focus left-to-right, button 1 runs the focused
-action. On any screen, a long press of either button returns straight to
-the pet screen; every screen's bottom hint bar shows the current actions
-including that escape.
+the row. Short presses walk the focus left-to-right, a long press runs the
+focused action. Screens cycle, so the pet screen is always a few short
+presses away (a long press of a live left button also jumps straight back).
 
 The notify/read snapshot gains an **optional 7th field** — the number of
 active plan slots — and an **optional 8th field** — the 12-stage
@@ -278,8 +282,7 @@ The bottom of the pet screen shows a stats row: streak days, points
 (k-suffix over 10k), and happiness as a small bar (the app's HappinessBar
 pattern). Above it, a slim stage track fills cyan toward the 12-stage cap
 (PetCanvas stageTrack). Pet is scaled to R=88 and centered slightly above
-middle to make room. A hint bar above the stats shows what the two buttons
-do on the current screen.
+middle to make room.
 
 The day-based streak check is paused while connected (the app is
 authoritative); it resumes on disconnect for offline mode.

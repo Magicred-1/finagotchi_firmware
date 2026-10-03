@@ -2,30 +2,23 @@
   input.cpp — hardware buttons -> LVGL keypad indev + semantic actions.
 
   Debounce/short/double/long detection is the proven logic from the old
-  main.cpp (50 ms debounce, 1000 ms long, 500 ms double window).
+  main.cpp (30 ms debounce, 1000 ms long, 500 ms double window).
 
-  Button mapping (three screens: pet -> portfolio -> menu -> pet)
-  ---------------------------------------------------------------
-  BTN1 = action (GPIO4, left):
-    pet screen:       short  = sync now (ui::Actions.syncNow)
-                      double = cycle pet reaction (ui::Actions.cycleReaction)
-                      long   = (no-op; mood cycling lives in the menu screen)
-    portfolio screen: short  = open the focused card's detail view
-                      double = toggle amounts SOL <-> USD
-                      long   = back to the pet screen
+  SINGLE-BUTTON SCHEME (the left button is dead on this unit — serial
+  captures showed GPIO37 presses only). The RIGHT button (BTN2, GPIO37)
+  carries the whole UI; the LEFT button (BTN1, GPIO4) is a bonus action
+  key if it ever comes back.
+
+  BTN2 = right (GPIO37) — primary:
+    any screen:    short = navigate forward (pet -> portfolio -> menu -> pet;
+                   walks card/row focus within portfolio/menu first)
+                   long  = action (same as BTN1 short: select / activate)
+  BTN1 = left (GPIO4) — bonus action key:
+    pet screen:       short  = sync now, double = cycle pet reaction
+    portfolio screen: short  = open detail, double = toggle SOL <-> USD
     detail view:      short  = close the detail view
-                      long   = back to the pet screen
-    menu screen:      short  = run the focused row (feed / accessory / mood /
-                      open DCA — see ui::Actions)
-                      long   = back to the pet screen
-  BTN2 = navigate (GPIO37, right):
-    pet screen:       short  = portfolio screen
-                      double = advance the next-buy chip (manual rotate)
-    portfolio screen: short  = focus next card; after the last card: menu
-                      long   = back to the pet screen
-    detail view:      short  = close the detail view
-    menu screen:      short  = focus next row; after the last row: pet screen
-    any screen:       long   = ALWAYS back to the pet screen
+    menu screen:      short  = run the focused action
+    any non-pet:      long   = back to the pet screen
 
   The focus group only ever holds the visible objects of the ACTIVE screen
   (see uiGroupSet) — hidden cards never swallow key presses. Card/row
@@ -37,8 +30,14 @@
 
 namespace {
 
-constexpr uint8_t BUTTON_1_PIN = 4;    // left button
-constexpr uint8_t BUTTON_2_PIN = 37;   // right button
+// Hardware reality: only the RIGHT button (GPIO37) is electrically alive —
+// the left (GPIO4) never showed a single transition in serial captures.
+// So the right button carries the whole UI (single-button scheme):
+//   short = navigate (next), long = action (select), and screens cycle so
+//   "home" is always a few presses away.
+// The left button stays mapped as a bonus action key if it ever comes back.
+constexpr uint8_t BUTTON_1_PIN = 4;    // left button — action (bonus; dead on some units)
+constexpr uint8_t BUTTON_2_PIN = 37;   // right button — navigate (short) / action (long)
 
 constexpr uint32_t DEBOUNCE_MS    = 30;
 constexpr uint32_t LONG_PRESS_MS  = 1000;
@@ -177,16 +176,10 @@ void onBtn2Short() {
   }
 }
 
-void onBtn2Double() {
-  if (lv_screen_active() == g_ui.petScreen) {
-    uiScreenPetChipAdvance();
-    Serial.println("BTN2 double: next-buy chip advance");
-  }
-}
-
 // Double-press only eats the second press where a double action actually
 // exists on the current screen — everywhere else every press is a short,
-// so fast tapping never swallows navigation.
+// so fast tapping never swallows navigation. (Only BTN1/left has doubles;
+// the right button is navigation, every press counts.)
 bool btn1HasDoubleHere() {
   lv_obj_t* act = lv_screen_active();
   if (act == g_ui.petScreen) return true;                       // reaction
@@ -194,8 +187,11 @@ bool btn1HasDoubleHere() {
   return false;
 }
 
-bool btn2HasDoubleHere() {
-  return lv_screen_active() == g_ui.petScreen;                  // chip advance
+// Right button LONG = action (single-button scheme: the left button is dead
+// on this unit, so long-press carries the select role on the live button).
+void onBtn2Long(float nowSec) {
+  Serial.println("BTN2 long: action");
+  onBtn1Short(nowSec);
 }
 
 } // namespace
@@ -241,22 +237,11 @@ void uiInputUpdate() {
     }
   }
 
-  static uint32_t lastShort2 = 0;
-  if (short2) {
-    if (btn2HasDoubleHere() && millis() - lastShort2 < DOUBLE_PRESS_MS) {
-      lastShort2 = 0;
-      onBtn2Double();
-    } else {
-      lastShort2 = millis();
-      onBtn2Short();
-    }
-  }
+  // BTN2 (right, the live button): short = navigate, long = action. No
+  // double-press on this button — every press moves you forward.
+  if (short2) onBtn2Short();
 
   if (long1) onBtn1Long();
 
-  // BTN2 long: ALWAYS back to the pet screen.
-  if (long2) {
-    uiScreenPetShow();
-    Serial.println("BTN2 long: pet screen");
-  }
+  if (long2) onBtn2Long(nowSec);
 }

@@ -12,7 +12,9 @@
     card (cyan framework focus ring), BTN1 short opens/closes the detail
   - detail view: price, stats grid, countdown + progress bar
   - empty state with a hint when no plans are mirrored
-  - bottom hint bars on both screens ("1: open   2: next" / "1: back")
+
+  No button-hint text anywhere (left = move, right = select — the UI is
+  instruction-free).
 */
 
 #include "ui_internal.h"
@@ -328,9 +330,9 @@ lv_obj_t* uiScreenDcaCreate() {
   lv_obj_align(totalSol, LV_ALIGN_TOP_MID, 0, 58);
   lv_obj_set_hidden(totalSol, true);
 
-  // Scrollable card column.
+  // Scrollable card column (extends to the bottom safe zone — no hint bar).
   lv_obj_t* col = lv_obj_create(listScr);
-  lv_obj_set_size(col, 240, 138);
+  lv_obj_set_size(col, 240, 158);
   lv_obj_align(col, LV_ALIGN_TOP_MID, 0, 76);
   lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(col, 0, 0);
@@ -382,8 +384,6 @@ lv_obj_t* uiScreenDcaCreate() {
   lv_label_set_text(emptyHint, "open the app to start a DCA plan");
   lv_obj_align(emptyHint, LV_ALIGN_CENTER, 0, 18);
 
-  uiHintBarSet(uiHintBarCreate(listScr, -6), "1: open   2: next\nhold: pet");
-
   // --- detail screen ---
   detailScr = lv_obj_create(nullptr);
   uiThemeScreen(detailScr);
@@ -418,18 +418,16 @@ lv_obj_t* uiScreenDcaCreate() {
 
   lv_obj_t* nbCap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(nbCap, "NEXT BUY");
-  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 24, 184);
+  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 24, 190);
 
   dCountdown = uiThemeLabel(detailScr, &lv_font_montserrat_16, UI_COL_TEXT);
-  lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -24, 180);
+  lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -24, 186);
 
   dBar = lv_bar_create(detailScr);
   lv_obj_set_size(dBar, 192, 6);
-  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 202);
+  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 212);
   lv_bar_set_range(dBar, 0, 100);
   lv_obj_set_style_bg_color(dBar, UI_COL_BORDER, 0);
-
-  uiHintBarSet(uiHintBarCreate(detailScr, -6), "1: back   2: back\nhold: pet");
 
   return listScr;
 }

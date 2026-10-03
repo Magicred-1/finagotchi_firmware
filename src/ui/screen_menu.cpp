@@ -152,7 +152,6 @@ lv_obj_t* uiScreenMenuCreate() {
     lv_obj_center(g);
   }
 
-  uiHintBarSet(uiHintBarCreate(menuScr, -6), "1: select   2: next\nhold: pet");
   return menuScr;
 }
 
