@@ -106,6 +106,11 @@ const char* MOOD_NAMES[kMoodCount] = {
   "calm", "happy", "excited", "waiting", "sleepy", "sad"
 };
 
+// Collectible names for the menu accessory row (order matches PetItem).
+const char* ITEM_NAMES[kItemCount] = {
+  "none", "crown", "glasses", "bowtie", "halo", "diamond", "tshirt"
+};
+
 // ---------------------------------------------------------------------------
 // DCA plans (read-only mirror of the app's multi-DCA tracker)
 //
@@ -230,6 +235,8 @@ void blePushState(PetState s) {
   pCharacteristic->setValue(buf);
   pCharacteristic->notify();
   ui::setStats(streak, points, happiness);
+  ui::setMenuAccessory(ITEM_NAMES[item]);   // keep the menu rows in sync
+  ui::setMenuMood(MOOD_NAMES[mood]);
   Serial.printf("BLE -> %s\n", buf);
 }
 
@@ -793,13 +800,54 @@ void actionCycleReaction(float nowSec) {
   Serial.printf("BTN1 double: reaction %u\n", static_cast<unsigned>(r));
 }
 
+// Menu "Feed pet": the app is authoritative — ask it for a feed (it will
+// push the resulting happy:/points: back) and play a local reaction right
+// away so the device feels alive even before the answer lands.
+void actionFeedPet(float nowSec) {
+  pet.react(PetReaction::REACT_JUMP, nowSec);
+  if (appConnected) {
+    pCharacteristic->setValue("feed:req");
+    pCharacteristic->notify();
+    blePushState(pet.state());   // restore the snapshot as the read value
+    ui::enqueueToast("feeding...");
+    Serial.println("Menu: feed requested from app");
+  } else {
+    ui::enqueueToast("connect the app");
+    Serial.println("Menu: feed requested (no app connected)");
+  }
+}
+
+// Menu accessory row: cycle the collectible locally and mirror it in the
+// notify snapshot (works offline — local only then).
+void actionCycleItem() {
+  item = static_cast<uint8_t>((item + 1) % kItemCount);
+  pet.setItem(static_cast<PetItem>(item));
+  blePushState(pet.state());
+  Serial.printf("Menu: item=%u (%s)\n", item, ITEM_NAMES[item]);
+}
+
+// Menu mood row (absorbs the old BTN1-long mood cycle).
 void actionCycleMood(float nowSec) {
   PetMoodId m = MOOD_CYCLE[moodCycleIdx];
   moodCycleIdx = (moodCycleIdx + 1) % MOOD_CYCLE.size();
   mood = static_cast<uint8_t>(m);
   pet.setMood(m, nowSec);
   blePushState(pet.state());
-  Serial.printf("BTN1 long: mood=%u\n", mood);
+  Serial.printf("Menu: mood=%u (%s)\n", mood, MOOD_NAMES[mood]);
+}
+
+// Menu "Open DCA": ask the app to open its DCA wizard/sheet.
+void actionOpenDca() {
+  if (appConnected) {
+    pCharacteristic->setValue("dca:req");
+    pCharacteristic->notify();
+    blePushState(pet.state());
+    ui::enqueueToast("opening DCA...");
+    Serial.println("Menu: DCA open requested from app");
+  } else {
+    ui::enqueueToast("connect the app");
+    Serial.println("Menu: DCA open requested (no app connected)");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1459,7 +1507,8 @@ void setup() {
 
   // LVGL takes over the display: pet canvas + chrome widgets. Button
   // semantics that touch BLE/pet state stay here as callbacks.
-  ui::Actions actions = { actionSyncNow, actionCycleReaction, actionCycleMood };
+  ui::Actions actions = { actionSyncNow, actionCycleReaction, actionFeedPet,
+                          actionCycleItem, actionCycleMood, actionOpenDca };
   ui::begin(&tft, &pet, actions);
   ui::setSubStage(subStage);
 

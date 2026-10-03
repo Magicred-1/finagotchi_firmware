@@ -4,26 +4,33 @@
   Debounce/short/double/long detection is the proven logic from the old
   main.cpp (50 ms debounce, 1000 ms long, 500 ms double window).
 
-  Button mapping
-  --------------
+  Button mapping (three screens: pet -> portfolio -> menu -> pet)
+  ---------------------------------------------------------------
   BTN1 = action (GPIO4, left):
-    pet screen:   short  = sync now (ui::Actions.syncNow)
-                  double = cycle pet reaction (ui::Actions.cycleReaction)
-                  long   = cycle pet mood (ui::Actions.cycleMood)
-    DCA screen:   short  = activate focused card (detail view) / close detail
-                  double = toggle card amounts SOL <-> USD
-                  long   = cycle pet mood (ui::Actions.cycleMood)
+    pet screen:       short  = sync now (ui::Actions.syncNow)
+                      double = cycle pet reaction (ui::Actions.cycleReaction)
+                      long   = (no-op; mood cycling lives in the menu screen)
+    portfolio screen: short  = open the focused card's detail view
+                      double = toggle amounts SOL <-> USD
+                      long   = back to the pet screen
+    detail view:      short  = close the detail view
+                      long   = back to the pet screen
+    menu screen:      short  = run the focused row (feed / accessory / mood /
+                      open DCA — see ui::Actions)
+                      long   = back to the pet screen
   BTN2 = navigate (GPIO37, right):
-    pet screen:   short  = go to the DCA screen
-                  double = advance the next-buy chip (manual rotate)
-                  long   = (no-op)
-    DCA screen:   short  = focus next card / close detail
-                  double = (no-op)
-                  long   = back to the pet screen
+    pet screen:       short  = portfolio screen
+                      double = advance the next-buy chip (manual rotate)
+    portfolio screen: short  = focus next card; after the last card: menu
+                      long   = back to the pet screen
+    detail view:      short  = close the detail view
+    menu screen:      short  = focus next row; after the last row: pet screen
+    any screen:       long   = ALWAYS back to the pet screen
 
-  Focus navigation and card activation go through a LV_INDEV_TYPE_KEYPAD
-  bound to the card focus group, so focus visuals come from the framework;
-  everything else calls the semantic handlers directly.
+  The focus group only ever holds the visible objects of the ACTIVE screen
+  (see uiGroupSet) — hidden cards never swallow key presses. Card/row
+  activation goes through LV_KEY_ENTER on the keypad indev so focus visuals
+  come from the framework.
 */
 
 #include "ui_internal.h"
@@ -113,40 +120,60 @@ void keypadRead(lv_indev_t*, lv_indev_data_t* data) {
 
 // --- semantic actions --------------------------------------------------------
 
-// True on the DCA list screen and on the card detail screen (the pet screen
-// is the only non-DCA screen).
-bool dcaActive() { return lv_screen_active() != g_ui.petScreen; }
-
 void onBtn1Short(float nowSec) {
-  if (dcaActive()) {
-    if (uiScreenDcaDetailOpen()) uiScreenDcaCloseDetail();
-    else pushKey(LV_KEY_ENTER);   // activate the focused card
+  lv_obj_t* act = lv_screen_active();
+  if (uiScreenDcaDetailOpen()) {
+    uiScreenDcaCloseDetail();
+  } else if (act == g_ui.menuScreen) {
+    uiScreenMenuActivate(nowSec);
+  } else if (act == g_ui.dcaScreen) {
+    pushKey(LV_KEY_ENTER);   // open the focused card (safe no-op when empty)
   } else if (g_ui.actions.syncNow) {
     g_ui.actions.syncNow(nowSec);
   }
 }
 
 void onBtn1Double(float nowSec) {
-  if (dcaActive()) {
+  lv_obj_t* act = lv_screen_active();
+  if (act == g_ui.dcaScreen && !uiScreenDcaDetailOpen()) {
     uiScreenDcaToggleAmountUnit();
     Serial.printf("BTN1 double: amounts in %s\n", g_ui.amountInSol ? "SOL" : "USD");
-  } else if (g_ui.actions.cycleReaction) {
+  } else if (act == g_ui.petScreen && g_ui.actions.cycleReaction) {
     g_ui.actions.cycleReaction(nowSec);
   }
 }
 
+void onBtn1Long() {
+  if (lv_screen_active() != g_ui.petScreen) {
+    uiScreenPetShow();
+    Serial.println("BTN1 long: pet screen");
+  }
+  // On the pet screen itself BTN1 long is a no-op — mood cycling lives in
+  // the menu screen (see screen_menu.cpp).
+}
+
 void onBtn2Short() {
-  if (dcaActive()) {
-    if (uiScreenDcaDetailOpen()) uiScreenDcaCloseDetail();
-    else pushKey(LV_KEY_NEXT);    // focus the next card
-  } else {
+  lv_obj_t* act = lv_screen_active();
+  if (uiScreenDcaDetailOpen()) {
+    uiScreenDcaCloseDetail();
+  } else if (act == g_ui.petScreen) {
     uiScreenDcaShow();
-    Serial.println("BTN2: DCA screen");
+    Serial.println("BTN2: portfolio screen");
+  } else if (act == g_ui.dcaScreen) {
+    if (!uiScreenDcaFocusAdvance()) {
+      uiScreenMenuShow();
+      Serial.println("BTN2: menu screen");
+    }
+  } else if (act == g_ui.menuScreen) {
+    if (!uiScreenMenuFocusAdvance()) {
+      uiScreenPetShow();
+      Serial.println("BTN2: pet screen");
+    }
   }
 }
 
 void onBtn2Double() {
-  if (!dcaActive()) {
+  if (lv_screen_active() == g_ui.petScreen) {
     uiScreenPetChipAdvance();
     Serial.println("BTN2 double: next-buy chip advance");
   }
@@ -195,13 +222,9 @@ void uiInputUpdate() {
     }
   }
 
-  // BTN1 long: cycle mood (either screen; the pet scene is behind both).
-  if (long1 && g_ui.actions.cycleMood) {
-    g_ui.actions.cycleMood(nowSec);
-    Serial.println("BTN1 long: mood cycle");
-  }
+  if (long1) onBtn1Long();
 
-  // BTN2 long: back to the pet screen.
+  // BTN2 long: ALWAYS back to the pet screen.
   if (long2) {
     uiScreenPetShow();
     Serial.println("BTN2 long: pet screen");

@@ -40,6 +40,7 @@ lv_obj_t* uiThemeLabel(lv_obj_t* parent, const lv_font_t* font, lv_color_t color
 
 lv_obj_t* uiHintBarCreate(lv_obj_t* parent, int32_t yOff) {
   lv_obj_t* bar = uiThemeLabel(parent, &lv_font_montserrat_12, UI_COL_MUTED);
+  lv_obj_set_style_text_align(bar, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(bar, LV_ALIGN_BOTTOM_MID, 0, yOff);
   return bar;
 }

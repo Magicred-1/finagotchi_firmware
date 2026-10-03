@@ -21,7 +21,10 @@ namespace ui {
 struct Actions {
   void (*syncNow)(float nowSec);        // BTN1 short on the pet screen
   void (*cycleReaction)(float nowSec);  // BTN1 double on the pet screen
-  void (*cycleMood)(float nowSec);      // BTN1 long (either screen)
+  void (*feedPet)(float nowSec);        // menu "Feed pet" (BLE feed:req)
+  void (*cycleItem)();                  // menu accessory row (item: push)
+  void (*cycleMood)(float nowSec);      // menu mood row (mood: push)
+  void (*openDca)();                    // menu "Open DCA" (BLE dca:req)
 };
 
 void begin(TFT_eSPI* tft, FinagotchiPet* pet, const Actions& actions);
@@ -57,6 +60,10 @@ void setSolUsd(float rate);
 // Reward variant is app purple — the dca:hit "magic moment".
 void enqueueToast(const char* text);
 void enqueueRewardToast(const char* text);
+
+// Menu screen row labels (main.cpp keeps them in sync from blePushState).
+void setMenuAccessory(const char* name);
+void setMenuMood(const char* name);
 
 // Timed status overlay (center of screen, auto-hides after ms).
 void showOverlay(const char* msg, uint32_t ms);

@@ -81,6 +81,23 @@ on connect. While the app is disconnected, the same button press triggers
 the standalone Wi-Fi sync (relay poll + price fetch) immediately instead of
 waiting for the 30-minute cadence.
 
+### `feed:req` (feed request, device → app)
+
+Sent when the user activates **Feed pet** on the device's menu screen while
+the app is connected. Same notify mechanism and old-app tolerance as
+`sync:req`. The app is authoritative: it applies the feed (skipped for a
+dead pet) and answers with `react:glow` immediately plus the resulting
+`happy:` (debounced, only when happiness actually changed; points/streak do
+not change on feed). The device plays a local jump reaction immediately so
+it feels alive even before the answer lands; with no app connected it only
+shows a "connect the app" toast.
+
+### `dca:req` (open DCA request, device → app)
+
+Sent when the user activates **Open DCA** on the device's menu screen while
+the app is connected. The app should open its DCA wizard/sheet. With no app
+connected the device only shows a "connect the app" toast.
+
 ### Field ids
 
 **stage**: `egg` | `coinling` | `hodler` | `whale`
@@ -166,14 +183,22 @@ equivalent under it when the `solusd:` rate is known), then one card per
 plan — the actual token logo (official xStocks icons embedded at build
 time — see `tools/convert_token_logos.py`; unknown tickers get a
 procedural monogram chip), ticker, position value, next-buy countdown and
-holdings/buy info. Button 2 cycles the card focus (cyan ring), button 1
-opens a per-token **detail view** (unit price, buy amount, buys, held,
-value, countdown + progress bar) and closes it again; button 2 long-press
-returns to the pet screen. Button 1 double-press toggles amounts between
-USD and SOL (needs the `solusd:` rate). Overdue cards are amber. While
-offline, the device fetches prices itself over HTTPS (Jupiter Price API +
-xStocks `price-data`, SOL/USD included) on the poll cadence. This view is
-local UI only — it never leaves the device.
+holdings/buy info. Button 2 walks the card focus (cyan ring); after the
+last card it moves on to the **menu screen**, and from there back to the
+pet screen (pet → portfolio → menu → pet). Button 1 opens a per-token
+**detail view** and closes it again; button 1 double-press toggles amounts
+between USD and SOL (needs the `solusd:` rate). Overdue cards are amber.
+While offline, the device fetches prices itself over HTTPS (Jupiter Price
+API + xStocks `price-data`, SOL/USD included) on the poll cadence. This
+view is local UI only — it never leaves the device.
+
+The **menu screen** holds four action rows: **Feed pet** (`feed:req`),
+**Accessory** (cycles the collectible locally, mirrored in the notify
+snapshot), **Mood** (cycles the emotion locally, mirrored likewise) and
+**Open DCA** (`dca:req`). Button 2 walks the row focus, button 1 runs the
+focused row. On any screen, a long press of either button returns straight
+to the pet screen; every screen's bottom hint bar shows the current
+actions including that escape.
 
 The notify/read snapshot gains an **optional 7th field** — the number of
 active plan slots — and an **optional 8th field** — the 12-stage

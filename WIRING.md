@@ -68,8 +68,8 @@ pull-up); pressed = LOW. Active-low is what the firmware expects.
 
 | Button | GPIO | Function |
 |--------|------|----------|
-| Button 1 (left, action) | GPIO4 | Pet screen — short: sync now (asks the app over BLE when connected, otherwise polls the relay + prices over Wi-Fi); double: cycle reaction (jump → spin → glow → dance); long (1s): cycle mood. DCA screen — short: open the focused card's detail view (or close it); double: toggle amounts SOL ↔ USD; long: cycle mood |
-| Button 2 (right, navigate) | GPIO37 | Pet screen — short: go to the DCA screen; double: advance the next-buy chip (manual rotate); long: no-op. DCA screen — short: focus the next card (or close the detail view); long (1s): back to the pet screen |
+| Button 1 (left, action) | GPIO4 | Pet screen — short: sync now (asks the app over BLE when connected, otherwise polls the relay + prices over Wi-Fi); double: cycle reaction (jump → spin → glow → dance); long: no-op. Portfolio — short: open the focused card's detail view; double: toggle amounts USD ↔ SOL; long: back to pet. Detail — short: close. Menu — short: run the focused row (Feed pet / Accessory / Mood / Open DCA) |
+| Button 2 (right, navigate) | GPIO37 | Walks everything: pet → portfolio → menu → pet. Pet screen — short: portfolio; double: advance the next-buy chip. Portfolio — short: focus next card, after the last card: menu. Menu — short: focus next row, after the last row: pet. Detail — short: close. **Long press on any screen: straight back to the pet screen** |
 
 > GPIO4 is now the left button — the battery voltage divider moved to GPIO5
 > (see below).

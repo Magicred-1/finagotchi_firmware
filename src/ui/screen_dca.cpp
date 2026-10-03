@@ -136,9 +136,19 @@ lv_obj_t* dCountdown;
 lv_obj_t* dBar;
 
 int8_t detailSlot = -1;
-uint8_t lastPlanCount = 0;
 
 void openDetail(uint8_t slot);   // defined below
+
+// Group membership must track visibility exactly: hidden cards in the
+// focus group swallow LV_KEY_NEXT presses (focus moves to an invisible
+// card and the buttons look dead). Rebuilds the group with the visible
+// cards only.
+void groupSetCards(bool keepFocus) {
+  lv_obj_t* visible[kDcaMaxPlans];
+  uint8_t n = 0;
+  for (size_t i = 0; i < g_ui.planCount; i++) visible[n++] = card[i];
+  uiGroupSet(visible, n, keepFocus);
+}
 
 // Monogram chip fallback: white initials on the token color (48 px circle).
 void fillChip(lv_obj_t* chip, const char* ticker) {
@@ -337,7 +347,7 @@ lv_obj_t* uiScreenDcaCreate() {
     lv_obj_set_clickable(card[i], true);
     lv_obj_set_user_data(card[i], reinterpret_cast<void*>(static_cast<intptr_t>(i)));
     lv_obj_add_event_cb(card[i], cardClicked, LV_EVENT_CLICKED, nullptr);
-    lv_group_add_obj(g_ui.group, card[i]);
+    // NOT added to the focus group here — groupSetCards() tracks visibility.
 
     cardLogo[i] = lv_image_create(card[i]);
     lv_obj_align(cardLogo[i], LV_ALIGN_LEFT_MID, 7, 0);
@@ -372,7 +382,7 @@ lv_obj_t* uiScreenDcaCreate() {
   lv_label_set_text(emptyHint, "open the app to start a DCA plan");
   lv_obj_align(emptyHint, LV_ALIGN_CENTER, 0, 18);
 
-  uiHintBarSet(uiHintBarCreate(listScr, -10), "1: open   2: next");
+  uiHintBarSet(uiHintBarCreate(listScr, -6), "1: open   2: next\nhold: pet");
 
   // --- detail screen ---
   detailScr = lv_obj_create(nullptr);
@@ -408,18 +418,18 @@ lv_obj_t* uiScreenDcaCreate() {
 
   lv_obj_t* nbCap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(nbCap, "NEXT BUY");
-  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 24, 192);
+  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 24, 184);
 
   dCountdown = uiThemeLabel(detailScr, &lv_font_montserrat_16, UI_COL_TEXT);
-  lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -24, 188);
+  lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -24, 180);
 
   dBar = lv_bar_create(detailScr);
   lv_obj_set_size(dBar, 192, 6);
-  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 212);
+  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 202);
   lv_bar_set_range(dBar, 0, 100);
   lv_obj_set_style_bg_color(dBar, UI_COL_BORDER, 0);
 
-  uiHintBarSet(uiHintBarCreate(detailScr, -10), "1: back   2: back");
+  uiHintBarSet(uiHintBarCreate(detailScr, -6), "1: back   2: back\nhold: pet");
 
   return listScr;
 }
@@ -427,11 +437,13 @@ lv_obj_t* uiScreenDcaCreate() {
 void uiScreenDcaShow() {
   detailSlot = -1;
   headerFill();
+  groupSetCards(false);
   lv_screen_load_anim(listScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
 
 void uiScreenPetShow() {
   if (detailSlot >= 0) detailSlot = -1;
+  uiGroupSet(nullptr, 0, false);   // the pet screen has no focusables
   lv_screen_load_anim(g_ui.petScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0, false);
 }
 
@@ -447,12 +459,10 @@ void uiScreenDcaPlansChanged() {
   bool empty = g_ui.planCount == 0;
   lv_obj_set_hidden(emptyLabel, !empty);
   lv_obj_set_hidden(emptyHint, !empty);
-  // Refocus the first card only when the plan set itself changed — a price
-  // refresh must not yank focus away from the card the user is browsing.
-  if (g_ui.planCount != lastPlanCount) {
-    lastPlanCount = g_ui.planCount;
-    if (!empty) lv_group_focus_obj(card[0]);
-  }
+  // Keep group membership in sync with visibility, but only while a
+  // portfolio screen is up — the menu screen owns the group when active.
+  lv_obj_t* act = lv_screen_active();
+  if (act == listScr || act == detailScr) groupSetCards(true);
   headerFill();
   if (detailSlot >= 0) {
     if (detailSlot < static_cast<int8_t>(g_ui.planCount)) detailFill();
@@ -485,4 +495,18 @@ void uiScreenDcaToggleAmountUnit() {
   g_ui.amountInSol = !g_ui.amountInSol;
   uiScreenDcaTick();
   uiScreenPetPlansChanged();   // the chip honors the unit too
+}
+
+bool uiScreenDcaFocusAdvance() {
+  if (g_ui.planCount == 0) return false;
+  lv_obj_t* f = lv_group_get_focused(g_ui.group);
+  if (f && f != card[g_ui.planCount - 1]) {
+    lv_group_focus_next(g_ui.group);
+    return true;
+  }
+  if (!f) {   // nothing focused yet (e.g. after a refresh): focus the first
+    lv_group_focus_obj(card[0]);
+    return true;
+  }
+  return false;   // on the last card: caller moves to the next screen
 }

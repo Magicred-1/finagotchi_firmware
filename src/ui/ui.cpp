@@ -83,6 +83,20 @@ void secTick(lv_timer_t*) {
 
 } // namespace
 
+void uiGroupSet(lv_obj_t* const* objs, uint8_t n, bool keepFocus) {
+  lv_obj_t* prev = keepFocus ? lv_group_get_focused(g_ui.group) : nullptr;
+  lv_group_remove_all_objs(g_ui.group);
+  bool refocused = false;
+  for (uint8_t i = 0; i < n; i++) {
+    lv_group_add_obj(g_ui.group, objs[i]);
+    if (objs[i] == prev) {
+      lv_group_focus_obj(objs[i]);
+      refocused = true;
+    }
+  }
+  if (!refocused && n > 0) lv_group_focus_obj(objs[0]);
+}
+
 void ui::begin(TFT_eSPI* tft, FinagotchiPet* pet, const Actions& actions) {
   g_ui.pet = pet;
   g_ui.actions = actions;
@@ -93,11 +107,13 @@ void ui::begin(TFT_eSPI* tft, FinagotchiPet* pet, const Actions& actions) {
   g_ui.group = lv_group_create();
   g_ui.petScreen = uiScreenPetCreate();
   g_ui.dcaScreen = uiScreenDcaCreate();
+  g_ui.menuScreen = uiScreenMenuCreate();
   uiInputInit();
   overlayInit();
 
   lv_screen_load(g_ui.petScreen);
   lv_timer_create(secTick, 1000, nullptr);
+  g_ui.ready = true;
   Serial.println("UI: LVGL ready (pet canvas + chrome)");
 }
 
@@ -111,22 +127,27 @@ void ui::renderPetFrame(float nowSec) {
 }
 
 void ui::setStats(uint32_t streakDays, uint32_t points, uint8_t happiness) {
+  if (!g_ui.ready) return;
   uiScreenPetSetStats(streakDays, points, happiness);
 }
 
 void ui::setSubStage(uint8_t subStage) {
+  if (!g_ui.ready) return;
   uiScreenPetSetSubStage(subStage);
 }
 
 void ui::setBattery(uint8_t pct) {
+  if (!g_ui.ready) return;
   uiScreenPetSetBattery(pct);
 }
 
 void ui::clearBattery() {
+  if (!g_ui.ready) return;
   uiScreenPetSetBattery(-1);
 }
 
 void ui::setSyncWait(bool on) {
+  if (!g_ui.ready) return;
   // The pet keeps the mood side-effect; the beacon visual is the spinner.
   g_ui.pet->setSyncWait(on, millis() / 1000.0f);
   uiScreenPetSyncWait(on);
@@ -138,37 +159,50 @@ void ui::setDcaPlan(uint8_t idx, const DcaPlan& p, bool overdue) {
   g_ui.plans[idx].ticker[sizeof(g_ui.plans[idx].ticker) - 1] = 0;
   g_ui.overdue[idx] = overdue;
   if (idx >= g_ui.planCount) g_ui.planCount = idx + 1;
-  uiScreenDcaPlansChanged();
+  if (g_ui.ready) uiScreenDcaPlansChanged();
 }
 
 void ui::clearDcaPlans() {
   memset(g_ui.plans, 0, sizeof(g_ui.plans));
   memset(g_ui.overdue, 0, sizeof(g_ui.overdue));
   g_ui.planCount = 0;
-  uiScreenDcaPlansChanged();
+  if (g_ui.ready) uiScreenDcaPlansChanged();
 }
 
 void ui::setEpoch(uint32_t epoch) {
   if (epoch == g_ui.epoch) return;
   g_ui.epoch = epoch;
-  secTick(nullptr);   // countdown labels track the new clock immediately
+  if (g_ui.ready) secTick(nullptr);   // countdowns track the new clock now
 }
 
 void ui::setSolUsd(float rate) {
   g_ui.solUsd = rate;
   if (rate <= 0.0f && g_ui.amountInSol) g_ui.amountInSol = false;
-  uiScreenDcaHeaderChanged();   // SOL equivalent + SOL-denominated labels
+  if (g_ui.ready) uiScreenDcaHeaderChanged();   // SOL equivalent + labels
 }
 
 void ui::enqueueToast(const char* text) {
+  if (!g_ui.ready) return;
   uiScreenPetToast(text, false);
 }
 
 void ui::enqueueRewardToast(const char* text) {
+  if (!g_ui.ready) return;
   uiScreenPetToast(text, true);   // dca:hit: app purple, the "magic moment"
 }
 
+void ui::setMenuAccessory(const char* name) {
+  if (!g_ui.ready) return;
+  uiScreenMenuSetAccessory(name);
+}
+
+void ui::setMenuMood(const char* name) {
+  if (!g_ui.ready) return;
+  uiScreenMenuSetMood(name);
+}
+
 void ui::showOverlay(const char* msg, uint32_t ms) {
+  if (!g_ui.ready) return;
   lv_label_set_text(overlayLabel, msg);
   lv_obj_set_hidden(overlayBox, false);
   lv_timer_set_period(overlayTimer, ms);
@@ -178,6 +212,7 @@ void ui::showOverlay(const char* msg, uint32_t ms) {
 }
 
 void ui::showPasskey(uint32_t passkey) {
+  if (!g_ui.ready) return;
   char num[8];
   snprintf(num, sizeof(num), "%06lu", static_cast<unsigned long>(passkey));
   lv_label_set_text(passkeyNum, num);
