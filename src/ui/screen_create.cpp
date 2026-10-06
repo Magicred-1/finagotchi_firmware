@@ -218,7 +218,11 @@ void showPage(uint8_t p) {
 
 } // namespace
 
-lv_obj_t* uiScreenCreateCreate() {
+// Internal builder: the widgets are allocated on first show (lazy) and
+// freed again on exit — eager creation in ui::begin() exhausted the boot
+// heap. The ticker array pointer is a cached file-static (owned by
+// main.cpp, static lifetime), so a rebuild always reflects it.
+lv_obj_t* buildCreateScreen() {
   createScr = lv_obj_create(nullptr);
   uiThemeScreen(createScr);
 
@@ -331,6 +335,8 @@ lv_obj_t* uiScreenCreateCreate() {
 }
 
 void uiScreenCreateSetTickers(const char* const* list, uint8_t n) {
+  // Only caches — the builder reads this on first show. Safe to call
+  // before the screen exists.
   if (!list || n == 0) return;
   tickers = list;
   tickerCount = n > MAX_OPTIONS ? MAX_OPTIONS : n;
@@ -338,12 +344,21 @@ void uiScreenCreateSetTickers(const char* const* list, uint8_t n) {
 }
 
 void uiScreenCreateShow() {
+  if (!createScr) g_ui.createScreen = buildCreateScreen();   // lazy build
   showPage(PAGE_TOKEN);
   lv_screen_load_anim(createScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
 
+void uiScreenCreateFreed() {
+  // The screen object was deleted via the exit transition's auto_del;
+  // only the pointers need clearing. Selections and tickers stay cached.
+  createScr = nullptr;
+  g_ui.createScreen = nullptr;
+}
+
 // Short press (either button) = navigate.
 void uiScreenCreateFocusAdvance() {
+  if (!createScr) return;
   if (page == PAGE_SUMMARY) {
     showPage(PAGE_TOKEN);   // back to edit, from the top
     return;
@@ -363,6 +378,7 @@ void uiScreenCreateFocusAdvance() {
 
 // Long press (either button) = confirm drum / CREATE.
 void uiScreenCreateActivate(float nowSec) {
+  if (!createScr) return;
   (void)nowSec;
   confirmFocused();
 }

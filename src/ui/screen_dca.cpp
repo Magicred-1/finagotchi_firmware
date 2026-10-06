@@ -480,13 +480,23 @@ void uiScreenDcaShow() {
   detailSlot = -1;
   headerFill();
   groupSetCards(false);
-  lv_screen_load_anim(listScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
+  // Coming back from the create wheel? Its widgets free on exit (boot-heap
+  // discipline): the transition's auto_del deletes the old screen object.
+  bool freeCreate = g_ui.createScreen && lv_screen_active() == g_ui.createScreen;
+  lv_screen_load_anim(listScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, freeCreate);
+  if (freeCreate) uiScreenCreateFreed();
 }
 
 void uiScreenPetShow() {
   if (detailSlot >= 0) detailSlot = -1;
   uiGroupSet(nullptr, 0, false);   // the pet screen has no focusables
-  lv_screen_load_anim(g_ui.petScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0, false);
+  // Lazy screens (menu / create) free their widgets on exit via auto_del.
+  bool freeMenu = g_ui.menuScreen && lv_screen_active() == g_ui.menuScreen;
+  bool freeCreate = g_ui.createScreen && lv_screen_active() == g_ui.createScreen;
+  lv_screen_load_anim(g_ui.petScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0,
+                      freeMenu || freeCreate);
+  if (freeMenu) uiScreenMenuFreed();
+  if (freeCreate) uiScreenCreateFreed();
 }
 
 void uiScreenDcaPlansChanged() {

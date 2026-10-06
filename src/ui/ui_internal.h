@@ -83,8 +83,10 @@ bool uiScreenDcaFocusAdvance();          // false: no more cards -> next screen
 void uiScreenDcaTogglePause();           // detail double-press: pause/resume
 
 // screen_create.cpp ("+ New plan" wheel: token -> amount -> frequency drums)
-lv_obj_t* uiScreenCreateCreate();
+// Widgets are built lazily on first show and freed on exit (boot-heap
+// discipline; see ui.cpp).
 void uiScreenCreateShow();               // from the "+ New plan" card
+void uiScreenCreateFreed();              // screen object deleted (auto_del)
 void uiScreenCreateFocusAdvance();       // short: next option (wraps) / edit
 void uiScreenCreateActivate(float nowSec); // long: confirm drum / CREATE
 void uiScreenCreateSetTickers(const char* const* tickers, uint8_t n);
@@ -92,10 +94,10 @@ void uiScreenCreateSetTickers(const char* const* tickers, uint8_t n);
 // screen_dca.cpp shared helper: token logo descriptor (nullptr = unknown).
 const lv_image_dsc_t* uiTokenLogoDsc(const char* ticker);
 
-// screen_menu.cpp (action menu)
-lv_obj_t* uiScreenMenuCreate();
+// screen_menu.cpp (launcher app list) — lazy build + free, same pattern
 void uiScreenMenuShow();                 // after the last portfolio card
-void uiScreenMenuActivate(float nowSec); // BTN1 short: run the focused row
+void uiScreenMenuFreed();                // screen object deleted (auto_del)
+void uiScreenMenuActivate(float nowSec); // long press: run the focused row
 bool uiScreenMenuFocusAdvance();         // false: no more rows -> pet screen
 void uiScreenMenuSetAccessory(const char* name);
 void uiScreenMenuSetMood(const char* name);

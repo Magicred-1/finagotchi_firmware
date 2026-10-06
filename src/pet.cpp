@@ -328,9 +328,16 @@ void FinagotchiPet::begin(TFT_eSPI* display, float scale) {
   buildBlinks();
   spr.reset(new TFT_eSprite(tft));
   spr->setColorDepth(16);
-  if (spr->createSprite(tft->width(), tft->height()) == nullptr) {
-    spr->createSprite(200, 200);   // RAM fallback
-  }
+  // The sprite is the single biggest heap allocation and competes with the
+  // BLE/Wi-Fi stacks + LVGL + the two 12 KB task stacks. 200x200 (80 KB)
+  // leaves ~40 KB of runtime headroom — the 240x240 full-screen version
+  // (115 KB) left <1 KB after ui::begin and boot-looped (f842b5f). The
+  // canvas is centered, so the scene just gains a slim navy frame. Step
+  // down further if even this does not fit.
+  int side = 200;
+  while (side >= 160 && spr->createSprite(side, side) == nullptr) side -= 40;
+  Serial.printf("Pet sprite %dx%d, heap free %u\n", side, side,
+                ESP.getFreeHeap());
   setSceneTheme(0);   // app default background
 }
 

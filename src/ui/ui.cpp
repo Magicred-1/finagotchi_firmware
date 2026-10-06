@@ -107,8 +107,9 @@ void ui::begin(TFT_eSPI* tft, FinagotchiPet* pet, const Actions& actions) {
   g_ui.group = lv_group_create();
   g_ui.petScreen = uiScreenPetCreate();
   g_ui.dcaScreen = uiScreenDcaCreate();
-  g_ui.menuScreen = uiScreenMenuCreate();
-  g_ui.createScreen = uiScreenCreateCreate();
+  // menuScreen / createScreen stay null: their widgets are built lazily on
+  // first show (and freed again on exit) — eager creation here exhausted
+  // the heap at boot (BLE2902 + sprite + LVGL) and looped the device.
   uiInputInit();
   overlayInit();
 

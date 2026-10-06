@@ -111,7 +111,11 @@ void rowClicked(lv_event_t* e) {
 
 } // namespace
 
-lv_obj_t* uiScreenMenuCreate() {
+// Internal builder: the widgets are allocated on first show (lazy) and
+// freed again on exit — eager creation in ui::begin() exhausted the boot
+// heap. accessoryName/moodName are cached file-statics, so a rebuild
+// always reflects the latest BLE-pushed state.
+lv_obj_t* buildMenuScreen() {
   menuScr = lv_obj_create(nullptr);
   uiThemeScreen(menuScr);
 
@@ -212,6 +216,7 @@ lv_obj_t* uiScreenMenuCreate() {
 }
 
 void uiScreenMenuShow() {
+  if (!menuScr) g_ui.menuScreen = buildMenuScreen();   // lazy build
   // Enter at the top: back affordance focused (long-press/action = pet
   // screen); the rows follow in the focus chain. Scrolling down swaps the
   // arrow out of the group (see uiScreenMenuFocusAdvance).
@@ -225,7 +230,15 @@ void uiScreenMenuShow() {
   lv_screen_load_anim(menuScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
 }
 
+void uiScreenMenuFreed() {
+  // The screen object was deleted via the exit transition's auto_del; only
+  // the pointers need clearing. Names stay cached in file-statics.
+  menuScr = nullptr;
+  g_ui.menuScreen = nullptr;
+}
+
 void uiScreenMenuActivate(float nowSec) {
+  if (!menuScr) return;
   lv_obj_t* f = focusedRow();
   if (!f) return;
   if (f == backArrow) {
@@ -239,6 +252,7 @@ void uiScreenMenuActivate(float nowSec) {
 }
 
 bool uiScreenMenuFocusAdvance() {
+  if (!menuScr) return false;
   lv_obj_t* f = focusedRow();
   if (!f) {
     lv_group_focus_obj(row[0]);
@@ -260,13 +274,17 @@ bool uiScreenMenuFocusAdvance() {
 }
 
 void uiScreenMenuSetAccessory(const char* name) {
+  // Always cache (BLE writes may arrive before the screen is ever built);
+  // the builder reads the cache. Only touch widgets when the screen exists.
   strlcpy(accessoryName, name, sizeof(accessoryName));
+  if (!menuScr) return;
   if (!lv_obj_is_hidden(infoLabel) &&
       focusedRow() == row[ROW_ACCESSORY]) infoFill();
 }
 
 void uiScreenMenuSetMood(const char* name) {
   strlcpy(moodName, name, sizeof(moodName));
+  if (!menuScr) return;
   if (!lv_obj_is_hidden(infoLabel) &&
       focusedRow() == row[ROW_MOOD]) infoFill();
 }

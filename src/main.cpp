@@ -754,7 +754,13 @@ void setupBLE() {
                                              // or those packets are dropped
   );
   pCharacteristic->setCallbacks(new CmdCallbacks());
-  pCharacteristic->addDescriptor(new BLE2902());   // required for notifications
+  // CCCD (0x2902) as a plain 2-byte descriptor: BLE2902() allocates the
+  // default ESP_GATT_MAX_ATTR_LEN (600 B) for a value that is only ever 2
+  // bytes, and that oversized malloc is what starved on a full heap.
+  BLEDescriptor* cccd = new BLEDescriptor(BLEUUID((uint16_t)0x2902), 2);
+  uint8_t cccdInit[2] = {0, 0};
+  cccd->setValue(cccdInit, 2);   // notifications start disabled
+  pCharacteristic->addDescriptor(cccd);
   pCharacteristic->setValue("egg:0:0:0:0:50");
 
   // Wi-Fi provisioning: encrypted writes only — the stack rejects writes on
@@ -1561,6 +1567,13 @@ void setup() {
   loadStats();               // restore streak/points before BLE advertises them
   loadWiFiCreds();           // app-provisioned credentials override config.h
 
+  // BLE FIRST: Bluedroid + the GATT table need a large, contiguous heap
+  // slice. Starting BLE before Wi-Fi/the 115 KB pet sprite/LVGL guarantees
+  // it gets one — the later allocations all have graceful fallbacks, a
+  // half-initialized BLE stack does not (f842b5f boot loop).
+  setupBLE();
+  Serial.printf("heap after BLE: %u free\n", ESP.getFreeHeap());
+
   // Boot status is still drawn direct-to-TFT: LVGL takes over after Wi-Fi.
   showBootStatus("WiFi...");
   setupWiFiTime();
@@ -1591,7 +1604,8 @@ void setup() {
 #endif
 
   setupBattery();
-  setupBLE();
+  Serial.printf("heap after UI: %u free, %u min-free\n",
+                ESP.getFreeHeap(), ESP.getMinFreeHeap());
   blePushState(pet.state());
   ui::setSyncWait(true);     // advertise -> waiting scene
 
@@ -1602,6 +1616,8 @@ void setup() {
   // Cloud state sync: same shape as the DCA poll, active only when a device
   // token was provisioned.
   xTaskCreate(stateSyncTask, "sync", 12288, nullptr, 1, nullptr);
+
+  Serial.printf("heap after tasks: %u free\n", ESP.getFreeHeap());
 
   lastEvolve = millis();
   Serial.println("Pet running.");
