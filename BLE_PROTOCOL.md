@@ -116,7 +116,7 @@ chars; `amountSol` a float; `freqSec` one of `86400` (daily), `604800`
 (weekly), `2592000` (monthly). The app opens its DCA wizard prefilled so
 the user can confirm and sign on the phone. There is no ack — the device
 shows a "check the app" toast and returns to the portfolio view. With no
-app connected it shows a "connect the app" toast and stays on the form.
+app connected it shows a "connect the app" toast and stays on the wheel.
 
 ### Field ids
 
@@ -223,21 +223,26 @@ API + xStocks `price-data`, SOL/USD included) on the poll cadence, except
 slots the app priced itself. This view is local UI only — it never leaves
 the device.
 
-Activating **+ New plan** opens a small **create screen** — four focusable
-rows: Token (the xStocks the device ships mints/logos for), Amount
-(0.01 / 0.05 / 0.1 / 0.25 SOL), Frequency (daily / weekly / monthly) and
-**Create →**. Short presses move between fields, a long press (or the left
-button) cycles the focused field's value, and on **Create →** it sends
-`dca:new:` — no on-screen hints, the rows show name + current value.
+Activating **+ New plan** opens the **create wheel**: three paged drums —
+Token (the xStocks the device ships mints/logos for), Amount
+(0.01 / 0.05 / 0.1 / 0.25 SOL), Frequency (daily / weekly / monthly) —
+then a summary view. A short press scrolls to the next option (wrapping),
+a long press confirms the drum and advances; on the summary, a long press
+on **CREATE →** sends `dca:new:`. Browsing and composing the plan works
+fully standalone — the app is only needed for the final send. The token
+drum is entered on a back-arrow affordance (activate = back to the
+portfolio view); the right zone shows the values picked so far.
 
-The **menu screen** mirrors the app's bottom action bar: a horizontal row
-of round icon buttons — **Accessory** (cycles the collectible locally,
-mirrored in the notify snapshot), **Mood** (cycles the emotion locally,
-mirrored likewise), **Feed pet** (primary cyan button, `feed:req`) and
-**Open DCA** (`dca:req`) — with a caption naming the focused action above
-the row. Short presses walk the focus left-to-right, a long press runs the
-focused action. Screens cycle, so the pet screen is always a few short
-presses away (a long press of a live left button also jumps straight back).
+The **menu screen** is a vertical, scrollable app list (launcher style):
+rows with a circular icon chip and the app name — **Accessory** (cycles
+the collectible locally, mirrored in the notify snapshot), **Mood**
+(cycles the emotion locally, mirrored likewise), **Feed pet** (primary,
+`feed:req`) and **Open DCA** (`dca:req`) — with a slim cyan scrollbar on
+the right edge. Entering the menu focuses a back-arrow affordance in the
+reserved right zone (activating it returns to the pet screen); walking
+into the list replaces it with a short info word for the focused app
+(the current accessory/mood name). Short presses walk the focus down the
+rows (auto-scrolled into view), a long press runs the focused app.
 
 The notify/read snapshot gains an **optional 7th field** — the number of
 active plan slots — and an **optional 8th field** — the 12-stage

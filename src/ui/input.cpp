@@ -4,25 +4,24 @@
   Debounce/short/double/long detection is the proven logic from the old
   main.cpp (30 ms debounce, 1000 ms long, 500 ms double window).
 
-  SINGLE-BUTTON SCHEME (the left button is dead on this unit — serial
-  captures showed GPIO37 presses only). The RIGHT button (BTN2, GPIO37)
-  carries the whole UI; the LEFT button (BTN1, GPIO4) is a bonus action
-  key if it ever comes back.
+  FULLY REDUNDANT TWO-BUTTON SCHEME. Serial captures on this hardware
+  have shown EACH button electrically silent at different times (first
+  GPIO4 dead / GPIO37 alive, later the reverse) — flaky unit. So both
+  buttons carry the SAME mapping and the UI works with either one:
 
-  BTN2 = right (GPIO37) — primary:
-    any screen:    short = navigate forward (pet -> portfolio -> menu -> pet;
-                   walks card/row focus within portfolio/menu first; on the
-                   create screen: next field)
-                   long  = action (same as BTN1 short: select / activate)
-    detail view:   double = pause/resume the plan (a single short still
-                   closes — deferred by the double window, see onDetailShort)
-  BTN1 = left (GPIO4) — bonus action key:
-    pet screen:       short  = sync now, double = cycle pet reaction
-    portfolio screen: short  = open detail, double = toggle SOL <-> USD
-    detail view:      short  = close the detail view, double = pause/resume
-    menu screen:      short  = run the focused action
-    create screen:    short  = cycle the focused field's value / send
-    any non-pet:      long   = back to the pet screen
+    ANY button, any screen:
+      short = navigate forward (pet -> portfolio -> menu -> pet;
+              walks card/row focus within portfolio/menu first;
+              on the create screen: next field; on a detail view: close,
+              deferred by the double window — see onDetailShort)
+      long  = action for the current screen:
+              pet = sync now, portfolio = open the focused card,
+              detail = pause/resume the plan, menu = run focused action,
+              create = cycle the focused field's value / send
+
+  Bonus (left button only, when alive): double-press on the pet screen
+  cycles the pet reaction, on the portfolio toggles SOL <-> USD amounts,
+  on a detail view double-press also toggles pause (either button).
 
   The focus group only ever holds the visible objects of the ACTIVE screen
   (see uiGroupSet) — hidden cards never swallow key presses. Card/row
@@ -34,14 +33,11 @@
 
 namespace {
 
-// Hardware reality: only the RIGHT button (GPIO37) is electrically alive —
-// the left (GPIO4) never showed a single transition in serial captures.
-// So the right button carries the whole UI (single-button scheme):
-//   short = navigate (next), long = action (select), and screens cycle so
-//   "home" is always a few presses away.
-// The left button stays mapped as a bonus action key if it ever comes back.
-constexpr uint8_t BUTTON_1_PIN = 4;    // left button — action (bonus; dead on some units)
-constexpr uint8_t BUTTON_2_PIN = 37;   // right button — navigate (short) / action (long)
+// Hardware reality: captures have shown each button electrically dead at
+// different times (flaky unit), so BOTH buttons carry the same mapping —
+// short = navigate, long = action — and the UI works with either one.
+constexpr uint8_t BUTTON_1_PIN = 4;    // left button
+constexpr uint8_t BUTTON_2_PIN = 37;   // right button
 
 constexpr uint32_t DEBOUNCE_MS    = 30;
 constexpr uint32_t LONG_PRESS_MS  = 1000;
@@ -141,10 +137,41 @@ void onDetailShort() {
   }
 }
 
-void onBtn1Short(float nowSec) {
+// Short press (either button) = navigate forward. Screens cycle, so the
+// pet screen is always a few presses away.
+void onNavShort() {
   lv_obj_t* act = lv_screen_active();
   if (uiScreenDcaDetailOpen()) {
     onDetailShort();
+  } else if (act == g_ui.petScreen) {
+    uiScreenDcaShow();
+    Serial.println("NAV: portfolio screen");
+  } else if (act == g_ui.dcaScreen) {
+    if (uiScreenDcaFocusAdvance()) {
+      Serial.println("NAV: focus next card");
+    } else {
+      uiScreenMenuShow();
+      Serial.println("NAV: menu screen");
+    }
+  } else if (act == g_ui.createScreen) {
+    uiScreenCreateFocusAdvance();
+    Serial.println("NAV: create: next field");
+  } else if (act == g_ui.menuScreen) {
+    if (uiScreenMenuFocusAdvance()) {
+      Serial.println("NAV: focus next row");
+    } else {
+      uiScreenPetShow();
+      Serial.println("NAV: pet screen");
+    }
+  }
+}
+
+// Long press (either button) = the action of the current screen.
+void onActionLong(float nowSec) {
+  lv_obj_t* act = lv_screen_active();
+  Serial.println("ACTION (long)");
+  if (uiScreenDcaDetailOpen()) {
+    uiScreenDcaTogglePause();
   } else if (act == g_ui.createScreen) {
     uiScreenCreateActivate(nowSec);
   } else if (act == g_ui.menuScreen) {
@@ -156,6 +183,7 @@ void onBtn1Short(float nowSec) {
   }
 }
 
+// Bonus: left-button double-press extras (when the left button is alive).
 void onBtn1Double(float nowSec) {
   lv_obj_t* act = lv_screen_active();
   if (act == g_ui.dcaScreen && !uiScreenDcaDetailOpen()) {
@@ -166,58 +194,14 @@ void onBtn1Double(float nowSec) {
   }
 }
 
-void onBtn1Long() {
-  if (lv_screen_active() != g_ui.petScreen) {
-    uiScreenPetShow();
-    Serial.println("BTN1 long: pet screen");
-  }
-  // On the pet screen itself BTN1 long is a no-op — mood cycling lives in
-  // the menu screen (see screen_menu.cpp).
-}
-
-void onBtn2Short() {
-  lv_obj_t* act = lv_screen_active();
-  if (uiScreenDcaDetailOpen()) {
-    onDetailShort();
-  } else if (act == g_ui.petScreen) {
-    uiScreenDcaShow();
-    Serial.println("BTN2: portfolio screen");
-  } else if (act == g_ui.dcaScreen) {
-    if (uiScreenDcaFocusAdvance()) {
-      Serial.println("BTN2: focus next card");
-    } else {
-      uiScreenMenuShow();
-      Serial.println("BTN2: menu screen");
-    }
-  } else if (act == g_ui.createScreen) {
-    uiScreenCreateFocusAdvance();
-    Serial.println("BTN2: create: next field");
-  } else if (act == g_ui.menuScreen) {
-    if (uiScreenMenuFocusAdvance()) {
-      Serial.println("BTN2: focus next row");
-    } else {
-      uiScreenPetShow();
-      Serial.println("BTN2: pet screen");
-    }
-  }
-}
-
 // Double-press only eats the second press where a double action actually
 // exists on the current screen — everywhere else every press is a short,
-// so fast tapping never swallows navigation. (Only BTN1/left has doubles;
-// the right button is navigation, every press counts.)
+// so fast tapping never swallows navigation.
 bool btn1HasDoubleHere() {
   lv_obj_t* act = lv_screen_active();
   if (act == g_ui.petScreen) return true;                       // reaction
   if (act == g_ui.dcaScreen && !uiScreenDcaDetailOpen()) return true;  // USD/SOL
   return false;
-}
-
-// Right button LONG = action (single-button scheme: the left button is dead
-// on this unit, so long-press carries the select role on the live button).
-void onBtn2Long(float nowSec) {
-  Serial.println("BTN2 long: action");
-  onBtn1Short(nowSec);
 }
 
 } // namespace
@@ -231,7 +215,8 @@ void uiInputInit() {
   lv_indev_set_read_cb(indev, keypadRead);
   lv_indev_set_group(indev, g_ui.group);
 
-  Serial.printf("Buttons: GPIO%d (action), GPIO%d (navigate)\n", btn1.pin, btn2.pin);
+  Serial.printf("Buttons: GPIO%d + GPIO%d (short = navigate, long = action)\n",
+                btn1.pin, btn2.pin);
 }
 
 void uiInputUpdate() {
@@ -251,7 +236,7 @@ void uiInputUpdate() {
     }
   }
 
-  // BTN1 short/double: the 500 ms double window only applies where the
+  // BTN1 double extras: the 500 ms double window only applies where the
   // screen has a double action (btn1HasDoubleHere) — otherwise every press
   // is a short, so mashing never eats presses.
   static uint32_t lastShort1 = 0;
@@ -261,15 +246,14 @@ void uiInputUpdate() {
       onBtn1Double(nowSec);
     } else {
       lastShort1 = millis();
-      onBtn1Short(nowSec);
+      onNavShort();
     }
   }
 
-  // BTN2 (right, the live button): short = navigate, long = action. No
-  // double-press on this button — every press moves you forward.
-  if (short2) onBtn2Short();
+  // Both buttons navigate on short, act on long — fully redundant.
+  if (short2) onNavShort();
 
-  if (long1) onBtn1Long();
+  if (long1) onActionLong(nowSec);
 
-  if (long2) onBtn2Long(nowSec);
+  if (long2) onActionLong(nowSec);
 }

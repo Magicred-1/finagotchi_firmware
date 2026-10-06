@@ -68,11 +68,10 @@ pull-up); pressed = LOW. Active-low is what the firmware expects.
 
 | Button | GPIO | Function |
 |--------|------|----------|
-| Right button (primary) | GPIO37 | Carries the whole UI. **Short press = navigate**: walks everything pet → portfolio → menu → pet (moves card/row focus within portfolio/menu first; on the create screen: next field). **Long press = action**: selects — sync on the pet screen, open/close card detail on portfolio, run the focused action on the menu (Feed pet / Accessory / Mood / Open DCA), cycle the focused field / send on the create screen. **Double press on the detail view: pause/resume the plan** (a single press still closes the detail) |
-| Left button (bonus) | GPIO4 | Action key — works if the button is electrically alive (some units ship with it dead). Short: same as a right-button long press (sync / open detail / run action / cycle field). Double: cycle reaction on the pet screen, toggle amounts USD ↔ SOL on portfolio, pause/resume on the detail view. Long: back to the pet screen |
+| Either button | GPIO37 (right), GPIO4 (left) | **Both buttons carry the same mapping** — the unit is flaky (captures have shown each button electrically dead at different times), so the scheme is fully redundant and the UI works with whichever button is alive. **Short press = navigate**: walks everything pet → portfolio → menu → pet (moves card/row focus within portfolio/menu first — the menu is a vertical app list, entered on a back-arrow affordance (→) in the right zone, then the apps top-to-bottom; on the create-plan wheel: next option, wrapping; on a detail view: closes it). **Long press = action** for the current screen: sync on the pet screen, open the focused card on portfolio, **pause/resume the plan on the detail view**, run the focused app on the menu (Feed pet / Accessory / Mood / Open DCA, or the back arrow → pet), confirm the drum / CREATE on the create-plan wheel. **Double press on the detail view** (either button): also pause/resume — a single press still closes. Left-button double extras: cycle reaction on the pet screen, toggle amounts USD ↔ SOL on portfolio |
 
-> Single-button scheme: the right button alone drives the device — short to
-> move, long to select, and screens cycle so home is always a few presses
+> Redundant scheme: whichever button is alive drives the whole device — short
+> to move, long to act, and screens cycle so home is always a few presses
 > away. The UI shows no button hints — state captions only.
 
 > On ESP32-S3 modules with **octal PSRAM** (e.g. N16R8), GPIO 33–37 are used

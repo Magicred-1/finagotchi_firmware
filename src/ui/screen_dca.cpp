@@ -58,6 +58,16 @@ const lv_image_dsc_t* logoFor(const char* ticker) {
   return nullptr;
 }
 
+} // namespace
+
+// Shared with the create-plan wheel (screen_create.cpp): logo descriptor
+// for a ticker, nullptr when unknown (caller falls back to a monogram).
+const lv_image_dsc_t* uiTokenLogoDsc(const char* ticker) {
+  return logoFor(ticker);
+}
+
+namespace {
+
 // Monogram-chip color for tickers without a logo: brand colors for the
 // tokens the app lists, otherwise a deterministic djb2-hashed hue (ported
 // from the old pet.cpp chrome).
