@@ -96,6 +96,27 @@ on connect. While the app is disconnected, the same button press triggers
 the standalone Wi-Fi sync (relay poll + price fetch) immediately instead of
 waiting for the 30-minute cadence.
 
+### `wifi:ok:<ssid>` / `wifi:fail:<code>` (join result, device → app)
+
+After a provisioning write the device reports the real join outcome as a
+separate notification on the state characteristic (the app monitors it):
+
+- `wifi:ok:<ssid>` — associated and got an IP
+- `wifi:fail:ssid` — no AP with that name in range (NO_AP_FOUND)
+- `wifi:fail:auth` — wrong password / handshake timeout family
+  (AUTH_EXPIRE, 4WAY_HANDSHAKE_TIMEOUT, AUTH_FAIL, …)
+- `wifi:fail:ip` — associated but no DHCP lease
+- `wifi:fail:off` — no credentials configured, nothing attempted
+
+Sent at the end of every provisioning-triggered reconnect attempt (also on
+the credentials-unchanged path: `wifi:ok` when already online, otherwise one
+rejoin is attempted and its result reported) and whenever a background poll
+task's rejoin transitions to connected (`wifi:ok`). The device logs the raw
+`WiFi.status()` + disconnect reason on the serial monitor as well
+("WiFi: join failed, status=… reason=…"). Like the other `*:req`/`wifi:*`
+strings, it never starts with a stage name, so old apps ignore it; after the
+notification the device restores the state snapshot as the read value.
+
 ### `feed:req` (feed request, device → app)
 
 Sent when the user activates **Feed pet** on the device's menu screen while

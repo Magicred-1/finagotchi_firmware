@@ -233,6 +233,7 @@ void seedDemoPlans() {
 
 bool setupWiFiTime();          // defined in the Wi-Fi section below
 void updateStreakFromTime();
+const char* wifiFailCode();    // Wi-Fi section: wifi:fail code mapping
 
 // Push "<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>]"
 // (read + notify). The 7th field is optional: old firmware parses only the
@@ -250,6 +251,23 @@ void blePushState(PetState s) {
   ui::setMenuAccessory(ITEM_NAMES[item]);   // keep the menu rows in sync
   ui::setMenuMood(MOOD_NAMES[mood]);
   Serial.printf("BLE -> %s\n", buf);
+}
+
+// Join-result report to the app (a SEPARATE notification on the state
+// characteristic — the app monitors it): "wifi:ok:<ssid>" on a real join,
+// "wifi:fail:<code>" on failure. Restores the snapshot as the read value
+// afterwards (same pattern as sync:req). Safe with no subscribers.
+// Codes: off = no credentials/nothing attempted, ssid = no AP found,
+// auth = wrong password/handshake family, ip = connected but no IP.
+void bleNotifyWifi(bool ok, const char* code) {
+  if (!pCharacteristic) return;
+  char buf[48];
+  if (ok) snprintf(buf, sizeof(buf), "wifi:ok:%s", wifiSsid);
+  else snprintf(buf, sizeof(buf), "wifi:fail:%s", code ? code : "off");
+  pCharacteristic->setValue(buf);
+  pCharacteristic->notify();
+  Serial.printf("BLE -> %s\n", buf);
+  blePushState(pet.state());   // restore the snapshot as the read value
 }
 
 // App-store stages 1-12 collapse to the 4 base shapes. Shared by the BLE
@@ -739,11 +757,25 @@ void processProvision() {
       prefs.end();
       strlcpy(deviceToken, token, sizeof(deviceToken));
     }
-    Serial.printf("PROV: credentials unchanged ('%s')%s, staying connected\n",
+    Serial.printf("PROV: credentials unchanged ('%s')%s\n",
                   ssid, token ? ", device token updated" : "");
-    char msg[48];
-    snprintf(msg, sizeof(msg), "Already on %s", ssid);
-    ui::showOverlay(msg, 2500);
+    if (WiFi.status() == WL_CONNECTED) {
+      // Same creds and already online: report success, skip the rejoin.
+      Serial.printf("PROV: already on '%s'\n", ssid);
+      char msg[48];
+      snprintf(msg, sizeof(msg), "Already on %s", ssid);
+      ui::showOverlay(msg, 2500);
+      bleNotifyWifi(true, nullptr);
+    } else {
+      // Same creds but offline: attempt one rejoin and report the outcome.
+      Serial.println("PROV: unchanged but offline, rejoining");
+      ui::showOverlay("WiFi rejoining...", 2500);
+      timeSynced = setupWiFiTime();   // blocks up to ~10 s, user-triggered
+      if (timeSynced) updateStreakFromTime();
+      bool ok = WiFi.status() == WL_CONNECTED;
+      ui::showOverlay(ok ? "Online!" : "WiFi failed", 2500);
+      bleNotifyWifi(ok, ok ? nullptr : wifiFailCode());
+    }
     return;
   }
 
@@ -765,6 +797,9 @@ void processProvision() {
   timeSynced = setupWiFiTime();   // blocks up to ~10 s, once, user-triggered
   updateStreakFromTime();
   ui::showOverlay(timeSynced ? "Online!" : "WiFi failed", 2500);
+  // Report the real join result to the app (it monitors the state
+  // characteristic) — wifi:ok:<ssid> or wifi:fail:<code>.
+  bleNotifyWifi(WiFi.status() == WL_CONNECTED, wifiFailCode());
 }
 
 class SrvCallbacks : public BLEServerCallbacks {
@@ -1061,6 +1096,48 @@ void loadWiFiCreds() {
   }
 }
 
+// --- join diagnostics ---------------------------------------------------------
+// Last STA disconnect reason (wifi_event_sta_disconnected_t.reason), recorded
+// by a WiFi event hook installed on the first rejoin attempt. 0 = none yet.
+volatile int lastDisconnectReason = 0;
+bool wifiEventsHooked = false;
+
+// Common 802.11 reason codes from esp_wifi_types.h.
+const char* wifiReasonStr(int r) {
+  switch (r) {
+    case 1:   return "UNSPECIFIED";
+    case 2:   return "AUTH_EXPIRE (wrong password?)";
+    case 3:   return "AUTH_LEAVE";
+    case 4:   return "ASSOC_EXPIRE";
+    case 5:   return "ASSOC_TOOMANY";
+    case 15:  return "4WAY_HANDSHAKE_TIMEOUT (wrong password?)";
+    case 201: return "NO_AP_FOUND (SSID not found)";
+    case 202: return "AUTH_FAIL";
+    case 204: return "HANDSHAKE_TIMEOUT";
+    case 205: return "CONNECTION_FAIL";
+    default:  return "other";
+  }
+}
+
+void hookWifiEvents() {
+  if (wifiEventsHooked) return;
+  wifiEventsHooked = true;
+  WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t info) {
+    lastDisconnectReason = info.wifi_sta_disconnected.reason;
+    Serial.printf("WiFi: STA disconnected, reason=%d (%s)\n",
+                  lastDisconnectReason, wifiReasonStr(lastDisconnectReason));
+  }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+}
+
+// wifi:fail code for the current state (called after a failed attempt).
+const char* wifiFailCode() {
+  if (!wifiSsid[0]) return "off";
+  if (WiFi.status() == WL_CONNECTED &&
+      WiFi.localIP() == INADDR_NONE) return "ip";   // up but no lease
+  if (lastDisconnectReason == 201) return "ssid";
+  return "auth";   // AUTH_EXPIRE / handshake timeouts / unknown: auth family
+}
+
 // Wi-Fi rejoin, used by the boot path, the poll tasks and BLE provisioning.
 // The driver is NEVER de-initialized (no WIFI_OFF): the boot-time deinit
 // wedged it ("timeout when WiFi un-init" -> esp_wifi_init 257 on the next
@@ -1068,9 +1145,13 @@ void loadWiFiCreds() {
 // begin(); if the driver is genuinely down (WL_NO_SHIELD), one full
 // power-cycle is the last resort. No credentials -> never touch the radio.
 bool wifiBootOffline = false;   // set when the boot attempt fails/skips
+bool wifiWasUp = false;         // link edge detector (rejoin notify)
+volatile bool wifiNotifyPending = false;   // task -> loop: send wifi:ok
 
 void wifiRejoin() {
   if (!wifiSsid[0]) return;   // no SSID configured: stay fully off Wi-Fi
+  hookWifiEvents();
+  lastDisconnectReason = 0;
   WiFi.mode(WIFI_STA);
   wl_status_t st = WiFi.begin(wifiSsid, wifiPass);
   if (st == WL_NO_SHIELD) {   // driver not initialized / wedged
@@ -1079,6 +1160,21 @@ void wifiRejoin() {
     delay(500);
     WiFi.mode(WIFI_STA);
     WiFi.begin(wifiSsid, wifiPass);
+  }
+}
+
+// Link edge detector, called from the poll tasks' connected branches: on a
+// down->up transition, log + queue the wifi:ok notify (drained by loop(),
+// which owns all BLE work).
+void noteWifiLink() {
+  bool up = WiFi.status() == WL_CONNECTED;
+  if (up && !wifiWasUp) {
+    wifiWasUp = true;
+    wifiBootOffline = false;
+    wifiNotifyPending = true;
+    Serial.printf("WiFi rejoined, IP=%s\n", WiFi.localIP().toString().c_str());
+  } else if (!up && wifiWasUp) {
+    wifiWasUp = false;
   }
 }
 
@@ -1099,7 +1195,9 @@ bool setupWiFiTime() {
   }
 
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("\nWiFi failed, running offline.");
+    Serial.printf("\nWiFi: join failed, status=%d reason=%d (%s)\n",
+                  WiFi.status(), lastDisconnectReason,
+                  wifiReasonStr(lastDisconnectReason));
     // disconnect(false): drop the association but keep the driver UP —
     // disconnect(true)/WIFI_OFF wedge the deinit on this stack and every
     // later esp_wifi_init fails (NO_MEM), killing standalone sync.
@@ -1109,6 +1207,7 @@ bool setupWiFiTime() {
   }
 
   Serial.printf("\nWiFi connected, IP=%s\n", WiFi.localIP().toString().c_str());
+  wifiWasUp = true;   // edge detector starts "up" after a boot-time join
 
   configTzTime(TZ_POSIX, "pool.ntp.org", "time.nist.gov");
 
@@ -1276,15 +1375,6 @@ bool pollDcaRelay() {
 // that responsive while the 30 min cadence is untouched. The render loop on
 // the loop task is never blocked. wifiRejoin() is a no-op without
 // credentials, so an unprovisioned device never touches the radio.
-
-// One-time log when Wi-Fi first comes up after an offline boot.
-void logRejoinOnce() {
-  if (wifiBootOffline && WiFi.status() == WL_CONNECTED) {
-    wifiBootOffline = false;
-    Serial.printf("WiFi rejoined, IP=%s\n", WiFi.localIP().toString().c_str());
-  }
-}
-
 void dcaPollTask(void*) {
   bool first = true;
   uint32_t lastPoll = millis();
@@ -1293,7 +1383,7 @@ void dcaPollTask(void*) {
       syncRequested = false;
       if (!appConnected) {
         if (WiFi.status() == WL_CONNECTED) {
-          logRejoinOnce();
+          noteWifiLink();
           bool ok = pollDcaRelay();
           fetchPrices();
           stashToast(ok ? "synced" : "sync failed");
@@ -1313,7 +1403,7 @@ void dcaPollTask(void*) {
         lastPoll = millis();
         first = false;
         if (WiFi.status() == WL_CONNECTED) {
-          logRejoinOnce();
+          noteWifiLink();
           pollDcaRelay();
           fetchPrices();
         } else {
@@ -1603,7 +1693,7 @@ void stateSyncTask(void*) {
         lastSync = millis();
         first = false;
         if (WiFi.status() == WL_CONNECTED) {
-          logRejoinOnce();
+          noteWifiLink();
           int code = syncStateFromServer();
           if (code == HTTP_CODE_UNAUTHORIZED) {
             if (++authFails >= STATE_SYNC_MAX_401) {
@@ -1799,6 +1889,13 @@ void loop() {
   updateBattery();
   if (cmdPending) processCommand();
   if (provPending) processProvision();
+
+  // Task-side Wi-Fi rejoin -> wifi:ok notify (queued by noteWifiLink; all
+  // BLE work happens on the loop task).
+  if (wifiNotifyPending) {
+    wifiNotifyPending = false;
+    bleNotifyWifi(true, nullptr);
+  }
 
   // Pairing passkey panel rides over everything while pairing is pending.
   // Re-shows on retry: pending->false (failed attempt) ->pending->true is
