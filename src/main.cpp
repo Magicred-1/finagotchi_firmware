@@ -581,27 +581,64 @@ void processCommand() {
 //
 // Pairing uses BLE Secure Connections with bonding; the device has a screen,
 // so it displays the 6-digit passkey (ESP_IO_CAP_OUT) and the app must enter
-// it. The provisioning characteristic only accepts ENCRYPTED writes, so the
-// credentials never travel on an unpaired link.
+// it. BOTH characteristics require encrypted access (state: encrypted
+// read+write, provisioning: encrypted write), so the phone initiates pairing
+// on first contact — the passkey shows without needing a provisioning write.
 // ---------------------------------------------------------------------------
 
 volatile bool passkeyPending = false;
 uint32_t pairingPasskey = 0;
 
 class SecCallbacks : public BLESecurityCallbacks {
-  uint32_t onPassKeyRequest() override { return 0; }
+  uint32_t onPassKeyRequest() override {
+    // We are DisplayOnly (IO_CAP_OUT): this would mean the PEER wants us to
+    // type a key — shouldn't happen; log it loudly if it does.
+    Serial.println("BLE security: PASSKEY_REQ (unexpected for DisplayOnly)");
+    return 0;
+  }
   void onPassKeyNotify(uint32_t pass_key) override {
+    // ESP_GAP_BLE_PASSKEY_NOTIF_EVT: the Bluedroid path that actually
+    // carries the 6-digit code for SC DisplayOnly — show it on screen.
     pairingPasskey = pass_key;
     passkeyPending = true;
     Serial.printf("BLE pairing passkey: %06lu\n", static_cast<unsigned long>(pass_key));
   }
-  bool onSecurityRequest() override { return true; }
-  bool onConfirmPIN(uint32_t pin) override { (void)pin; return true; }
+  bool onSecurityRequest() override {
+    Serial.println("BLE security: SEC_REQ from peer (accepted)");
+    return true;
+  }
+  bool onConfirmPIN(uint32_t pin) override {
+    // Numeric Comparison (both sides have displays): auto-yes.
+    Serial.printf("BLE security: numeric comparison %06lu (auto-yes)\n",
+                  static_cast<unsigned long>(pin));
+    return true;
+  }
   void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) override {
     passkeyPending = false;
     Serial.printf("BLE pairing %s\n", cmpl.success ? "OK" : "FAILED");
+    if (cmpl.success) {
+      // Push a fresh snapshot as soon as the encrypted link is up so the
+      // app gets data immediately. A FAILED here with a previously-paired
+      // phone = stale bond (phone side: forget the device; device side:
+      // hold both buttons at boot to erase bonds — see WIRING.md).
+      blePushState(pet.state());
+    }
   }
 };
+
+// Erase every BLE bond Bluedroid persists in NVS. Call right after
+// BLEDevice::init() when the boot chord (both buttons held) fired.
+void eraseBleBonds() {
+  int num = esp_ble_get_bond_device_num();
+  Serial.printf("BLE: %d bonded device(s) in NVS\n", num);
+  if (num <= 0) return;
+  esp_ble_bond_dev_t list[10];
+  int count = num < 10 ? num : 10;
+  if (esp_ble_get_bond_device_list(&count, list) == ESP_OK) {
+    for (int i = 0; i < count; i++) esp_ble_remove_bond_device(list[i].bd_addr);
+    Serial.printf("BLE: erased %d bond(s)\n", count);
+  }
+}
 
 // Writes are stashed and processed on the loop task (see cmdBuf above).
 // Sized for the full 3-field payload: 32 + 63 + 128 + 2 separators + NUL.
@@ -741,8 +778,9 @@ class SrvCallbacks : public BLEServerCallbacks {
   }
 };
 
-void setupBLE() {
+void setupBLE(bool wipeBonds) {
   BLEDevice::init("Finagotchi");
+  if (wipeBonds) eraseBleBonds();   // recovery chord fired at boot
   BLEDevice::setMTU(256);   // 3-field provisioning write + state string exceed 128
 
   // Secure Connections + bonding; the device displays the passkey.
@@ -767,6 +805,16 @@ void setupBLE() {
                                              // or those packets are dropped
   );
   pCharacteristic->setCallbacks(new CmdCallbacks());
+  // Encrypted reads + writes on the STATE characteristic too: pairing (the
+  // passkey) is then required on first contact — the phone initiates it on
+  // the first state read/subscribe instead of only when provisioning Wi-Fi.
+  // Base READ/WRITE bits included per the proven provisioning-char pattern;
+  // the 2-byte CCCD descriptor below keeps default (unencrypted) perms, so
+  // enabling notifications after bonding still works.
+  pCharacteristic->setAccessPermissions(ESP_GATT_PERM_READ |
+                                        ESP_GATT_PERM_READ_ENCRYPTED |
+                                        ESP_GATT_PERM_WRITE |
+                                        ESP_GATT_PERM_WRITE_ENCRYPTED);
   // CCCD (0x2902) as a plain 2-byte descriptor: BLE2902() allocates the
   // default ESP_GATT_MAX_ATTR_LEN (600 B) for a value that is only ever 2
   // bytes, and that oversized malloc is what starved on a full heap.
@@ -1580,11 +1628,20 @@ void setup() {
   loadStats();               // restore streak/points before BLE advertises them
   loadWiFiCreds();           // app-provisioned credentials override config.h
 
+  // Recovery chord: BOTH buttons held at boot -> erase stale BLE bonds from
+  // NVS (a phone holding a dead bond after a re-flash fails authentication
+  // silently and never shows a fresh passkey).
+  bool wipeBonds = ui::bothButtonsHeld();
+  if (wipeBonds) {
+    showBootStatus("BLE bonds erased");
+    delay(1200);
+  }
+
   // BLE FIRST: Bluedroid + the GATT table need a large, contiguous heap
   // slice. Starting BLE before Wi-Fi/the 115 KB pet sprite/LVGL guarantees
   // it gets one — the later allocations all have graceful fallbacks, a
   // half-initialized BLE stack does not (f842b5f boot loop).
-  setupBLE();
+  setupBLE(wipeBonds);
   Serial.printf("heap after BLE: %u free\n", ESP.getFreeHeap());
 
   // Boot status is still drawn direct-to-TFT: LVGL takes over after Wi-Fi.

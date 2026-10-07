@@ -206,6 +206,19 @@ bool btn1HasDoubleHere() {
 
 } // namespace
 
+namespace ui {
+
+// Boot-time recovery chord query (called from setup() before ui::begin):
+// true while BOTH buttons are held. Used to erase stale BLE bonds.
+bool bothButtonsHeld() {
+  pinMode(BUTTON_1_PIN, INPUT_PULLUP);
+  pinMode(BUTTON_2_PIN, INPUT_PULLUP);
+  delay(5);   // let the pull-ups settle
+  return digitalRead(BUTTON_1_PIN) == LOW && digitalRead(BUTTON_2_PIN) == LOW;
+}
+
+} // namespace ui
+
 void uiInputInit() {
   pinMode(btn1.pin, INPUT_PULLUP);
   pinMode(btn2.pin, INPUT_PULLUP);

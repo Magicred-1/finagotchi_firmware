@@ -3,18 +3,28 @@
 Device advertises as **`Finagotchi`**.
 
 - Service: `0000f1a0-0000-1000-8000-00805f9b34fb`
-- Characteristic: `0000f1a1-0000-1000-8000-00805f9b34fb` (READ + NOTIFY + WRITE + WRITE_NR — both write-with-response and write-without-response are accepted)
+- Characteristic: `0000f1a1-0000-1000-8000-00805f9b34fb` (READ + NOTIFY + WRITE + WRITE_NR — both write-with-response and write-without-response are accepted; **encrypted access only** — see below)
 - Provisioning characteristic: `0000f1a2-0000-1000-8000-00805f9b34fb` (WRITE + WRITE_NR, **encrypted writes only** — see below)
 
-## Pairing (required before Wi-Fi provisioning)
+## Pairing (required on first contact)
 
 The device uses BLE Secure Connections with bonding. It has a screen, so it
 acts as "display only" (`ESP_IO_CAP_OUT`): when the app initiates pairing,
 the device shows a 6-digit passkey on its screen and the app must perform
 **passkey entry**. After bonding, the link is encrypted.
 
-The pet/state characteristic stays open (stats are not sensitive); only the
-provisioning characteristic enforces encryption.
+BOTH characteristics enforce encryption (the state characteristic:
+encrypted read + write; provisioning: encrypted write), so the phone
+initiates pairing automatically on the first state read or subscribe — no
+provisioning write is needed to trigger the passkey. The CCCD (0x2902)
+descriptor keeps default permissions, so enabling notifications right after
+bonding still works. On successful authentication the device immediately
+pushes a fresh state snapshot.
+
+If pairing fails with a previously-paired phone (`BLE pairing FAILED` on
+the serial monitor), one side holds a stale bond: forget the device in the
+phone's Bluetooth settings, and/or erase the device-side bonds by holding
+**both buttons at boot** (the splash shows "BLE bonds erased").
 
 ## Wi-Fi provisioning (first-time setup)
 

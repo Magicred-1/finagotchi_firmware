@@ -74,6 +74,12 @@ pull-up); pressed = LOW. Active-low is what the firmware expects.
 > to move, long to act, and screens cycle so home is always a few presses
 > away. The UI shows no button hints — state captions only.
 
+> **Recovery chord:** hold BOTH buttons while powering on to erase all BLE
+> bonds from the device (splash shows "BLE bonds erased", serial logs the
+> count). Do this when the app fails to pair after a re-flash — a stale bond
+> on either side fails authentication silently and no fresh passkey appears
+> (also forget the device in the phone's Bluetooth settings).
+
 > On ESP32-S3 modules with **octal PSRAM** (e.g. N16R8), GPIO 33–37 are used
 > by the PSRAM bus — GPIO37 won't work as a button there. Use a quad-PSRAM
 > module (N8R2) or pick a different pin in that case.
