@@ -8,10 +8,14 @@ Device advertises as **`Finagotchi`**.
 
 ## Pairing (required on first contact)
 
-The device uses BLE Secure Connections with bonding. It has a screen, so it
-acts as "display only" (`ESP_IO_CAP_OUT`): when the app initiates pairing,
-the device shows a 6-digit passkey on its screen and the app must perform
-**passkey entry**. After bonding, the link is encrypted.
+The device uses BLE Secure Connections with bonding and **requires MITM
+protection** (`ESP_LE_AUTH_REQ_SC_MITM_BOND`) — Just Works is not accepted.
+It has a screen, so it acts as "display only" (`ESP_IO_CAP_OUT`): on the
+first state read/subscribe/write the phone initiates pairing, the device
+generates and shows a 6-digit passkey on its screen
+(`ESP_GAP_BLE_PASSKEY_NOTIF`), and the app must perform **passkey entry**.
+After bonding, the link is encrypted. If the code is mistyped, the phone's
+retry generates a fresh passkey and the device updates the display.
 
 BOTH characteristics enforce encryption (the state characteristic:
 encrypted read + write; provisioning: encrypted write), so the phone

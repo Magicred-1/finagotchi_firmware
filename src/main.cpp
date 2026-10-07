@@ -620,7 +620,13 @@ class SecCallbacks : public BLESecurityCallbacks {
   }
   void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) override {
     passkeyPending = false;
-    Serial.printf("BLE pairing %s\n", cmpl.success ? "OK" : "FAILED");
+    // Log the negotiated auth mode so a capture proves MITM passkey pairing
+    // (ESP_LE_AUTH_REQ_SC_MITM_BOND = 0x0D) vs the old Just Works (0x04/0x08).
+    Serial.printf("BLE pairing %s (auth_mode=0x%02X, key_type=0x%02X, fail_reason=0x%02X)\n",
+                  cmpl.success ? "OK" : "FAILED",
+                  static_cast<unsigned>(cmpl.auth_mode),
+                  static_cast<unsigned>(cmpl.key_type),
+                  static_cast<unsigned>(cmpl.fail_reason));
     if (cmpl.success) {
       // Push a fresh snapshot as soon as the encrypted link is up so the
       // app gets data immediately. A FAILED here with a previously-paired
@@ -794,7 +800,11 @@ void setupBLE(bool wipeBonds) {
   // Secure Connections + bonding; the device displays the passkey.
   BLEDevice::setSecurityCallbacks(new SecCallbacks());
   BLESecurity* pSecurity = new BLESecurity();
-  pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_BOND);
+  // Secure Connections + bonding + MITM: without MITM the phone negotiates
+  // Just Works/Numeric Comparison and NO passkey is ever generated — with
+  // MITM our DisplayOnly side (ESP_IO_CAP_OUT) gets ESP_GAP_BLE_PASSKEY_NOTIF
+  // (the code to show) and the phone its system passkey-entry dialog.
+  pSecurity->setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
   pSecurity->setCapability(ESP_IO_CAP_OUT);
   pSecurity->setKeySize(16);
   pSecurity->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
@@ -1765,9 +1775,14 @@ void loop() {
   if (provPending) processProvision();
 
   // Pairing passkey panel rides over everything while pairing is pending.
+  // Re-shows on retry: pending->false (failed attempt) ->pending->true is
+  // handled by the edge check, and a fresh code arriving while a panel is
+  // still up (passkey changed) re-pushes the text.
   static bool passkeyShown = false;
-  if (passkeyPending && !passkeyShown) {
+  static uint32_t passkeyShownCode = 0;
+  if (passkeyPending && (!passkeyShown || pairingPasskey != passkeyShownCode)) {
     ui::showPasskey(pairingPasskey);
+    passkeyShownCode = pairingPasskey;
     passkeyShown = true;
   } else if (!passkeyPending && passkeyShown) {
     ui::hidePasskey();

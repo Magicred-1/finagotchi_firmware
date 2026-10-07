@@ -223,6 +223,9 @@ void ui::showPasskey(uint32_t passkey) {
   char num[8];
   snprintf(num, sizeof(num), "%06lu", static_cast<unsigned long>(passkey));
   lv_label_set_text(passkeyNum, num);
+  // Win the z-order on lv_layer_top(): toasts/overlays created later would
+  // otherwise render on top of the pairing panel.
+  lv_obj_move_to_index(passkeyBox, -1);
   lv_obj_set_hidden(passkeyBox, false);
 }
 
