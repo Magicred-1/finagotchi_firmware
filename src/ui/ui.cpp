@@ -143,6 +143,12 @@ void ui::setBattery(uint8_t pct) {
   uiScreenPetSetBattery(pct);
 }
 
+void ui::setWifiOnline(bool online) {
+  if (!g_ui.ready) return;
+  uiScreenPetSetWifiOnline(online);
+  uiScreenDcaSetWifiOnline(online);
+}
+
 void ui::clearBattery() {
   if (!g_ui.ready) return;
   uiScreenPetSetBattery(-1);

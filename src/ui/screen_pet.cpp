@@ -21,6 +21,7 @@ namespace {
 lv_obj_t* canvas;
 lv_obj_t* badgeLabel;
 lv_obj_t* stageTrack;
+lv_obj_t* wifiLabel;
 lv_obj_t* battLabel;
 lv_obj_t* spinner;
 lv_obj_t* spinnerCaption;
@@ -127,6 +128,12 @@ lv_obj_t* uiScreenPetCreate() {
   lv_obj_set_style_bg_color(stageTrack, lv_color_hex(0x1B2431), 0);   // white 8% / navy
   lv_obj_set_style_bg_color(stageTrack, UI_COL_PRIMARY, LV_PART_INDICATOR);
 
+  // Wi-Fi status glyph (top-right, left of the battery): cyan when online,
+  // muted when offline. Always visible — also on USB power (no battery).
+  wifiLabel = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_MUTED);
+  lv_label_set_text(wifiLabel, LV_SYMBOL_WIFI);
+  lv_obj_align(wifiLabel, LV_ALIGN_TOP_RIGHT, -46, 8);
+
   // Battery gauge (top-right): battery symbol + %, colored by level,
   // hidden on USB power.
   battLabel = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_MUTED);
@@ -211,6 +218,10 @@ void uiScreenPetSetSubStage(uint8_t subStage) {
   lv_obj_set_hidden(badgeLabel, !name[0]);
   lv_bar_set_value(stageTrack, subStage < 1 ? 1 : (subStage > 12 ? 12 : subStage),
                    LV_ANIM_ON);
+}
+
+void uiScreenPetSetWifiOnline(bool online) {
+  lv_obj_set_style_text_color(wifiLabel, online ? UI_COL_PRIMARY : UI_COL_MUTED, 0);
 }
 
 void uiScreenPetSetBattery(int pct) {

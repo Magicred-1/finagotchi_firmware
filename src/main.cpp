@@ -765,6 +765,7 @@ void processProvision() {
       char msg[48];
       snprintf(msg, sizeof(msg), "Already on %s", ssid);
       ui::showOverlay(msg, 2500);
+      ui::setWifiOnline(true);
       bleNotifyWifi(true, nullptr);
     } else {
       // Same creds but offline: attempt one rejoin and report the outcome.
@@ -774,6 +775,7 @@ void processProvision() {
       if (timeSynced) updateStreakFromTime();
       bool ok = WiFi.status() == WL_CONNECTED;
       ui::showOverlay(ok ? "Online!" : "WiFi failed", 2500);
+      ui::setWifiOnline(ok);
       bleNotifyWifi(ok, ok ? nullptr : wifiFailCode());
     }
     return;
@@ -797,6 +799,7 @@ void processProvision() {
   timeSynced = setupWiFiTime();   // blocks up to ~10 s, once, user-triggered
   updateStreakFromTime();
   ui::showOverlay(timeSynced ? "Online!" : "WiFi failed", 2500);
+  ui::setWifiOnline(WiFi.status() == WL_CONNECTED);
   // Report the real join result to the app (it monitors the state
   // characteristic) — wifi:ok:<ssid> or wifi:fail:<code>.
   bleNotifyWifi(WiFi.status() == WL_CONNECTED, wifiFailCode());
@@ -1101,6 +1104,8 @@ void loadWiFiCreds() {
 // by a WiFi event hook installed on the first rejoin attempt. 0 = none yet.
 volatile int lastDisconnectReason = 0;
 bool wifiEventsHooked = false;
+volatile bool wifiOnlinePending = false;   // task/event -> loop: icon update
+volatile bool wifiOnlineState = false;
 
 // Common 802.11 reason codes from esp_wifi_types.h.
 const char* wifiReasonStr(int r) {
@@ -1126,6 +1131,9 @@ void hookWifiEvents() {
     lastDisconnectReason = info.wifi_sta_disconnected.reason;
     Serial.printf("WiFi: STA disconnected, reason=%d (%s)\n",
                   lastDisconnectReason, wifiReasonStr(lastDisconnectReason));
+    // Runs on the Wi-Fi event task: just flag it, loop() updates the icon.
+    wifiOnlineState = false;
+    wifiOnlinePending = true;
   }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
 }
 
@@ -1172,9 +1180,13 @@ void noteWifiLink() {
     wifiWasUp = true;
     wifiBootOffline = false;
     wifiNotifyPending = true;
+    wifiOnlineState = true;    // icon update is drained by loop()
+    wifiOnlinePending = true;
     Serial.printf("WiFi rejoined, IP=%s\n", WiFi.localIP().toString().c_str());
   } else if (!up && wifiWasUp) {
     wifiWasUp = false;
+    wifiOnlineState = false;
+    wifiOnlinePending = true;
   }
 }
 
@@ -1808,6 +1820,8 @@ void setup() {
                           actionTogglePause, actionCreatePlan };
   ui::begin(&tft, &pet, actions);
   ui::setSubStage(subStage);
+  // Initial Wi-Fi glyph state (the boot attempt resolved before LVGL was up).
+  ui::setWifiOnline(WiFi.status() == WL_CONNECTED);
 
   // Create-plan screen: offer the xStocks the device ships mints/logos for.
   static const char* createTickers[sizeof(XSTOCK_MINTS) / sizeof(XSTOCK_MINTS[0])];
@@ -1895,6 +1909,12 @@ void loop() {
   if (wifiNotifyPending) {
     wifiNotifyPending = false;
     bleNotifyWifi(true, nullptr);
+  }
+
+  // Wi-Fi icon updates (queued by noteWifiLink / the WiFi event hook).
+  if (wifiOnlinePending) {
+    wifiOnlinePending = false;
+    ui::setWifiOnline(wifiOnlineState);
   }
 
   // Pairing passkey panel rides over everything while pairing is pending.

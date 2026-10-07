@@ -127,6 +127,7 @@ lv_color_t tokenColor(const char* ticker) {
 
 lv_obj_t* listScr;
 lv_obj_t* detailScr;
+lv_obj_t* wifiLabel;
 lv_obj_t* totalVal;
 lv_obj_t* totalSol;
 lv_obj_t* card[kDcaMaxPlans];
@@ -356,6 +357,12 @@ lv_obj_t* uiScreenDcaCreate() {
   lv_label_set_text(title, "PORTFOLIO");
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
 
+  // Wi-Fi glyph right of the title (the round panel clips the top-right
+  // corner, so it rides the title row instead of the corner).
+  wifiLabel = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_MUTED);
+  lv_label_set_text(wifiLabel, LV_SYMBOL_WIFI);
+  lv_obj_align(wifiLabel, LV_ALIGN_TOP_MID, 48, 12);
+
   totalVal = uiThemeLabel(listScr, &lv_font_montserrat_28, UI_COL_TEXT);
   lv_label_set_text(totalVal, "$0.00");
   lv_obj_align(totalVal, LV_ALIGN_TOP_MID, 0, 26);
@@ -573,4 +580,8 @@ void uiScreenDcaTogglePause() {
   if (detailSlot < 0 || detailSlot >= static_cast<int8_t>(g_ui.planCount)) return;
   if (g_ui.actions.togglePause)
     g_ui.actions.togglePause(static_cast<uint8_t>(detailSlot));
+}
+
+void uiScreenDcaSetWifiOnline(bool online) {
+  lv_obj_set_style_text_color(wifiLabel, online ? UI_COL_PRIMARY : UI_COL_MUTED, 0);
 }

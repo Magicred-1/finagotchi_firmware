@@ -64,6 +64,7 @@ void uiScreenPetSyncWait(bool on);
 void uiScreenPetSetStats(uint32_t streakDays, uint32_t points, uint8_t happiness);
 void uiScreenPetSetSubStage(uint8_t subStage);
 void uiScreenPetSetBattery(int pct);     // <0 hides (USB power)
+void uiScreenPetSetWifiOnline(bool online);  // Wi-Fi glyph, top-right
 void uiScreenPetToast(const char* text, bool reward); // toasts ride lv_layer_top()
 void uiScreenPetPlansChanged();          // next-buy chip refresh
 void uiScreenPetChipAdvance();           // BTN2 double: manual rotate
@@ -81,6 +82,7 @@ void uiScreenDcaCloseDetail();
 void uiScreenDcaToggleAmountUnit();
 bool uiScreenDcaFocusAdvance();          // false: no more cards -> next screen
 void uiScreenDcaTogglePause();           // detail double-press: pause/resume
+void uiScreenDcaSetWifiOnline(bool online);  // Wi-Fi glyph, portfolio header
 
 // screen_create.cpp ("+ New plan" wheel: token -> amount -> frequency drums)
 // Widgets are built lazily on first show and freed on exit (boot-heap

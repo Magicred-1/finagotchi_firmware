@@ -79,6 +79,10 @@ void showOverlay(const char* msg, uint32_t ms);
 void showPasskey(uint32_t passkey);
 void hidePasskey();
 
+// Top-right Wi-Fi status glyph (cyan online / muted offline). Driven by
+// main.cpp's link tracking (noteWifiLink edge detector + WiFi event hook).
+void setWifiOnline(bool online);
+
 // Boot-time recovery chord: true while BOTH buttons are held (called from
 // setup() before begin()). Used to erase stale BLE bonds — see WIRING.md.
 bool bothButtonsHeld();
