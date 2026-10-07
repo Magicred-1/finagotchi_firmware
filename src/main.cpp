@@ -759,10 +759,9 @@ void processProvision() {
                 token ? " (+ device token)" : "");
   ui::showOverlay("WiFi saved, joining...", 4000);
 
-  // Same deinit race as the boot path: let the driver settle before the
-  // rejoin (setupWiFiTime -> wifiRejoin), or the radio may never come back.
-  WiFi.disconnect(true);
-  delay(500);
+  // Driver stays initialized: a plain disconnect (driver up), then
+  // setupWiFiTime -> wifiRejoin brings STA back with the new credentials.
+  WiFi.disconnect(false);
   timeSynced = setupWiFiTime();   // blocks up to ~10 s, once, user-triggered
   updateStreakFromTime();
   ui::showOverlay(timeSynced ? "Online!" : "WiFi failed", 2500);
@@ -1062,11 +1061,16 @@ void loadWiFiCreds() {
   }
 }
 
-// Defensive STA (re)start, used by the boot path, the poll tasks and BLE
-// provisioning. If the driver is down or wedged (WL_NO_SHIELD / the
-// esp_wifi_init 257 failure that follows a botched boot-time deinit),
-// power-cycle the radio fully and retry once.
+// Wi-Fi rejoin, used by the boot path, the poll tasks and BLE provisioning.
+// The driver is NEVER de-initialized (no WIFI_OFF): the boot-time deinit
+// wedged it ("timeout when WiFi un-init" -> esp_wifi_init 257 on the next
+// STA enable), and it only freed ~14 KB anyway. So a rejoin is just
+// begin(); if the driver is genuinely down (WL_NO_SHIELD), one full
+// power-cycle is the last resort. No credentials -> never touch the radio.
+bool wifiBootOffline = false;   // set when the boot attempt fails/skips
+
 void wifiRejoin() {
+  if (!wifiSsid[0]) return;   // no SSID configured: stay fully off Wi-Fi
   WiFi.mode(WIFI_STA);
   wl_status_t st = WiFi.begin(wifiSsid, wifiPass);
   if (st == WL_NO_SHIELD) {   // driver not initialized / wedged
@@ -1079,6 +1083,11 @@ void wifiRejoin() {
 }
 
 bool setupWiFiTime() {
+  if (!wifiSsid[0]) {
+    Serial.println("WiFi: no credentials, running offline.");
+    wifiBootOffline = true;
+    return false;
+  }
   wifiRejoin();
   Serial.print("WiFi connecting");
 
@@ -1091,13 +1100,11 @@ bool setupWiFiTime() {
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("\nWiFi failed, running offline.");
-    // The deinit races the disconnect if we power down immediately ("timeout
-    // when WiFi un-init" then esp_wifi_init 257 on the next STA enable) —
-    // give the driver time to settle BEFORE switching the radio off, or the
-    // poll tasks can never bring Wi-Fi back up.
-    WiFi.disconnect(true);
-    delay(500);
-    WiFi.mode(WIFI_OFF);
+    // disconnect(false): drop the association but keep the driver UP —
+    // disconnect(true)/WIFI_OFF wedge the deinit on this stack and every
+    // later esp_wifi_init fails (NO_MEM), killing standalone sync.
+    WiFi.disconnect(false);
+    wifiBootOffline = true;
     return false;
   }
 
@@ -1267,7 +1274,17 @@ bool pollDcaRelay() {
 // authoritative and polls stay paused. BTN1 sets syncRequested for an
 // immediate manual sync (same relay + price path) — the 500 ms wake keeps
 // that responsive while the 30 min cadence is untouched. The render loop on
-// the loop task is never blocked.
+// the loop task is never blocked. wifiRejoin() is a no-op without
+// credentials, so an unprovisioned device never touches the radio.
+
+// One-time log when Wi-Fi first comes up after an offline boot.
+void logRejoinOnce() {
+  if (wifiBootOffline && WiFi.status() == WL_CONNECTED) {
+    wifiBootOffline = false;
+    Serial.printf("WiFi rejoined, IP=%s\n", WiFi.localIP().toString().c_str());
+  }
+}
+
 void dcaPollTask(void*) {
   bool first = true;
   uint32_t lastPoll = millis();
@@ -1276,9 +1293,12 @@ void dcaPollTask(void*) {
       syncRequested = false;
       if (!appConnected) {
         if (WiFi.status() == WL_CONNECTED) {
+          logRejoinOnce();
           bool ok = pollDcaRelay();
           fetchPrices();
           stashToast(ok ? "synced" : "sync failed");
+        } else if (!wifiSsid[0]) {
+          stashToast("no wifi credentials");
         } else {
           // Rejoin with the current credentials; user can press again.
           wifiRejoin();
@@ -1293,6 +1313,7 @@ void dcaPollTask(void*) {
         lastPoll = millis();
         first = false;
         if (WiFi.status() == WL_CONNECTED) {
+          logRejoinOnce();
           pollDcaRelay();
           fetchPrices();
         } else {
@@ -1582,6 +1603,7 @@ void stateSyncTask(void*) {
         lastSync = millis();
         first = false;
         if (WiFi.status() == WL_CONNECTED) {
+          logRejoinOnce();
           int code = syncStateFromServer();
           if (code == HTTP_CODE_UNAUTHORIZED) {
             if (++authFails >= STATE_SYNC_MAX_401) {
@@ -1715,12 +1737,16 @@ void setup() {
   ui::setSyncWait(true);     // advertise -> waiting scene
 
   // Standalone DCA mirror: polls the relay + price feeds while the app is
-  // disconnected. 12 KB stack: TLS handshakes (WiFiClientSecure) are hungry.
-  xTaskCreate(dcaPollTask, "dca", 12288, nullptr, 1, nullptr);
+  // disconnected. 8 KB stacks: TLS handshakes (WiFiClientSecure) peak ~6 KB.
+  // A failed create MUST log — the tasks dying silently (heap too low) is
+  // how the 200px-sprite + resident-driver budget broke standalone sync.
+  if (xTaskCreate(dcaPollTask, "dca", 8192, nullptr, 1, nullptr) != pdPASS)
+    Serial.println("TASK FAIL: dca (heap too low)");
 
   // Cloud state sync: same shape as the DCA poll, active only when a device
   // token was provisioned.
-  xTaskCreate(stateSyncTask, "sync", 12288, nullptr, 1, nullptr);
+  if (xTaskCreate(stateSyncTask, "sync", 8192, nullptr, 1, nullptr) != pdPASS)
+    Serial.println("TASK FAIL: sync (heap too low)");
 
   Serial.printf("heap after tasks: %u free\n", ESP.getFreeHeap());
 

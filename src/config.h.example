@@ -3,8 +3,11 @@
 
 #pragma once
 
-#define WIFI_SSID "YourSSID"
-#define WIFI_PASS "YourPassword"
+// Empty SSID = no Wi-Fi at all: the device never initializes the radio and
+// the poll tasks skip every rejoin until the app provisions credentials
+// over BLE (see BLE_PROTOCOL.md).
+#define WIFI_SSID ""
+#define WIFI_PASS ""
 
 // POSIX TZ string for your timezone (used for day-boundary streaks).
 // Examples:
