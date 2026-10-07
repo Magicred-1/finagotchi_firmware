@@ -61,6 +61,11 @@
 #define STATE_SYNC_URL "https://api.finagotchi.app/device/state"
 #endif
 
+// Perf stats in loop(), off by default (build with -D UI_PERF_LOG=1).
+#ifndef UI_PERF_LOG
+#define UI_PERF_LOG 0
+#endif
+
 namespace {
 
 TFT_eSPI tft;
@@ -717,6 +722,14 @@ class SrvCallbacks : public BLEServerCallbacks {
     appConnected = true;
     ui::setSyncWait(false);
     Serial.println("App connected (demo paused).");
+  }
+  void onConnect(BLEServer* s, esp_ble_gatts_cb_param_t* param) override {
+    // Idle disconnects: with no device-side preference, the phone's initial
+    // conn params can pair a slow interval with a tight supervision timeout,
+    // and missed anchors (the device is busy pushing frames) drop the link.
+    // Ask for 30-50 ms intervals, slave latency 0, 5 s supervision timeout.
+    // (units: interval in 1.25 ms, timeout in 10 ms)
+    s->updateConnParams(param->connect.remote_bda, 24, 40, 0, 500);
   }
   void onDisconnect(BLEServer* s) override {
     appConnected = false;
@@ -1627,13 +1640,43 @@ void loop() {
   uint32_t nowMs = millis();
   float nowSec = nowMs / 1000.0f;
 
+  // Lightweight frame stats, off by default (build with -D UI_PERF_LOG=1):
+  // every 10 s, average pet-render time per frame and LVGL time per pass.
+#if UI_PERF_LOG
+  static uint32_t perfPetUs = 0, perfUiUs = 0, perfPasses = 0,
+                  perfFrames = 0, perfT0 = 0;
+  uint32_t p0 = micros();
+#endif
+
   // Pet scene renders at the FRAME_MS cadence; LVGL (buttons, timers,
   // screen flush) runs every pass.
   if (nowMs - lastFrame >= FRAME_MS) {
     lastFrame = nowMs;
     ui::renderPetFrame(nowSec);
+#if UI_PERF_LOG
+    perfFrames++;
+#endif
   }
+#if UI_PERF_LOG
+  uint32_t p1 = micros();
+#endif
   ui::update();
+
+#if UI_PERF_LOG
+  perfPetUs += p1 - p0;
+  perfUiUs += micros() - p1;
+  perfPasses++;
+  if (perfT0 == 0) perfT0 = nowMs;
+  if (nowMs - perfT0 >= 10000 && perfFrames > 0) {
+    Serial.printf("PERF: pet %.1f ms/frame (%lu fps), lvgl %.2f ms/pass (%lu passes/s)\n",
+                  static_cast<double>(perfPetUs) / 1000.0 / perfFrames,
+                  static_cast<unsigned long>(perfFrames * 1000UL / (nowMs - perfT0)),
+                  static_cast<double>(perfUiUs) / 1000.0 / perfPasses,
+                  static_cast<unsigned long>(perfPasses * 1000UL / (nowMs - perfT0)));
+    perfPetUs = perfUiUs = perfPasses = perfFrames = 0;
+    perfT0 = nowMs;
+  }
+#endif
 
   updateBattery();
   if (cmdPending) processCommand();

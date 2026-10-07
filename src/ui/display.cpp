@@ -4,9 +4,9 @@
   The whole pipeline renders LV_COLOR_FORMAT_RGB565_SWAPPED (see lv_conf.h):
   the panel expects big-endian pixels and the pet's TFT_eSprite framebuffer
   is already big-endian, so LVGL's draw buffer can be pushed to the panel
-  verbatim (no byte-swap pass anywhere). Two 240x30 partial draw buffers
-  (~28 KB) keep RAM in check; the flush is a blocking pushPixels, same SPI
-  cost as the old full-screen pushSprite.
+  verbatim (no byte-swap pass anywhere). Two 240x40 partial draw buffers
+  (~38 KB static) keep the heap untouched; the flush is a blocking
+  pushPixels, same SPI cost as the old full-screen pushSprite.
 */
 
 #include "ui_internal.h"
@@ -15,7 +15,9 @@ namespace {
 
 constexpr int32_t DISP_W = 240;
 constexpr int32_t DISP_H = 240;
-constexpr int32_t BUF_LINES = 30;   // RAM fallback: drop to 20 if alloc fails
+// 40 lines: 5 flush calls for the 200 px pet canvas (vs 7 at 30), less
+// per-chunk overhead. Static buffers (38 KB), so this costs zero heap.
+constexpr int32_t BUF_LINES = 40;   // RAM fallback: drop to 20 if alloc fails
 
 LV_ATTRIBUTE_MEM_ALIGN uint8_t buf1[DISP_W * BUF_LINES * 2];
 LV_ATTRIBUTE_MEM_ALIGN uint8_t buf2[DISP_W * BUF_LINES * 2];
