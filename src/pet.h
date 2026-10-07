@@ -76,19 +76,23 @@ constexpr size_t kPetStateCount = static_cast<size_t>(PetState::PET_STATE_COUNT)
 constexpr size_t kMoodCount     = static_cast<size_t>(PetMoodId::MOOD_COUNT);
 constexpr size_t kItemCount     = static_cast<size_t>(PetItem::ITEM_COUNT);
 
+// Max mirrored DCA plans (BLE dca:plan slots, NVS blobs, portfolio cards).
+constexpr size_t kDcaMaxPlans = 8;
+
 // One DCA plan, mirrored read-only from the app (BLE dca: commands) or from
 // the relay poll while offline. ticker is clamped to 6 chars + NUL.
 // priceUsd = last known token unit price (app/relay-fed; 0 = unknown).
+// holdingsHeld is a FLOAT (fractional tokens, e.g. 1.5) — same 4 bytes as
+// the old uint32_t, so the NVS blob layout is unchanged in size.
 struct DcaPlan {
   bool     enabled;
   uint32_t nextBuyEpoch;
   float    amountSol;
   char     ticker[7];
   uint32_t buys;
-  uint32_t holdingsHeld;
+  float    holdingsHeld;
   float    priceUsd;
 };
-constexpr size_t kDcaMaxPlans = 4;
 
 class FinagotchiPet {
 public:

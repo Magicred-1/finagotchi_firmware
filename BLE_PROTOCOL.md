@@ -112,7 +112,7 @@ connected the device only shows a "connect the app" toast.
 ### `dca:pause:<i>` (pause/resume request, device → app)
 
 Sent when the user double-presses on a plan's **detail view** while the app
-is connected. `i` is the slot index in the last pushed table (0–3). The app
+is connected. `i` is the slot index in the last pushed table (0–7). The app
 toggles that plan active ↔ paused and rewrites the whole table back
 (`dca:count:` + `dca:plan:` writes). The device applies an optimistic local
 toggle (paused visuals right away) and the app's rewrite reconciles. With
@@ -181,8 +181,8 @@ truncated away.
 | `happy:<0-100>` | Set happiness (persisted in NVS, shown in the stats bar) |
 | `streak:<n>` | Set displayed streak (persisted in NVS; also stamps the day so the offline day check keeps it) |
 | `<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>][:<subStage>]` | Full state snapshot (same shape as the notify string) — sets everything at once; the optional trailing fields update the plan count and 12-stage sub-stage |
-| `dca:count:<n>` | Declares that `n` (0–4) `dca:plan:` writes follow; all previous plan slots are wiped from NVS first |
-| `dca:plan:<i>:<enabled>:<next_buy_epoch>:<amount>:<TICKER>:<buys>:<holdings>:<price_usd>` | Write plan slot `i` (0–3): enabled 0/1, next-buy unix epoch, amount in SOL (float), ticker (clamped to 6 chars), completed buys, holdings held, token unit price in USD (drives the price/valuation display; 0 when unknown). Current apps always send the 8th field; old firmware tolerates its absence. Paused plans arrive as `en=0, epoch=0` and render a PAUSED state (muted card, "PAUSED" on the detail view — never a countdown). A slot with price > 0 is marked app-priced: the device skips self-fetching that ticker's price (the app's quote is fresher; self-fetch stays the fallback for unpriced slots). Persisted in NVS, shown on the portfolio screen and the next-buy chip |
+| `dca:count:<n>` | Declares that `n` (0–8) `dca:plan:` writes follow; all previous plan slots are wiped from NVS first |
+| `dca:plan:<i>:<enabled>:<next_buy_epoch>:<amount>:<TICKER>:<buys>:<holdings>:<price_usd>` | Write plan slot `i` (0–7): enabled 0/1, next-buy unix epoch, amount in SOL (float), ticker (clamped to 6 chars), completed buys (int), holdings held (**float** — fractional tokens like `1.5`; sending an integer is fine), token unit price in USD (drives the price/valuation display; 0 when unknown). Current apps always send the 8th field; old firmware tolerates its absence. Paused plans arrive as `en=0, epoch=0` and render a PAUSED state (muted card, "PAUSED" on the detail view — never a countdown). A slot with price > 0 is marked app-priced: the device skips self-fetching that ticker's price (the app's quote is fresher; self-fetch stays the fallback for unpriced slots). Persisted in NVS, shown on the portfolio screen and the next-buy chip |
 | `dca:clear` | Wipe all plan slots (RAM + NVS) |
 | `dca:hit:<n>:<TICKER>` | A buy just executed: "+n TICKER" reward toast (app purple) + dance reaction + sparkle burst |
 | `solusd:<rate>` | SOL/USD rate (float) for the portfolio amount unit toggle (USD ⇄ SOL); persisted in NVS (`finagotchi`/`solUsd`) |
@@ -194,8 +194,8 @@ are logged as `BLE: unknown command` on the serial monitor.
 
 ## DCA plan tracking
 
-The device mirrors up to **4 DCA plans** from the app, persisted in NVS
-(`finagotchi` namespace: `dcaCount` + `dca0`..`dca3` blobs) so they survive
+The device mirrors up to **8 DCA plans** from the app, persisted in NVS
+(`finagotchi` namespace: `dcaCount` + `dca0`..`dca7` blobs) so they survive
 reboots. When plans exist, a next-buy chip on the pet screen rotates one
 plan every 4 s (cross-fade blend):
 

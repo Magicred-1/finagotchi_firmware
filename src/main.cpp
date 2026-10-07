@@ -204,7 +204,7 @@ void seedDemoPlans() {
   uint32_t now = timeSynced ? static_cast<uint32_t>(time(nullptr)) : 0;
   uint32_t base = now ? now : 1780000000u;
   auto mk = [](uint32_t epoch, float amt, const char* tick,
-               uint32_t buys, uint32_t held, float price) {
+               uint32_t buys, float held, float price) {
     DcaPlan p{};
     p.enabled = true;
     p.nextBuyEpoch = epoch;
@@ -408,20 +408,25 @@ void handleCommand(const char* cmd) {
   else if (strncmp(cmd, "dca:plan:", 9) == 0) {
     // dca:plan:<i>:<enabled>:<next_buy_epoch>:<amount>:<TICKER>:<buys>:<holdings>[:<price_usd>]
     // The 8th field (token unit price, USD) is optional; older apps omit it.
+    // holdings is a FLOAT (fractional tokens, e.g. "1.5") — parsing it as an
+    // integer stops sscanf at the dot and silently drops the price field.
     unsigned i, en;
-    unsigned long epoch, buys, hold;
-    float amt, price = 0.0f;
+    unsigned long epoch, buys;
+    float amt, hold, price = 0.0f;
     char tick[7];
-    int got = sscanf(cmd + 9, "%u:%u:%lu:%f:%6[^:]:%lu:%lu:%f",
+    int got = sscanf(cmd + 9, "%u:%u:%lu:%f:%6[^:]:%lu:%f:%f",
                      &i, &en, &epoch, &amt, tick, &buys, &hold, &price);
-    if (got >= 7 && i < kDcaMaxPlans) {
+    if (got >= 7 && i >= kDcaMaxPlans) {
+      Serial.printf("BLE: dca:plan slot %u over capacity (max %u)\n", i,
+                    static_cast<unsigned>(kDcaMaxPlans));
+    } else if (got >= 7) {
       DcaPlan& p = plans[i];
       p.enabled = en != 0;
       p.nextBuyEpoch = static_cast<uint32_t>(epoch);
       p.amountSol = amt;
       strlcpy(p.ticker, tick, sizeof(p.ticker));
       p.buys = static_cast<uint32_t>(buys);
-      p.holdingsHeld = static_cast<uint32_t>(hold);
+      p.holdingsHeld = hold;
       p.priceUsd = got == 8 ? price : 0.0f;
       planOverdue[i] = false;   // fresh app data: app is authoritative
       // The 8th field is always sent by current apps (0 when unknown): a
@@ -748,7 +753,10 @@ void processProvision() {
                 token ? " (+ device token)" : "");
   ui::showOverlay("WiFi saved, joining...", 4000);
 
+  // Same deinit race as the boot path: let the driver settle before the
+  // rejoin (setupWiFiTime -> wifiRejoin), or the radio may never come back.
   WiFi.disconnect(true);
+  delay(500);
   timeSynced = setupWiFiTime();   // blocks up to ~10 s, once, user-triggered
   updateStreakFromTime();
   ui::showOverlay(timeSynced ? "Online!" : "WiFi failed", 2500);
@@ -1044,9 +1052,24 @@ void loadWiFiCreds() {
   }
 }
 
-bool setupWiFiTime() {
+// Defensive STA (re)start, used by the boot path, the poll tasks and BLE
+// provisioning. If the driver is down or wedged (WL_NO_SHIELD / the
+// esp_wifi_init 257 failure that follows a botched boot-time deinit),
+// power-cycle the radio fully and retry once.
+void wifiRejoin() {
   WiFi.mode(WIFI_STA);
-  WiFi.begin(wifiSsid, wifiPass);
+  wl_status_t st = WiFi.begin(wifiSsid, wifiPass);
+  if (st == WL_NO_SHIELD) {   // driver not initialized / wedged
+    Serial.println("WiFi: STA enable failed, full radio re-init");
+    WiFi.mode(WIFI_OFF);
+    delay(500);
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(wifiSsid, wifiPass);
+  }
+}
+
+bool setupWiFiTime() {
+  wifiRejoin();
   Serial.print("WiFi connecting");
 
   // Non-blocking-ish: give up after 10 s so the pet still runs offline.
@@ -1058,7 +1081,12 @@ bool setupWiFiTime() {
 
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("\nWiFi failed, running offline.");
+    // The deinit races the disconnect if we power down immediately ("timeout
+    // when WiFi un-init" then esp_wifi_init 257 on the next STA enable) —
+    // give the driver time to settle BEFORE switching the radio off, or the
+    // poll tasks can never bring Wi-Fi back up.
     WiFi.disconnect(true);
+    delay(500);
     WiFi.mode(WIFI_OFF);
     return false;
   }
@@ -1195,7 +1223,7 @@ bool pollDcaRelay() {
       uint32_t buys = static_cast<uint32_t>(strtoul(buyS, nullptr, 10));
       uint32_t oldBuys = plans[i].buys;
       plans[i].nextBuyEpoch  = static_cast<uint32_t>(strtoul(epS, nullptr, 10));
-      plans[i].holdingsHeld  = static_cast<uint32_t>(strtoul(holdS, nullptr, 10));
+      plans[i].holdingsHeld  = strtof(holdS, nullptr);   // fractional tokens
       plans[i].buys = buys;
       if (priceS) plans[i].priceUsd = strtof(priceS, nullptr);
 
@@ -1243,8 +1271,7 @@ void dcaPollTask(void*) {
           stashToast(ok ? "synced" : "sync failed");
         } else {
           // Rejoin with the current credentials; user can press again.
-          WiFi.mode(WIFI_STA);
-          WiFi.begin(wifiSsid, wifiPass);
+          wifiRejoin();
           stashToast("wifi joining...");
         }
         lastPoll = millis();   // don't let the auto cadence fire right after
@@ -1260,8 +1287,7 @@ void dcaPollTask(void*) {
           fetchPrices();
         } else {
           // Silent retry: rejoin with the current credentials, poll next cycle.
-          WiFi.mode(WIFI_STA);
-          WiFi.begin(wifiSsid, wifiPass);
+          wifiRejoin();
         }
       }
     }
@@ -1557,8 +1583,7 @@ void stateSyncTask(void*) {
           }
         } else {
           // Silent retry: rejoin with the current credentials, poll next cycle.
-          WiFi.mode(WIFI_STA);
-          WiFi.begin(wifiSsid, wifiPass);
+          wifiRejoin();
         }
       }
     }

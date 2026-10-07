@@ -248,8 +248,8 @@ void cardFill(uint8_t slot) {
 
   char amt[16];
   uiFmtAmount(p, amt, sizeof(amt));
-  snprintf(buf, sizeof(buf), "%lu held  %s/buy",
-           static_cast<unsigned long>(p.holdingsHeld), amt);
+  snprintf(buf, sizeof(buf), "%.4g held  %s/buy",
+           static_cast<double>(p.holdingsHeld), amt);
   lv_label_set_text(cardSub[slot], buf);
 
   lv_obj_set_style_border_color(card[slot], od ? UI_COL_WARNING : UI_COL_BORDER, 0);
@@ -301,7 +301,7 @@ void detailFill() {
   lv_label_set_text(dStatVal[0], buf);
   snprintf(buf, sizeof(buf), "%lu", static_cast<unsigned long>(p.buys));
   lv_label_set_text(dStatVal[1], buf);
-  snprintf(buf, sizeof(buf), "%lu", static_cast<unsigned long>(p.holdingsHeld));
+  snprintf(buf, sizeof(buf), "%.4g", static_cast<double>(p.holdingsHeld));
   lv_label_set_text(dStatVal[2], buf);
   fmtValue(p, buf, sizeof(buf));
   lv_label_set_text(dStatVal[3], buf);
@@ -365,6 +365,8 @@ lv_obj_t* uiScreenDcaCreate() {
   lv_obj_set_hidden(totalSol, true);
 
   // Scrollable card column (extends to the bottom safe zone — no hint bar).
+  // With up to kDcaMaxPlans(8) cards + the "+ New plan" card this always
+  // overflows: vertical scroll, slim cyan scrollbar like the menu list.
   lv_obj_t* col = lv_obj_create(listScr);
   lv_obj_set_size(col, 240, 158);
   lv_obj_align(col, LV_ALIGN_TOP_MID, 0, 76);
@@ -374,7 +376,12 @@ lv_obj_t* uiScreenDcaCreate() {
   lv_obj_set_style_pad_row(col, 6, 0);
   lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_scrollbar_mode(col, LV_SCROLLBAR_MODE_OFF);
+  lv_obj_set_scroll_dir(col, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(col, LV_SCROLLBAR_MODE_AUTO);
+  lv_obj_set_style_bg_color(col, UI_COL_PRIMARY, LV_PART_SCROLLBAR);
+  lv_obj_set_style_bg_opa(col, LV_OPA_COVER, LV_PART_SCROLLBAR);
+  lv_obj_set_style_width(col, 3, LV_PART_SCROLLBAR);
+  lv_obj_set_style_radius(col, 2, LV_PART_SCROLLBAR);
 
   for (size_t i = 0; i < kDcaMaxPlans; i++) {
     card[i] = lv_obj_create(col);
