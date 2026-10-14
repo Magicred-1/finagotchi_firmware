@@ -287,8 +287,8 @@ const std::array<ReactKey, 9> KEYS_DANCE = {{{0,1,0},{0.11f,1.06f,-14},{0.22f,0.
 
 // ---------------------------------------------------------------------------
 // PetCanvas scene themes — store.ts BACKGROUND_COLORS, verbatim. Each stop
-// is an rgba tint overlaid on the navy scene background #07111F; stop 1
-// tints the sky, stop 2 the ground band. Effective RGB565 colors are
+// is an rgba tint overlaid on the landing-navy scene background #0B2858;
+// stop 1 tints the sky, stop 2 the ground band. Effective RGB565 colors are
 // composited in setSceneTheme().
 // ---------------------------------------------------------------------------
 
@@ -299,20 +299,20 @@ struct SceneThemeDef {
 };
 
 const SceneThemeDef SCENE_THEMES[FinagotchiPet::kSceneThemeCount] = {
-  { "default",  93,226,166, 0.06f,   93,226,166, 0.12f },
-  { "aurora",   53,215,255, 0.08f,  192,140,255, 0.14f },
-  { "sunset",  255,142,158, 0.08f,  255,193, 94, 0.14f },
-  { "midnight", 30, 41, 59, 0.50f,   53,215,255, 0.10f },
-  { "galaxy",   99, 50,180, 0.18f,   53,215,255, 0.14f },
-  { "gold",    255,193, 94, 0.14f,  255,142, 74, 0.12f },
+  { "default",  141,201,246, 0.05f,  141,201,246, 0.10f },
+  { "aurora",   141,201,246, 0.10f,   69,214,205, 0.14f },
+  { "sunset",   243,111,124, 0.10f,  233,184, 70, 0.14f },
+  { "midnight",  10, 20, 34, 0.55f,  141,201,246, 0.12f },
+  { "galaxy",   153, 69,255, 0.18f,  141,201,246, 0.14f },
+  { "gold",     233,184, 70, 0.14f,  248,180, 60, 0.12f },
 };
 
-// rgba overlay composited over the app navy #07111F.
+// rgba overlay composited over the app's landing navy #0B2858.
 void compositeOverNavy(uint8_t or_, uint8_t og, uint8_t ob, float a,
                        uint8_t& r, uint8_t& g, uint8_t& b) {
-  r = static_cast<uint8_t>(0x07 * (1.0f - a) + or_ * a);
-  g = static_cast<uint8_t>(0x11 * (1.0f - a) + og * a);
-  b = static_cast<uint8_t>(0x1F * (1.0f - a) + ob * a);
+  r = static_cast<uint8_t>(0x0B * (1.0f - a) + or_ * a);
+  g = static_cast<uint8_t>(0x28 * (1.0f - a) + og * a);
+  b = static_cast<uint8_t>(0x58 * (1.0f - a) + ob * a);
 }
 
 } // namespace
@@ -743,7 +743,7 @@ void FinagotchiPet::drawItem(const Anchor& an) {
   };
 
   const uint16_t gold = spr->color565(0xFB, 0xBF, 0x24);
-  const uint16_t navy = spr->color565(0x07, 0x11, 0x1F);
+  const uint16_t navy = spr->color565(0x0B, 0x28, 0x58);
 
   switch (curItem) {
     case PetItem::ITEM_CROWN: {
@@ -760,7 +760,7 @@ void FinagotchiPet::drawItem(const Anchor& an) {
     }
     case PetItem::ITEM_GLASSES: {
       // rgba(31,41,55,0.82) over the navy scene
-      uint16_t lens = blend565(spr.get(), 0x07, 0x11, 0x1F, 31, 41, 55, 0.82f);
+      uint16_t lens = blend565(spr.get(), 0x0B, 0x28, 0x58, 31, 41, 55, 0.82f);
       fillEllipseArt(-0.22f, 0.0f, 0.18f, 0.14f, lens);   // lens centers rest
       fillEllipseArt(0.22f, 0.0f, 0.18f, 0.14f, lens);    // at ±0.22R
       strokeArt(-0.04f, 0.0f, 0.04f, 0.0f, lens);         // bridge
@@ -775,7 +775,7 @@ void FinagotchiPet::drawItem(const Anchor& an) {
     }
     case PetItem::ITEM_HALO: {
       // ring rx 0.34R / ry 0.07R, stroke 0.04R, gold at 92% over navy
-      uint16_t ring = blend565(spr.get(), 0x07, 0x11, 0x1F, 0xFB, 0xBF, 0x24, 0.92f);
+      uint16_t ring = blend565(spr.get(), 0x0B, 0x28, 0x58, 0xFB, 0xBF, 0x24, 0.92f);
       fillEllipseArt(0.0f, 0.0f, 0.34f, 0.07f, ring);
       fillEllipseArt(0.0f, 0.0f, 0.30f, 0.03f, navy);
       break;
@@ -991,9 +991,9 @@ void FinagotchiPet::render(float nowSec) {
     // PetBody glow: same path x1.15 behind the body at 22% opacity,
     // blended over the scene background.
     uint16_t glowDim = spr->color565(
-        static_cast<uint8_t>(pose.gr * 0.22f + 0x07 * 0.78f),
-        static_cast<uint8_t>(pose.gg * 0.22f + 0x11 * 0.78f),
-        static_cast<uint8_t>(pose.gb * 0.22f + 0x1F * 0.78f));
+        static_cast<uint8_t>(pose.gr * 0.22f + 0x0B * 0.78f),
+        static_cast<uint8_t>(pose.gg * 0.22f + 0x28 * 0.78f),
+        static_cast<uint8_t>(pose.gb * 0.22f + 0x58 * 0.78f));
     for (int i = 0; i < NRAD; i++) {
       float theta = static_cast<float>(i) * (TWO_PI / static_cast<float>(NRAD));
       float r = pose.radii[i];

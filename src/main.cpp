@@ -61,6 +61,16 @@
 #define STATE_SYNC_URL "https://api.finagotchi.app/device/state"
 #endif
 
+// Legacy standalone DCA relay poll. The current backend has NO
+// /api/device/<id>/dca route — the app pushes the full plan table over BLE
+// and /device/state covers standalone state — so polling the relay just
+// burns a 404 (and a TCP connection) every 30 min. Off by default; set
+// RELAY_POLL_ENABLED 1 in config.h only if you run a relay that implements
+// the CSV contract documented in README.md.
+#ifndef RELAY_POLL_ENABLED
+#define RELAY_POLL_ENABLED 0
+#endif
+
 // Perf stats in loop(), off by default (build with -D UI_PERF_LOG=1).
 #ifndef UI_PERF_LOG
 #define UI_PERF_LOG 0
@@ -477,7 +487,7 @@ void handleCommand(const char* cmd) {
     if (sscanf(cmd + 8, "%u:%6s", &n, tick) == 2) {
       char t[24];
       snprintf(t, sizeof(t), "+%u %s", n > 999 ? 999 : n, tick);
-      ui::enqueueRewardToast(t);   // a buy landed: purple celebration toast
+      ui::enqueueRewardToast(t);   // a buy landed: amber celebration toast
       pet.react(PetReaction::REACT_DANCE, nowSec);
       pet.sparkleBurst(nowSec);
       Serial.printf("BLE: dca hit %s\n", t);
@@ -509,15 +519,19 @@ void handleCommand(const char* cmd) {
     }
   }
   else {
-    // "<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>]". Lets
-    // the app push everything in one write instead of field-by-field
+    // "<stage>:<streak>:<mood>:<item>[:<points>:<happy>[:<dcaCount>[:<sub>]]]".
+    // Lets the app push everything in one write instead of field-by-field
     // commands. The 7th field (plan count, device-owned) is parsed but
-    // ignored, so new and old app builds can share one format.
+    // ignored, so new and old app builds can share one format. When the
+    // snapshot does not fit the negotiated ATT payload the app falls back
+    // to a 4-field head write followed by separate points:/happy:/substage:
+    // commands (HARDWARE_CONTRACT §3.1), so 4 fields must also parse —
+    // points/happy keep their current values in that case.
     char sname[12];
     unsigned long s, p;
     unsigned m, it, h, dc, ss;
     int parsed = sscanf(cmd, "%11[^:]:%lu:%u:%u:%lu:%u:%u:%u", sname, &s, &m, &it, &p, &h, &dc, &ss);
-    if (parsed >= 6) {
+    if (parsed >= 4) {
       // Stage name -> one of the 4 base shapes (unknown name: keep the
       // current shape). If a sub-stage is present (8th field), store it too;
       // otherwise keep the current sub-stage. Item stays a BLE-only field —
@@ -534,8 +548,8 @@ void handleCommand(const char* cmd) {
       applySnapshot(ps, parsed >= 8 ? static_cast<int>(ss < 1 ? 1 : ss) : 0,
                     static_cast<uint32_t>(s),
                     static_cast<uint8_t>(m < kMoodCount ? m : static_cast<unsigned>(PetMoodId::MOOD_CALM)),
-                    static_cast<uint32_t>(p),
-                    static_cast<uint8_t>(h > 100 ? 100 : h));
+                    parsed >= 5 ? static_cast<uint32_t>(p) : points,
+                    parsed >= 6 ? static_cast<uint8_t>(h > 100 ? 100 : h) : happiness);
       return;
     }
     Serial.printf("BLE: unknown command '%s'\n", cmd);
@@ -1290,6 +1304,10 @@ void updateStreakFromTime() {
 // Failures (Wi-Fi down, timeout, malformed CSV) are silent: the last cached
 // state stays on screen and the next cycle retries. The relay is read-only;
 // the device never calls Titan or any signing API.
+//
+// NOTE: the relay poll is DISABLED by default (RELAY_POLL_ENABLED 0) — the
+// current backend does not implement this route. The price feed below runs
+// regardless and is the live part of the 30-min cycle.
 // ---------------------------------------------------------------------------
 
 constexpr uint32_t DCA_POLL_MS = 30UL * 60UL * 1000UL;   // 30 min
@@ -1396,7 +1414,8 @@ void dcaPollTask(void*) {
       if (!appConnected) {
         if (WiFi.status() == WL_CONNECTED) {
           noteWifiLink();
-          bool ok = pollDcaRelay();
+          bool ok = true;
+          if (RELAY_POLL_ENABLED) ok = pollDcaRelay();
           fetchPrices();
           stashToast(ok ? "synced" : "sync failed");
         } else if (!wifiSsid[0]) {
@@ -1416,7 +1435,13 @@ void dcaPollTask(void*) {
         first = false;
         if (WiFi.status() == WL_CONNECTED) {
           noteWifiLink();
-          pollDcaRelay();
+          if (RELAY_POLL_ENABLED) {
+            pollDcaRelay();   // also re-syncs the wall clock on success
+          } else {
+            // The relay poll used to re-sync NTP every cycle; keep the
+            // cadence now that the relay is disabled.
+            configTzTime(TZ_POSIX, "pool.ntp.org", "time.nist.gov");
+          }
           fetchPrices();
         } else {
           // Silent retry: rejoin with the current credentials, poll next cycle.
@@ -1635,14 +1660,20 @@ struct CloudState {
   int      stage;
   int      sub;
   uint32_t streak;
-  uint8_t  mood;
+  int      mood;      // -1 = absent/unknown label: keep the current mood
   uint32_t points;
   uint8_t  happy;
+  uint32_t upd;       // server row update time (unix s); 0 = no state row
 };
 CloudState     cloudStash = {};
 volatile bool  stateDirty = false;       // sync task -> loop task handoff
 portMUX_TYPE   stateMux = portMUX_INITIALIZER_UNLOCKED;
 bool           lastSyncOk = false;
+// Staleness guard (sync-task local, RAM-only): the server stamps every pet
+// state row with `upd`; responses at or below the last applied revision are
+// ignored so a delayed/older poll can never regress the pet. Reset on reboot
+// is fine — re-applying the latest server state is idempotent.
+uint32_t       lastAppliedUpd = 0;
 
 // One poll. Returns the HTTP status code (0 = transport failure).
 int syncStateFromServer() {
@@ -1663,13 +1694,23 @@ int syncStateFromServer() {
   cs.streak  = static_cast<uint32_t>(jsonNumber(body, "\"streak\":"));
   cs.points  = static_cast<uint32_t>(jsonNumber(body, "\"points\":"));
   cs.happy   = static_cast<uint8_t>(jsonNumber(body, "\"happy\":"));
-  uint32_t upd = static_cast<uint32_t>(jsonNumber(body, "\"upd\":"));
+  cs.upd     = static_cast<uint32_t>(jsonNumber(body, "\"upd\":"));
+  // A server that omits "upd" entirely (legacy/self-hosted) gets the old
+  // apply-every-poll behavior; the guards below only engage when the field
+  // is present (the production API always sends it).
+  const bool hasUpd = strstr(body, "\"upd\":") != nullptr;
   char moodName[12] = "";
   jsonString(body, "\"mood\":", moodName, sizeof(moodName));
-  cs.mood = static_cast<uint8_t>(PetMoodId::MOOD_CALM);
+  // The server stores the APP's mood labels, which diverge from the
+  // firmware's: "proud" means happy, "sleeping" means sleepy. An empty or
+  // unknown label means "no opinion" — keep the device's current mood
+  // instead of clobbering it.
+  if (strcmp(moodName, "proud") == 0) strcpy(moodName, "happy");
+  else if (strcmp(moodName, "sleeping") == 0) strcpy(moodName, "sleepy");
+  cs.mood = -1;
   for (size_t i = 0; i < kMoodCount; i++) {
     if (strcmp(moodName, MOOD_NAMES[i]) == 0) {
-      cs.mood = static_cast<uint8_t>(i);
+      cs.mood = static_cast<int>(i);
       break;
     }
   }
@@ -1680,14 +1721,28 @@ int syncStateFromServer() {
     return code;
   }
   if (cs.happy > 100) cs.happy = 100;
+  if (hasUpd && cs.upd == 0) {
+    // The server has no pet-state row yet: the response carries defaults
+    // (stage 1, happy 80) that must NOT be applied — they would reset the
+    // pet to a fresh egg. Counts as success so the 401 counter resets.
+    lastSyncOk = true;
+    Serial.println("State sync: no server state yet, ignoring");
+    return code;
+  }
+  if (hasUpd && cs.upd <= lastAppliedUpd) {
+    // Already applied this revision, or a delayed older response.
+    lastSyncOk = true;
+    return code;
+  }
 
   portENTER_CRITICAL(&stateMux);
   cloudStash = cs;
   portEXIT_CRITICAL(&stateMux);
   stateDirty = true;
+  if (hasUpd) lastAppliedUpd = cs.upd;
   lastSyncOk = true;
   Serial.printf("State sync: stage=%d sub=%d streak=%lu upd=%lu\n", cs.stage, cs.sub,
-                static_cast<unsigned long>(cs.streak), static_cast<unsigned long>(upd));
+                static_cast<unsigned long>(cs.streak), static_cast<unsigned long>(cs.upd));
   return code;
 }
 
@@ -1739,30 +1794,40 @@ uint32_t lastEvolve = 0;
 uint32_t lastStreakCheck = 0;
 
 void showSplash(uint32_t durationMs) {
-  // App navy #07111F (app.json splash background; the logo bitmap is
-  // composited over the same color so the pushed rect is invisible).
-  uint16_t navy = tft.color565(0x07, 0x11, 0x1F);
+  const uint16_t navy = tft.color565(0x0B, 0x28, 0x58);
+  const uint16_t text = tft.color565(0xF6, 0xFA, 0xFF);
+  const uint16_t accent = tft.color565(0x8D, 0xC9, 0xF6);
   tft.fillScreen(navy);
 
   // The logo array holds native RGB565; swapBytes puts the bytes in SPI
   // wire order for the push (the panel wants the high byte first).
   int16_t x = (tft.width() - FINAGOTCHI_LOGO_WIDTH) / 2;
-  int16_t y = (tft.height() - FINAGOTCHI_LOGO_HEIGHT) / 2 - 10;
+  int16_t y = (tft.height() - FINAGOTCHI_LOGO_HEIGHT) / 2 - 24;
   tft.setSwapBytes(true);
   tft.pushImage(x, y, FINAGOTCHI_LOGO_WIDTH, FINAGOTCHI_LOGO_HEIGHT, finagotchi_logo);
   tft.setSwapBytes(false);
 
   tft.setTextDatum(TC_DATUM);
-  tft.setTextColor(TFT_LIGHTGREY, navy);
+  tft.setTextFont(4);
   tft.setTextSize(1);
-  tft.drawString("(C) Finagotchi", tft.width() / 2, tft.height() - 30);
+  tft.setTextColor(text, navy);
+  const char* wordmark = "finagotchi.";
+  const int16_t wordY = tft.height() - 66;
+  const int16_t centerX = tft.width() / 2;
+  tft.drawString(wordmark, centerX, wordY);
+  const int16_t wordWidth = tft.textWidth(wordmark);
+  const int16_t dotWidth = tft.textWidth(".");
+  tft.setTextColor(accent, navy);
+  tft.drawString(".", centerX + (wordWidth - dotWidth) / 2, wordY);
 
   delay(durationMs);
 }
 
 void showBootStatus(const char* msg) {
+  const uint16_t navy = tft.color565(0x0B, 0x28, 0x58);
   tft.setTextDatum(TC_DATUM);
-  tft.setTextColor(TFT_CYAN, tft.color565(0x07, 0x11, 0x1F));
+  tft.setTextFont(1);
+  tft.setTextColor(tft.color565(0xE0, 0xEB, 0xF8), navy);
   tft.setTextSize(1);
   tft.drawString(msg, tft.width() / 2, tft.height() - 16);
 }
@@ -1974,9 +2039,12 @@ void loop() {
                    (cs.sub >= 1 && cs.sub <= 12 &&
                     static_cast<uint8_t>(cs.sub) != subStage) ||
                    cs.streak != streak || cs.points != points ||
-                   cs.happy != happiness || cs.mood != mood;
+                   cs.happy != happiness ||
+                   (cs.mood >= 0 && static_cast<uint8_t>(cs.mood) != mood);
     if (changed) {
-      applySnapshot(ps, cs.sub, cs.streak, cs.mood, cs.points, cs.happy);
+      applySnapshot(ps, cs.sub, cs.streak,
+                    cs.mood >= 0 ? static_cast<uint8_t>(cs.mood) : mood,
+                    cs.points, cs.happy);
       if (!serverLinked) {
         serverLinked = true;
         prefs.begin("fina", false);

@@ -9,7 +9,7 @@
     BTN1-double unit toggle), next-buy countdown, holdings/buy line
   - overdue plans get the warning-amber treatment
   - focus group driven by the keypad indev: BTN2 short focuses the next
-    card (cyan framework focus ring), BTN1 short opens/closes the detail
+    card (light-blue framework focus ring), BTN1 short opens/closes the detail
   - detail view: price, stats grid, countdown + progress bar
   - empty state with a hint when no plans are mirrored
 
@@ -154,6 +154,7 @@ lv_obj_t* newCard;                   // trailing "+ New plan" card
 int8_t detailSlot = -1;
 
 void openDetail(uint8_t slot);   // defined below
+lv_obj_t* buildDetailScreen();
 
 // Group membership must track visibility exactly: hidden cards in the
 // focus group swallow LV_KEY_NEXT presses (focus moves to an invisible
@@ -339,9 +340,63 @@ void detailFill() {
 }
 
 void openDetail(uint8_t slot) {
+  if (!detailScr) buildDetailScreen();
   detailSlot = static_cast<int8_t>(slot);
   detailFill();
   lv_screen_load_anim(detailScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
+}
+
+lv_obj_t* buildDetailScreen() {
+  detailScr = lv_obj_create(nullptr);
+  uiThemeScreen(detailScr);
+
+  lv_obj_t* detailPanel = lv_obj_create(detailScr);
+  lv_obj_set_size(detailPanel, 220, 220);
+  lv_obj_center(detailPanel);
+  uiThemeCard(detailPanel);
+
+  dLogo = lv_image_create(detailScr);
+  lv_obj_align(dLogo, LV_ALIGN_TOP_LEFT, 24, 28);
+
+  dChip = uiThemeLabel(detailScr, &lv_font_montserrat_20, lv_color_white());
+  lv_obj_set_size(dChip, 48, 48);
+  lv_obj_align(dChip, LV_ALIGN_TOP_LEFT, 24, 28);
+  lv_obj_set_style_bg_opa(dChip, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(dChip, LV_RADIUS_CIRCLE, 0);
+  lv_obj_set_style_text_align(dChip, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_pad_top(dChip, 12, 0);
+
+  dTicker = uiThemeLabel(detailScr, &lv_font_montserrat_20, UI_COL_TEXT);
+  lv_obj_align(dTicker, LV_ALIGN_TOP_LEFT, 84, 30);
+
+  dPrice = uiThemeLabel(detailScr, &lv_font_montserrat_28, UI_COL_TEXT);
+  lv_obj_align(dPrice, LV_ALIGN_TOP_LEFT, 84, 54);
+
+  static const char* STAT_CAPTIONS[4] = { "BUY", "BUYS", "HELD", "VALUE" };
+  const int statX[4] = { 24, 128, 24, 128 };
+  const int statY[4] = { 104, 104, 148, 148 };
+  for (int i = 0; i < 4; i++) {
+    lv_obj_t* cap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
+    lv_label_set_text(cap, STAT_CAPTIONS[i]);
+    lv_obj_align(cap, LV_ALIGN_TOP_LEFT, statX[i], statY[i]);
+    dStatVal[i] = uiThemeLabel(detailScr, &lv_font_montserrat_14, UI_COL_TEXT);
+    lv_obj_align(dStatVal[i], LV_ALIGN_TOP_LEFT, statX[i], statY[i] + 15);
+  }
+
+  nbCap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
+  lv_label_set_text(nbCap, "NEXT BUY");
+  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 24, 190);
+
+  dCountdown = uiThemeLabel(detailScr, &lv_font_montserrat_16, UI_COL_TEXT);
+  lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -24, 186);
+
+  dBar = lv_bar_create(detailScr);
+  lv_obj_set_size(dBar, 192, 6);
+  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 212);
+  lv_bar_set_range(dBar, 0, 100);
+  lv_obj_set_style_bg_color(dBar, UI_COL_BORDER, 0);
+
+  return detailScr;
 }
 
 } // namespace
@@ -353,7 +408,7 @@ lv_obj_t* uiScreenDcaCreate() {
   listScr = lv_obj_create(nullptr);
   uiThemeScreen(listScr);
 
-  lv_obj_t* title = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_MUTED);
+  lv_obj_t* title = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_EYEBROW);
   lv_label_set_text(title, "PORTFOLIO");
   lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
 
@@ -373,7 +428,7 @@ lv_obj_t* uiScreenDcaCreate() {
 
   // Scrollable card column (extends to the bottom safe zone — no hint bar).
   // With up to kDcaMaxPlans(8) cards + the "+ New plan" card this always
-  // overflows: vertical scroll, slim cyan scrollbar like the menu list.
+  // overflows: vertical scroll, slim light-blue scrollbar like the menu list.
   lv_obj_t* col = lv_obj_create(listScr);
   lv_obj_set_size(col, 240, 158);
   lv_obj_align(col, LV_ALIGN_TOP_MID, 0, 76);
@@ -442,52 +497,15 @@ lv_obj_t* uiScreenDcaCreate() {
   lv_label_set_text(emptyHint, "open the app to start a DCA plan");
   lv_obj_align(emptyHint, LV_ALIGN_CENTER, 0, 18);
 
-  // --- detail screen ---
-  detailScr = lv_obj_create(nullptr);
-  uiThemeScreen(detailScr);
-
-  dLogo = lv_image_create(detailScr);
-  lv_obj_align(dLogo, LV_ALIGN_TOP_LEFT, 24, 28);
-
-  dChip = uiThemeLabel(detailScr, &lv_font_montserrat_20, lv_color_white());
-  lv_obj_set_size(dChip, 48, 48);
-  lv_obj_align(dChip, LV_ALIGN_TOP_LEFT, 24, 28);
-  lv_obj_set_style_bg_opa(dChip, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(dChip, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_text_align(dChip, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_pad_top(dChip, 12, 0);
-
-  dTicker = uiThemeLabel(detailScr, &lv_font_montserrat_20, UI_COL_TEXT);
-  lv_obj_align(dTicker, LV_ALIGN_TOP_LEFT, 84, 30);
-
-  dPrice = uiThemeLabel(detailScr, &lv_font_montserrat_28, UI_COL_TEXT);
-  lv_obj_align(dPrice, LV_ALIGN_TOP_LEFT, 84, 54);
-
-  static const char* STAT_CAPTIONS[4] = { "BUY", "BUYS", "HELD", "VALUE" };
-  const int statX[4] = { 24, 128, 24, 128 };
-  const int statY[4] = { 104, 104, 148, 148 };
-  for (int i = 0; i < 4; i++) {
-    lv_obj_t* cap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
-    lv_label_set_text(cap, STAT_CAPTIONS[i]);
-    lv_obj_align(cap, LV_ALIGN_TOP_LEFT, statX[i], statY[i]);
-    dStatVal[i] = uiThemeLabel(detailScr, &lv_font_montserrat_14, UI_COL_TEXT);
-    lv_obj_align(dStatVal[i], LV_ALIGN_TOP_LEFT, statX[i], statY[i] + 15);
-  }
-
-  nbCap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
-  lv_label_set_text(nbCap, "NEXT BUY");
-  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 24, 190);
-
-  dCountdown = uiThemeLabel(detailScr, &lv_font_montserrat_16, UI_COL_TEXT);
-  lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -24, 186);
-
-  dBar = lv_bar_create(detailScr);
-  lv_obj_set_size(dBar, 192, 6);
-  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 212);
-  lv_bar_set_range(dBar, 0, 100);
-  lv_obj_set_style_bg_color(dBar, UI_COL_BORDER, 0);
+  buildDetailScreen();
 
   return listScr;
+}
+
+void uiScreenDcaReleaseDetail() {
+  if (!detailScr || lv_screen_active() == detailScr) return;
+  lv_obj_delete(detailScr);
+  detailScr = nullptr;
 }
 
 void uiScreenDcaShow() {

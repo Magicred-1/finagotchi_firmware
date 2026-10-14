@@ -19,6 +19,7 @@
 #define LV_CONF_H
 
 #define LV_COLOR_FORMAT_DEFAULT LV_COLOR_FORMAT_RGB565_SWAPPED
+#define LV_GRADIENT_MAX_STOPS 5
 
 /* Memory: straight to malloc/free (ESP32 heap). LV_MEM_SIZE is unused then. */
 #define LV_USE_STDLIB_MALLOC    LV_STDLIB_CLIB

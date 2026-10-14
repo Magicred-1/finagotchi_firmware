@@ -16,10 +16,15 @@
 //   Central Europe: "CET-1CEST,M3.5.0,M10.5.0/3"
 #define TZ_POSIX "UTC0"
 
-// Standalone DCA mirror: while the app is disconnected, the device polls
+// Standalone DCA mirror (LEGACY, disabled by default): while the app is
+// disconnected, the device can poll
 //   GET http://<RELAY_HOST>/api/device/<DEVICE_ID>/dca
 // every 30 min for plan state (read-only; see README.md for the CSV
 // contract). No secrets here — the relay must be safe to hit anonymously.
+// The current backend (api.finagotchi.app) has NO such route, so the poll
+// is compiled out unless you set RELAY_POLL_ENABLED 1 and point RELAY_HOST
+// at a relay that implements the contract.
+#define RELAY_POLL_ENABLED 0
 #define RELAY_HOST "relay.example.com"
 #define DEVICE_ID "finagotchi-01"
 

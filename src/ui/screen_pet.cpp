@@ -8,7 +8,7 @@
   - next-buy chip: auto-rotating plan pill with cross-fade, warning border
     when overdue
   - stats: streak / points / happiness bar (captions over values)
-  - gain/reward toasts on lv_layer_top (success green, dca:hit purple)
+  - gain/reward toasts on lv_layer_top (success green, dca:hit amber)
 
   No button-hint text anywhere: the control model is dead simple
   (left = move, right = select) and the UI is instruction-free.
@@ -104,18 +104,29 @@ lv_obj_t* uiScreenPetCreate() {
   lv_obj_t* scr = lv_obj_create(nullptr);
   uiThemeScreen(scr);
 
+  // Rounded navy portrait frame around the existing 160px RGB565 canvas.
+  lv_obj_t* portrait = lv_obj_create(scr);
+  lv_obj_set_size(portrait, 176, 176);
+  lv_obj_align(portrait, LV_ALIGN_CENTER, 0, -4);
+  lv_obj_set_style_bg_color(portrait, UI_COL_BG, 0);
+  lv_obj_set_style_bg_opa(portrait, LV_OPA_COVER, 0);
+  lv_obj_set_style_radius(portrait, UI_RADIUS_CARD, 0);
+  lv_obj_set_style_border_width(portrait, 1, 0);
+  lv_obj_set_style_border_color(portrait, UI_COL_BORDER, 0);
+  lv_obj_set_style_border_opa(portrait, LV_OPA_30, 0);
+  lv_obj_set_style_pad_all(portrait, 0, 0);
+  lv_obj_set_scrollable(portrait, false);
+
   // Pet scene canvas: straight view onto the sprite framebuffer (both are
   // big-endian RGB565 -> LV_COLOR_FORMAT_RGB565_SWAPPED).
-  canvas = lv_canvas_create(scr);
+  canvas = lv_canvas_create(portrait);
   lv_canvas_set_buffer(canvas, pet->frameBuffer(), pet->frameWidth(),
                        pet->frameHeight(), LV_COLOR_FORMAT_RGB565_SWAPPED);
   lv_obj_center(canvas);
 
-  // Stage badge (top-left), with the slim stage/XP track under it
-  // (PetCanvas stageTrack: white 8% track, primary cyan fill, x/12).
+  // Stage badge (top-left), with the slim stage/XP track under it.
   badgeLabel = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_TEXT);
-  lv_obj_set_style_bg_color(badgeLabel, UI_COL_SURFACE, 0);
-  lv_obj_set_style_bg_opa(badgeLabel, LV_OPA_COVER, 0);
+  uiThemeGlass(badgeLabel, false);
   lv_obj_set_style_radius(badgeLabel, UI_RADIUS_SMALL, 0);
   lv_obj_set_style_pad_hor(badgeLabel, UI_SP2, 0);
   lv_obj_set_style_pad_ver(badgeLabel, UI_SP1, 0);
@@ -125,10 +136,11 @@ lv_obj_t* uiScreenPetCreate() {
   lv_obj_set_size(stageTrack, 60, 4);
   lv_obj_align(stageTrack, LV_ALIGN_TOP_LEFT, 12, 28);
   lv_bar_set_range(stageTrack, 0, 12);
-  lv_obj_set_style_bg_color(stageTrack, lv_color_hex(0x1B2431), 0);   // white 8% / navy
+  lv_obj_set_style_bg_color(stageTrack, UI_COL_BORDER, 0);
+  lv_obj_set_style_bg_opa(stageTrack, LV_OPA_20, 0);
   lv_obj_set_style_bg_color(stageTrack, UI_COL_PRIMARY, LV_PART_INDICATOR);
 
-  // Wi-Fi status glyph (top-right, left of the battery): cyan when online,
+  // Wi-Fi status glyph (top-right, left of the battery): accent when online,
   // muted when offline. Always visible — also on USB power (no battery).
   wifiLabel = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(wifiLabel, LV_SYMBOL_WIFI);
@@ -155,27 +167,21 @@ lv_obj_t* uiScreenPetCreate() {
   chip = lv_obj_create(scr);
   lv_obj_set_size(chip, 196, 30);
   lv_obj_align(chip, LV_ALIGN_BOTTOM_MID, 0, -56);
-  lv_obj_set_style_bg_color(chip, UI_COL_SURFACE, 0);
-  lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
+  uiThemeGlass(chip, true);
   lv_obj_set_style_radius(chip, UI_RADIUS_PILL, 0);
-  lv_obj_set_style_border_width(chip, 1, 0);
-  lv_obj_set_style_border_color(chip, UI_COL_BORDER, 0);
-  lv_obj_set_style_pad_all(chip, 0, 0);
-  lv_obj_set_scrollable(chip, false);
   chipLabel = uiThemeLabel(chip, &lv_font_montserrat_14, UI_COL_TEXT);
   lv_obj_center(chipLabel);
   lv_obj_set_hidden(chip, true);
 
-  // Bottom stats, stacked to stay inside the round panel's inscribed
-  // circle: captions (y 200-212), values (y 213-227).
+  // Bottom stats sit over the frost stop, so they use the app's ink tokens.
   static const char* CAPTIONS[3] = { "streak", "points", "happy" };
   const int cols[3] = { -44, 0, 44 };
   for (int i = 0; i < 3; i++) {
-    lv_obj_t* cap = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_MUTED);
+    lv_obj_t* cap = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_INK_MUTED);
     lv_label_set_text(cap, CAPTIONS[i]);
     lv_obj_align(cap, LV_ALIGN_BOTTOM_MID, cols[i], -34);
     if (i < 2) {
-      statVal[i] = uiThemeLabel(scr, &lv_font_montserrat_14, UI_COL_TEXT);
+      statVal[i] = uiThemeLabel(scr, &lv_font_montserrat_14, UI_COL_INK);
       lv_label_set_text(statVal[i], "0");
       lv_obj_align(statVal[i], LV_ALIGN_BOTTOM_MID, cols[i], -19);
     }
@@ -186,7 +192,8 @@ lv_obj_t* uiScreenPetCreate() {
   lv_obj_set_size(happyBar, 38, 6);
   lv_obj_align(happyBar, LV_ALIGN_BOTTOM_MID, cols[2], -23);
   lv_bar_set_range(happyBar, 0, 100);
-  lv_obj_set_style_bg_color(happyBar, lv_color_hex(0x1B2431), 0);
+  lv_obj_set_style_bg_color(happyBar, UI_COL_INK_MUTED, 0);
+  lv_obj_set_style_bg_opa(happyBar, LV_OPA_20, 0);
   lv_obj_set_style_bg_color(happyBar, UI_COL_DANGER, LV_PART_INDICATOR);
 
   chipRotateTimer = lv_timer_create(chipRotate, 4000, nullptr);
@@ -242,7 +249,7 @@ void uiScreenPetSetBattery(int pct) {
 }
 
 void uiScreenPetToast(const char* text, bool reward) {
-  lv_color_t col = reward ? UI_COL_PURPLE : UI_COL_SUCCESS;
+  lv_color_t col = reward ? UI_COL_REWARD : UI_COL_SUCCESS;
   lv_obj_t* t = uiThemeLabel(lv_layer_top(), &lv_font_montserrat_16, col);
   lv_label_set_text(t, text);
   lv_obj_set_style_bg_color(t, UI_COL_SURFACE, 0);

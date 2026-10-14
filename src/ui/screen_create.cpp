@@ -8,8 +8,8 @@
     TOKEN drum -> AMOUNT drum -> FREQUENCY drum -> SUMMARY/CREATE
 
   Each drum is a vertical scrollable list of option rows (clip top/bottom,
-  slim cyan scrollbar on the right edge, focused row = cyan ring, focused
-  row auto-scrolls into view). A step label on top names the drum
+  slim light-blue scrollbar on the right edge, focused row = light-blue ring,
+  focused row auto-scrolls into view). A step label on top names the drum
   ("TOKEN 1/3" ...); the right zone carries the menu's reserved-space
   pattern: on the TOKEN drum it holds the back-arrow affordance (activate =
   back to the portfolio), on later drums a muted info word with the values
@@ -226,10 +226,10 @@ lv_obj_t* buildCreateScreen() {
   createScr = lv_obj_create(nullptr);
   uiThemeScreen(createScr);
 
-  stepLabel = uiThemeLabel(createScr, &lv_font_montserrat_12, UI_COL_MUTED);
+  stepLabel = uiThemeLabel(createScr, &lv_font_montserrat_12, UI_COL_EYEBROW);
   lv_obj_align(stepLabel, LV_ALIGN_TOP_MID, 0, 16);
 
-  // --- drum list (launcher idiom: clip edges, slim cyan scrollbar) ---
+  // --- drum list (launcher idiom: clip edges, slim accent scrollbar) ---
   list = lv_obj_create(createScr);
   lv_obj_set_size(list, 160, 184);
   lv_obj_align(list, LV_ALIGN_TOP_LEFT, 16, 38);
@@ -250,16 +250,13 @@ lv_obj_t* buildCreateScreen() {
   for (uint8_t i = 0; i < MAX_OPTIONS; i++) {
     opt[i] = lv_obj_create(list);
     lv_obj_set_size(opt[i], 146, 40);
-    lv_obj_set_style_bg_color(opt[i], UI_COL_SURFACE, 0);
-    lv_obj_set_style_bg_color(opt[i], UI_COL_SURFACE_HI, LV_STATE_FOCUSED);
-    lv_obj_set_style_bg_opa(opt[i], LV_OPA_COVER, 0);
+    uiThemeGlass(opt[i], true);
     lv_obj_set_style_radius(opt[i], UI_RADIUS_SMALL, 0);
-    lv_obj_set_style_border_width(opt[i], 1, 0);
-    lv_obj_set_style_border_color(opt[i], UI_COL_BORDER, 0);
+    lv_obj_set_style_bg_color(opt[i], UI_COL_SURFACE, LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_opa(opt[i], LV_OPA_60, LV_STATE_FOCUSED);
     lv_obj_set_style_border_width(opt[i], 2, LV_STATE_FOCUSED);
     lv_obj_set_style_border_color(opt[i], UI_COL_PRIMARY, LV_STATE_FOCUSED);
-    lv_obj_set_style_pad_all(opt[i], 0, 0);
-    lv_obj_set_scrollable(opt[i], false);
+    lv_obj_set_style_border_opa(opt[i], LV_OPA_COVER, LV_STATE_FOCUSED);
     lv_obj_set_clickable(opt[i], true);
     lv_obj_set_user_data(opt[i], reinterpret_cast<void*>(static_cast<intptr_t>(i)));
     lv_obj_add_event_cb(opt[i], rowFocused, LV_EVENT_FOCUSED, nullptr);
@@ -268,10 +265,11 @@ lv_obj_t* buildCreateScreen() {
     lv_obj_set_size(optChip[i], 28, 28);
     lv_obj_align(optChip[i], LV_ALIGN_LEFT_MID, 6, 0);
     lv_obj_set_style_radius(optChip[i], LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(optChip[i], LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(optChip[i], UI_COL_SURFACE_HI, 0);
+    lv_obj_set_style_bg_color(optChip[i], UI_COL_SURFACE, 0);
+    lv_obj_set_style_bg_opa(optChip[i], LV_OPA_40, 0);
     lv_obj_set_style_border_width(optChip[i], 1, 0);
     lv_obj_set_style_border_color(optChip[i], UI_COL_BORDER, 0);
+    lv_obj_set_style_border_opa(optChip[i], LV_OPA_30, 0);
     lv_obj_set_style_pad_all(optChip[i], 0, 0);
     lv_obj_set_scrollable(optChip[i], false);
     lv_obj_set_clickable(optChip[i], false);
@@ -290,14 +288,11 @@ lv_obj_t* buildCreateScreen() {
   backArrow = lv_obj_create(createScr);
   lv_obj_set_size(backArrow, 40, 40);
   lv_obj_align(backArrow, LV_ALIGN_TOP_RIGHT, -14, 52);
+  uiThemeGlass(backArrow, true);
   lv_obj_set_style_radius(backArrow, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(backArrow, UI_COL_SURFACE, 0);
-  lv_obj_set_style_bg_opa(backArrow, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(backArrow, 1, 0);
-  lv_obj_set_style_border_color(backArrow, UI_COL_PRIMARY, 0);
   lv_obj_set_style_border_width(backArrow, 3, LV_STATE_FOCUSED);
-  lv_obj_set_style_pad_all(backArrow, 0, 0);
-  lv_obj_set_scrollable(backArrow, false);
+  lv_obj_set_style_border_color(backArrow, UI_COL_PRIMARY, LV_STATE_FOCUSED);
+  lv_obj_set_style_border_opa(backArrow, LV_OPA_COVER, LV_STATE_FOCUSED);
   lv_obj_set_clickable(backArrow, true);
   lv_obj_add_event_cb(backArrow, rowFocused, LV_EVENT_FOCUSED, nullptr);
   lv_obj_t* arrowGlyph = uiThemeLabel(backArrow, &lv_font_montserrat_20, UI_COL_PRIMARY);
@@ -319,6 +314,7 @@ lv_obj_t* buildCreateScreen() {
   lv_obj_set_size(createRow, 150, 40);
   lv_obj_align(createRow, LV_ALIGN_CENTER, 0, 56);
   lv_obj_set_style_bg_color(createRow, UI_COL_PRIMARY, 0);
+  lv_obj_set_style_bg_color(createRow, UI_COL_PRIMARY_PRESSED, LV_STATE_FOCUSED);
   lv_obj_set_style_bg_opa(createRow, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(createRow, UI_RADIUS_PILL, 0);
   lv_obj_set_style_border_width(createRow, 3, LV_STATE_FOCUSED);
@@ -327,7 +323,7 @@ lv_obj_t* buildCreateScreen() {
   lv_obj_set_scrollable(createRow, false);
   lv_obj_set_clickable(createRow, true);
   lv_obj_add_event_cb(createRow, rowFocused, LV_EVENT_FOCUSED, nullptr);
-  lv_obj_t* crLabel = uiThemeLabel(createRow, &lv_font_montserrat_16, UI_COL_BG);
+  lv_obj_t* crLabel = uiThemeLabel(createRow, &lv_font_montserrat_16, UI_COL_ON_PRIMARY);
   lv_label_set_text(crLabel, "CREATE " LV_SYMBOL_RIGHT);
   lv_obj_center(crLabel);
 
@@ -344,9 +340,12 @@ void uiScreenCreateSetTickers(const char* const* list, uint8_t n) {
 }
 
 void uiScreenCreateShow() {
+  Serial.printf("Create: heap free before build %u\n", ESP.getFreeHeap());
+  uiScreenDcaReleaseDetail();
   if (!createScr) g_ui.createScreen = buildCreateScreen();   // lazy build
   showPage(PAGE_TOKEN);
   lv_screen_load_anim(createScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
+  Serial.printf("Create: ready, heap free %u\n", ESP.getFreeHeap());
 }
 
 void uiScreenCreateFreed() {

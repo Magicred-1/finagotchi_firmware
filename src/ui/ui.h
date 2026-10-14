@@ -61,7 +61,7 @@ void setEpoch(uint32_t epoch);
 void setSolUsd(float rate);
 
 // Gain/status toast ("+n TICKER", "synced", ...), floats up and fades.
-// Reward variant is app purple — the dca:hit "magic moment".
+// Reward variant is app amber — the dca:hit "magic moment".
 void enqueueToast(const char* text);
 void enqueueRewardToast(const char* text);
 
@@ -79,7 +79,7 @@ void showOverlay(const char* msg, uint32_t ms);
 void showPasskey(uint32_t passkey);
 void hidePasskey();
 
-// Top-right Wi-Fi status glyph (cyan online / muted offline). Driven by
+// Top-right Wi-Fi status glyph (light blue online / muted offline). Driven by
 // main.cpp's link tracking (noteWifiLink edge detector + WiFi event hook).
 void setWifiOnline(bool online);
 

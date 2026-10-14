@@ -28,6 +28,14 @@ without the app relaying anything:
    same code path as a BLE state write. Unchanged polls cost no NVS writes;
    after 5 consecutive 401s the token is considered revoked and syncing
    stops until reboot.
+   - `mood` arrives as an **app label** (`sad|sleeping|proud|happy|waiting`);
+     the device maps `proud`→happy and `sleeping`→sleepy, and an empty or
+     unknown label leaves the current mood untouched.
+   - `upd` (server row update time, unix seconds) guards ordering: responses
+     at or below the last applied revision are ignored, so a delayed older
+     poll can never regress the pet. `upd: 0` means the server has no pet
+     state row yet — the response is acknowledged but not applied (its
+     defaults would reset the pet to a stage-1 egg).
 
 Once a snapshot has been applied, the persisted `serverLinked` flag keeps
 the demo auto-evolve and the local day-based streak tick off — the server
@@ -51,11 +59,13 @@ while the market is closed — cached value kept). TLS is unverified
 
 `src/config.h` still carries `RELAY_HOST`/`DEVICE_ID` and the firmware
 still contains the read-only DCA plan poll
-(`GET http://<RELAY_HOST>/api/device/<DEVICE_ID>/dca`, CSV rows) that the
-BTN1 standalone "sync now" action also triggers. No public server
-implements that endpoint — the poll fails silently and the cached plan
-state stays on screen. The token flow above is the supported standalone
-sync path.
+(`GET http://<RELAY_HOST>/api/device/<DEVICE_ID>/dca`, CSV rows), but the
+poll is **disabled by default** (`RELAY_POLL_ENABLED 0`, overridable in
+`src/config.h`): no public server implements that endpoint, so it only
+produced a silent 404 every 30 min. Re-enable it only if you run a relay
+that implements the CSV contract. The BTN1 standalone "sync now" action
+and the 30-min cycle still fetch prices and re-sync the clock regardless.
+The token flow above is the supported standalone sync path.
 
 - When the app reconnects over BLE, all polling pauses and the app is
   authoritative again (it may resend `dca:count:`/`dca:plan:` and any

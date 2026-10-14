@@ -5,7 +5,7 @@ CDN (see https://docs.xstocks.fi/apis/openapi — /api/v2/public/assets gives a
 `logo` URL per asset). Processing:
 
   1. Resize to 48x48 (LANCZOS) — the big logo on the DCA positions card.
-  2. Alpha-composite over the scene navy #07111F (TFT_eSPI has no alpha).
+  2. Alpha-composite over the landing navy #0B2858 (TFT_eSPI has no alpha).
   3. Emit RGB565 PROGMEM arrays + a ticker lookup table.
 
 Run: python3 tools/convert_token_logos.py
@@ -14,7 +14,7 @@ from PIL import Image
 import glob
 import os
 
-NAVY = (0x07, 0x11, 0x1F)
+NAVY = (0x0B, 0x28, 0x58)
 SIZE = 48
 INPUT_DIR = "token_logos"
 OUTPUT = "src/token_logos.h"

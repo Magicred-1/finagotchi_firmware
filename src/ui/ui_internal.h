@@ -72,6 +72,7 @@ void uiScreenPetTick();                  // 1 s countdown refresh
 
 // screen_dca.cpp (portfolio / positions)
 lv_obj_t* uiScreenDcaCreate();
+void uiScreenDcaReleaseDetail();         // free the inactive detail before lazy screens
 void uiScreenDcaShow();                  // BTN2 short on the pet screen
 void uiScreenPetShow();                  // escape: back to the pet screen
 void uiScreenDcaPlansChanged();

@@ -3,14 +3,14 @@
   -> menu cycle): a vertical, scrollable APP LIST, launcher style.
 
     [icon] Feed pet          |
-    [icon] Accessory         |  <- slim cyan scrollbar, right edge
+    [icon] Accessory         |  <- slim light-blue scrollbar, right edge
     [icon] Mood              |
     [icon] Open DCA          |
 
   - each row: circular icon chip (border-token ring) + app name label;
     rows scroll vertically, clipping at the top/bottom edges; the focused
-    row gets the cyan ring + hover-surface tint and is auto-scrolled into
-    view (lv_obj_scroll_to_view)
+    row gets the light-blue ring + stronger glass tint and is auto-scrolled
+    into view (lv_obj_scroll_to_view)
   - reserved right zone (~25%): when the list is fully at the top (i.e. on
     entry — navigation is forward-only), a BACK affordance lives there: a
     right-pointing arrow chip, focused first; activating it returns to the
@@ -20,7 +20,7 @@
   - BTN short (either button) walks the focus down the rows; past the last
     row uiScreenMenuFocusAdvance returns false and input.cpp moves on to
     the pet screen (contract unchanged). BTN long (either button) runs the
-    focused app with the ~150 ms press pulse; the back arrow exits to the
+    focused app with the 160 ms press pulse; the back arrow exits to the
     pet screen
 
   The focus group only ever holds the visible objects (uiGroupSet
@@ -75,14 +75,14 @@ void rowFocused(lv_event_t*) {
   infoFill();
 }
 
-// ~150 ms scale pulse on activation (app's PressableScale).
+// 160 ms, 0.97 scale pulse on activation (app's PressableScale).
 void pressPulse(lv_obj_t* obj) {
   lv_anim_t a;
   lv_anim_init(&a);
   lv_anim_set_var(&a, obj);
-  lv_anim_set_values(&a, 256, 216);
-  lv_anim_set_duration(&a, 75);
-  lv_anim_set_playback_duration(&a, 75);
+  lv_anim_set_values(&a, 256, 248);
+  lv_anim_set_duration(&a, 80);
+  lv_anim_set_playback_duration(&a, 80);
   lv_anim_set_exec_cb(&a, [](void* o, int32_t v) {
     lv_obj_set_style_transform_scale(static_cast<lv_obj_t*>(o), v, 0);
   });
@@ -130,8 +130,6 @@ lv_obj_t* buildMenuScreen() {
   lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
   lv_obj_set_scroll_dir(list, LV_DIR_VER);
-  // The "green thing" from the mock, in theme primary: slim cyan track on
-  // the right edge that travels/shrinks with the content.
   lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
   lv_obj_set_style_bg_color(list, UI_COL_PRIMARY, LV_PART_SCROLLBAR);
   lv_obj_set_style_bg_opa(list, LV_OPA_COVER, LV_PART_SCROLLBAR);
@@ -152,16 +150,13 @@ lv_obj_t* buildMenuScreen() {
     bool primary = (i == ROW_FEED);
     row[i] = lv_obj_create(list);
     lv_obj_set_size(row[i], 146, 56);
-    lv_obj_set_style_bg_color(row[i], UI_COL_SURFACE, 0);
-    lv_obj_set_style_bg_color(row[i], UI_COL_SURFACE_HI, LV_STATE_FOCUSED);
-    lv_obj_set_style_bg_opa(row[i], LV_OPA_COVER, 0);
+    uiThemeGlass(row[i], true);
     lv_obj_set_style_radius(row[i], UI_RADIUS_CARD, 0);
-    lv_obj_set_style_border_width(row[i], 1, 0);
-    lv_obj_set_style_border_color(row[i], UI_COL_BORDER, 0);
+    lv_obj_set_style_bg_color(row[i], UI_COL_SURFACE, LV_STATE_FOCUSED);
+    lv_obj_set_style_bg_opa(row[i], LV_OPA_60, LV_STATE_FOCUSED);
     lv_obj_set_style_border_width(row[i], 2, LV_STATE_FOCUSED);
     lv_obj_set_style_border_color(row[i], UI_COL_PRIMARY, LV_STATE_FOCUSED);
-    lv_obj_set_style_pad_all(row[i], 0, 0);
-    lv_obj_set_scrollable(row[i], false);
+    lv_obj_set_style_border_opa(row[i], LV_OPA_COVER, LV_STATE_FOCUSED);
     lv_obj_set_clickable(row[i], true);
     lv_obj_set_user_data(row[i], reinterpret_cast<void*>(static_cast<intptr_t>(i)));
     lv_obj_add_event_cb(row[i], rowClicked, LV_EVENT_CLICKED, nullptr);
@@ -172,16 +167,16 @@ lv_obj_t* buildMenuScreen() {
     lv_obj_set_size(chip, 38, 38);
     lv_obj_align(chip, LV_ALIGN_LEFT_MID, 8, 0);
     lv_obj_set_style_radius(chip, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(chip, LV_OPA_COVER, 0);
-    lv_obj_set_style_bg_color(chip, primary ? UI_COL_PRIMARY : UI_COL_SURFACE_HI, 0);
+    lv_obj_set_style_bg_color(chip, primary ? UI_COL_PRIMARY : UI_COL_SURFACE, 0);
+    lv_obj_set_style_bg_opa(chip, primary ? LV_OPA_COVER : LV_OPA_40, 0);
     lv_obj_set_style_border_width(chip, 1, 0);
-    lv_obj_set_style_border_color(chip, UI_COL_BORDER, 0);
-    lv_obj_set_style_border_color(chip, UI_COL_PRIMARY, LV_STATE_FOCUSED);
+    lv_obj_set_style_border_color(chip, primary ? UI_COL_PRIMARY : UI_COL_BORDER, 0);
+    lv_obj_set_style_border_opa(chip, primary ? LV_OPA_COVER : LV_OPA_30, 0);
     lv_obj_set_style_pad_all(chip, 0, 0);
     lv_obj_set_scrollable(chip, false);
     lv_obj_set_clickable(chip, false);
 
-    lv_obj_t* g = uiThemeLabel(chip, CHIP_FONT, primary ? UI_COL_BG : UI_COL_TEXT);
+    lv_obj_t* g = uiThemeLabel(chip, CHIP_FONT, primary ? UI_COL_ON_PRIMARY : UI_COL_TEXT);
     lv_label_set_text(g, GLYPHS[i]);
     lv_obj_center(g);
 
@@ -194,14 +189,11 @@ lv_obj_t* buildMenuScreen() {
   backArrow = lv_obj_create(menuScr);
   lv_obj_set_size(backArrow, 40, 40);
   lv_obj_align(backArrow, LV_ALIGN_TOP_RIGHT, -14, 52);
+  uiThemeGlass(backArrow, true);
   lv_obj_set_style_radius(backArrow, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_bg_color(backArrow, UI_COL_SURFACE, 0);
-  lv_obj_set_style_bg_opa(backArrow, LV_OPA_COVER, 0);
-  lv_obj_set_style_border_width(backArrow, 1, 0);
-  lv_obj_set_style_border_color(backArrow, UI_COL_PRIMARY, 0);
   lv_obj_set_style_border_width(backArrow, 3, LV_STATE_FOCUSED);
-  lv_obj_set_style_pad_all(backArrow, 0, 0);
-  lv_obj_set_scrollable(backArrow, false);
+  lv_obj_set_style_border_color(backArrow, UI_COL_PRIMARY, LV_STATE_FOCUSED);
+  lv_obj_set_style_border_opa(backArrow, LV_OPA_COVER, LV_STATE_FOCUSED);
   lv_obj_set_clickable(backArrow, true);
   lv_obj_add_event_cb(backArrow, rowClicked, LV_EVENT_CLICKED, nullptr);
   lv_obj_t* arrowGlyph = uiThemeLabel(backArrow, &lv_font_montserrat_20, UI_COL_PRIMARY);

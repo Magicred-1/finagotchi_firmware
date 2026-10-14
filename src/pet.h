@@ -9,7 +9,7 @@
     schedule (createRng 0x5eed), loopNoise liveliness
   - expressions.ts: 6 moods overriding gaze/split/eyes, blended over 0.45 s
   - engine.ts: dated setters, look target (mix/wander, 0.24 s morph),
-    glow = body x1.15 @ 22% over navy #07111F (PetBody), white eyes
+    glow = body x1.15 @ 22% over navy #0B2858 (PetBody), white eyes
     (PetEyes #f5f5f5)
   - PetAccessory.tsx collectibles: crown / glasses / bowtie / halo / diamond
   - PetCanvas reactions (jump/spin/glow/dance) + LevelUpAnimation sparkle
@@ -124,7 +124,7 @@ public:
   bool syncWaiting() const { return syncWait; }
 
   // PetCanvas scene: two-zone sky/ground backdrop tinted per the app's
-  // BACKGROUND_COLORS themes (rgba composites over #07111F), plus the
+  // BACKGROUND_COLORS themes (rgba composites over #0B2858), plus the
   // animated ground shadow that mirrors the idle float / reactions.
   // 6 themes, default = index 0 (the app default).
   void setSceneTheme(uint8_t id);

@@ -209,7 +209,7 @@ truncated away.
 | `dca:count:<n>` | Declares that `n` (0–8) `dca:plan:` writes follow; all previous plan slots are wiped from NVS first |
 | `dca:plan:<i>:<enabled>:<next_buy_epoch>:<amount>:<TICKER>:<buys>:<holdings>:<price_usd>` | Write plan slot `i` (0–7): enabled 0/1, next-buy unix epoch, amount in SOL (float), ticker (clamped to 6 chars), completed buys (int), holdings held (**float** — fractional tokens like `1.5`; sending an integer is fine), token unit price in USD (drives the price/valuation display; 0 when unknown). Current apps always send the 8th field; old firmware tolerates its absence. Paused plans arrive as `en=0, epoch=0` and render a PAUSED state (muted card, "PAUSED" on the detail view — never a countdown). A slot with price > 0 is marked app-priced: the device skips self-fetching that ticker's price (the app's quote is fresher; self-fetch stays the fallback for unpriced slots). Persisted in NVS, shown on the portfolio screen and the next-buy chip |
 | `dca:clear` | Wipe all plan slots (RAM + NVS) |
-| `dca:hit:<n>:<TICKER>` | A buy just executed: "+n TICKER" reward toast (app purple) + dance reaction + sparkle burst |
+| `dca:hit:<n>:<TICKER>` | A buy just executed: "+n TICKER" reward toast (app amber) + dance reaction + sparkle burst |
 | `solusd:<rate>` | SOL/USD rate (float) for the portfolio amount unit toggle (USD ⇄ SOL); persisted in NVS (`finagotchi`/`solUsd`) |
 | `epoch:<sec>` | Fallback wall-clock set (unix seconds). Only applied if NTP has never synced; ignored afterwards |
 
@@ -244,7 +244,7 @@ equivalent under it when the `solusd:` rate is known), then one card per
 plan — the actual token logo (official xStocks icons embedded at build
 time — see `tools/convert_token_logos.py`; unknown tickers get a
 procedural monogram chip), ticker, position value, next-buy countdown and
-holdings/buy info. Short presses walk the card focus (cyan ring) through
+holdings/buy info. Short presses walk the card focus (light-blue ring) through
 the plans and a trailing **+ New plan** card; after it they move on to the
 **menu screen**, and from there back to the pet screen
 (pet → portfolio → menu → pet). A long press opens a per-token **detail
@@ -272,7 +272,7 @@ The **menu screen** is a vertical, scrollable app list (launcher style):
 rows with a circular icon chip and the app name — **Accessory** (cycles
 the collectible locally, mirrored in the notify snapshot), **Mood**
 (cycles the emotion locally, mirrored likewise), **Feed pet** (primary,
-`feed:req`) and **Open DCA** (`dca:req`) — with a slim cyan scrollbar on
+`feed:req`) and **Open DCA** (`dca:req`) — with a slim light-blue scrollbar on
 the right edge. Entering the menu focuses a back-arrow affordance in the
 reserved right zone (activating it returns to the pet screen); walking
 into the list replaces it with a short info word for the focused app
@@ -344,15 +344,15 @@ Authorization: Bearer <deviceToken>
 `dca:hit:` (connected) and offline buy detection (standalone) spawn a gain
 toast: "+n TICKER" centered on screen, floating up ~40 px with ease-out over
 1.2 s, holding 0.6 s, then fading out over 0.7 s (LVGL alpha). Buy hits use
-the app's reward purple (#9945FF), poll-detected offline buys and status
-messages the success green (#5DE2A6).
+the app's reward amber (#F8B43C), poll-detected offline buys and status
+messages the success green (#7ED6A7).
 
 
 ## On-screen stats row
 
 The bottom of the pet screen shows a stats row: streak days, points
 (k-suffix over 10k), and happiness as a small bar (the app's HappinessBar
-pattern). Above it, a slim stage track fills cyan toward the 12-stage cap
+pattern). Above it, a slim stage track fills light-blue toward the 12-stage cap
 (PetCanvas stageTrack). Pet is scaled to R=88 and centered slightly above
 middle to make room.
 
@@ -370,7 +370,7 @@ mood; on disconnect the scene returns.
 ## Firmware rendering notes (what the device reproduces)
 
 - Scene backdrop: two-zone sky/ground, tinted per the app's
-  `BACKGROUND_COLORS` themes (exact rgba-over-#07111F composites), and the
+  `BACKGROUND_COLORS` themes (exact rgba-over-#0B2858 composites), and the
   PetCanvas ground shadow — a dark ellipse under the creature that mirrors
   the idle float (tightens/fades as the pet lifts) and squashes with the
   reaction scale
