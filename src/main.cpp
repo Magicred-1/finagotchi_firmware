@@ -45,6 +45,7 @@
 #include <array>
 #include "config.h"
 #include "logo.h"
+#include "api_root_ca.h"
 #include "pet.h"
 #include "ui/ui.h"
 
@@ -56,7 +57,9 @@
 #define DEVICE_ID "finagotchi-01"
 #endif
 // Companion API endpoint the state sync task polls with the device token.
-// Override in config.h to point at a self-hosted/staging API.
+// Override in config.h to point at a self-hosted/staging API. TLS for this
+// endpoint is validated against kApiRootCa (api_root_ca.h) — replace that
+// PEM too if the override host is not issued by Let's Encrypt.
 #ifndef STATE_SYNC_URL
 #define STATE_SYNC_URL "https://api.finagotchi.app/device/state"
 #endif
@@ -1496,11 +1499,16 @@ const char* mintFor(const char* ticker) {
 // One retry: the first TLS/DNS attempt occasionally fails on fresh Wi-Fi.
 // `auth` (optional) is sent as the Authorization header value; `codeOut`
 // (optional) receives the last HTTP status. A 401 is never retried.
+// `rootCa` (optional) pins the trust anchor: pass it for any request that
+// carries credentials; without it the TLS context is unverified, which is
+// only acceptable for public read-only data (the price feeds).
 size_t httpGetJson(const char* url, char* buf, size_t len,
-                   const char* auth = nullptr, int* codeOut = nullptr) {
+                   const char* auth = nullptr, int* codeOut = nullptr,
+                   const char* rootCa = nullptr) {
   for (int attempt = 0; attempt < 2; attempt++) {
     WiFiClientSecure client;           // task-local: fresh TLS session
-    client.setInsecure();              // public read-only data, no certs to leak
+    if (rootCa) client.setCACert(rootCa);
+    else        client.setInsecure();  // public read-only data only
     HTTPClient http;
     http.setTimeout(5000);
     if (!http.begin(client, url)) return 0;
@@ -1677,11 +1685,21 @@ uint32_t       lastAppliedUpd = 0;
 
 // One poll. Returns the HTTP status code (0 = transport failure).
 int syncStateFromServer() {
+  // Validated TLS needs a plausible wall clock (cert validity window). On
+  // networks where NTP has not landed yet, skip this cycle — the next poll
+  // retries, and the app's epoch: fallback also unsticks the clock.
+  if (time(nullptr) < 1700000000) {   // before Nov 2023 = unset clock
+    Serial.println("State sync: clock not synced yet, skipping");
+    return 0;
+  }
   char auth[192];
   snprintf(auth, sizeof(auth), "Bearer %s", deviceToken);
   static char body[512];   // static: keep the sync task stack small
   int code = 0;
-  size_t n = httpGetJson(STATE_SYNC_URL, body, sizeof(body), auth, &code);
+  // The Bearer token rides on this request, so unlike the anonymous price
+  // feeds the TLS context is validated against the pinned API root CA.
+  size_t n = httpGetJson(STATE_SYNC_URL, body, sizeof(body), auth, &code,
+                         kApiRootCa);
   if (n == 0) {
     lastSyncOk = false;
     Serial.printf("State sync: failed (HTTP %d)\n", code);

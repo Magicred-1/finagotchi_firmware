@@ -30,5 +30,7 @@
 
 // Cloud state sync: with a device token provisioned over BLE, the device
 // polls this endpoint every 60 s while no app is connected (Bearer auth).
-// Override to point at a self-hosted/staging API.
+// Override to point at a self-hosted/staging API. TLS is validated against
+// the pinned root CA in api_root_ca.h (Let's Encrypt) — replace it if your
+// override host uses a different issuer.
 // #define STATE_SYNC_URL "https://api.finagotchi.app/device/state"
