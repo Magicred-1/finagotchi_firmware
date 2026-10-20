@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render wiring_diagram.png: ESP32-S3 + 1.3" ST7789 TFT + 2 buttons.
+"""Render wiring_diagram.png: ESP32-S3 + 1.28" GC9A01 round TFT + 2 buttons.
 
 Pins match src/main.cpp (BUTTON_1_PIN=4, BUTTON_2_PIN=37) and the TFT
 build flags in platformio.ini. Buttons wire GPIO -> GND (internal pull-ups).
@@ -47,7 +47,7 @@ def dot(x, y, color, r=6):
 
 
 # --- title ---
-text(W // 2, 48, 'ESP32-S3 + 1.3" ST7789 TFT + Buttons Wiring', 30)
+text(W // 2, 48, 'ESP32-S3 + 1.28" GC9A01 Round TFT + Buttons Wiring', 30)
 
 # --- breadboard rails (decorative) ---
 for cx in (104, 1096):
@@ -55,20 +55,20 @@ for cx in (104, 1096):
     text(cx, 140, "+", 22, fill=(200, 60, 60))
     text(cx, 1032, "-", 22, fill=(70, 90, 160))
 
-# --- display module ---
+# --- display module (square carrier PCB, round panel) ---
 d.rectangle((400, 110, 800, 330), fill=(43, 94, 167), outline=(20, 40, 80), width=2)
-d.rectangle((425, 135, 775, 280), fill=(15, 15, 18))
-text(600, 96, '1.3" ST7789 TFT (240x240)', 22)
+d.ellipse((512, 118, 688, 288), fill=(15, 15, 18), outline=(90, 90, 95), width=2)
+text(600, 96, '1.28" GC9A01 Round TFT (240x240)', 22)
 
-# pin header along the bottom edge of the module
+# pin header along the bottom edge of the module (Waveshare silkscreen order)
 PINS = [  # (x, label, color)
     (420, "VCC", RED),
     (465, "GND", BLACK),
-    (510, "SCL", YELLOW),
-    (555, "SDA", GREEN),
-    (600, "RES", WHITE),
+    (510, "DIN", GREEN),
+    (555, "CLK", YELLOW),
+    (600, "CS", BLUE),
     (645, "DC", ORANGE),
-    (690, "CS", BLUE),
+    (690, "RST", WHITE),
     (735, "BL", PURPLE),
 ]
 for x, label, color in PINS:
@@ -85,11 +85,11 @@ text(660, 868, "ESP32-S3-WROOM-1", 13, fill=(70, 55, 25))
 TOP = [
     (420, "3V3", RED),
     (465, "GND", BLACK),
-    (510, "12", YELLOW),
-    (555, "11", GREEN),
-    (600, "14", WHITE),
+    (510, "11", GREEN),
+    (555, "12", YELLOW),
+    (600, "10", BLUE),
     (645, "9", ORANGE),
-    (690, "10", BLUE),
+    (690, "14", WHITE),
     (735, "13", PURPLE),
 ]
 for x, label, color in TOP:
@@ -142,8 +142,8 @@ dot(465, RAIL_Y, BLACK)
 text(W // 2, 1092, "Buttons short GPIO to GND when pressed - no resistors (internal pull-ups). Active-LOW.", 16)
 
 LEGEND = [
-    ("VCC", RED), ("GND", BLACK), ("SCL", YELLOW), ("SDA", GREEN), ("RES", WHITE),
-    ("DC", ORANGE), ("CS", BLUE), ("BL", PURPLE), ("BTN1 GPIO4", TEAL), ("BTN2 GPIO37", MAGENTA),
+    ("VCC", RED), ("GND", BLACK), ("DIN", GREEN), ("CLK", YELLOW), ("CS", BLUE),
+    ("DC", ORANGE), ("RST", WHITE), ("BL", PURPLE), ("BTN1 GPIO4", TEAL), ("BTN2 GPIO37", MAGENTA),
 ]
 text(70, 1132, "Wire colors:", 18, anchor="lm")
 for i, (label, color) in enumerate(LEGEND):
