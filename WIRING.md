@@ -1,21 +1,54 @@
 # Finagotchi Display Wiring
 
-## Parts in your photo
+## Parts
 - **ESP32-S3 dev board** (DevKitC-style, dual USB-C ports)
-- **1.3"/1.54" SPI TFT module** (default config assumes ST7789 240×240)
+- **1.28" round GC9A01 TFT module** (240×240, SPI — the Waveshare module,
+  also sold by The Pi Hut). This is the panel the PCB v1 is designed for and
+  the default in `platformio.ini`. The old square ST7789 240×240 module
+  still works with a one-line driver change — see "Changing pins or driver".
 
-## Breadboard wiring
+## Breadboard wiring (GC9A01 module)
 
-| Display pin | Connect to ESP32-S3 | GPIO used |
-|-------------|---------------------|-----------|
-| VCC / 3.3V  | 3.3V                | —         |
-| GND         | GND                 | —         |
-| SCL / SCK   | GPIO12              | TFT_SCLK  |
-| SDA / MOSI  | GPIO11              | TFT_MOSI  |
-| RES / RST   | GPIO14              | TFT_RST   |
-| DC          | GPIO9               | TFT_DC    |
-| CS          | GPIO10              | TFT_CS    |
-| BL / LED    | GPIO13 (optional)   | TFT_BL    |
+The module's silkscreen order, top to bottom:
+
+| Module pin | Connect to ESP32-S3 | GPIO used |
+|------------|---------------------|-----------|
+| VCC        | 3.3V                | —         |
+| GND        | GND                 | —         |
+| DIN        | GPIO11              | TFT_MOSI  |
+| CLK        | GPIO12              | TFT_SCLK  |
+| CS         | GPIO10              | TFT_CS    |
+| DC         | GPIO9               | TFT_DC    |
+| RST        | GPIO14              | TFT_RST   |
+| BL         | GPIO13              | TFT_BL    |
+
+Notes:
+
+- Power from **3.3V**, not 5V: the module accepts 3.3–5 V on VCC but the
+  logic is 3.3 V, so keep the whole chain at one level.
+- The module ships with a **PH2.0 8-pin cable**; the ESP32 side is 2.54 mm
+  Dupont. Either crimp/solder a Dupont plug onto the included cable or
+  solder pin headers to the module's edge pads.
+- It's a **round** panel: corners of the (square-designed) UI get
+  physically clipped. Cosmetic only for now — a circular safe-area pass on
+  the UI is part of the PCB v1 work.
+- If red/blue ever look swapped on a clone panel, flip
+  `-D TFT_RGB_ORDER=TFT_BGR` to `TFT_RGB` in `platformio.ini`.
+
+## On the PCB v1 (Finagotchi_V1)
+
+The on-board display header **J3 (1×8, 2.54 mm)** is the module's pin order
+one-for-one, so the Waveshare module plugs straight in:
+
+```
+1 VCC(3V3) · 2 GND · 3 DIN · 4 CLK · 5 CS · 6 DC · 7 RST · 8 BL
+```
+
+Same SPI GPIOs as the breadboard (DIN 11, CLK 12, CS 10, DC 9, RST 14) —
+the one difference is the backlight: **BL is GPIO21 on the PCB** (GPIO13 on
+the breadboard). The PCB also moves input to a crown encoder
+(A/B/push = GPIO15/16/4) plus a Cancel button (GPIO7); that's handled by the
+separate `pcb-v1` PlatformIO environment, not this one.
 
 ## Buttons
 
@@ -101,7 +134,8 @@ ADC2 conflicts with Wi-Fi):
 Without the divider the icon hides itself (reads ~0 V = USB power assumed).
 > Never connect LiPo+ directly to a GPIO — 4.2 V exceeds the 3.3 V max.
 
-> If your display module has pins labeled `SCL`/`SDA`, that is the SPI clock/data naming used by some vendors. `SCL` = SCK, `SDA` = MOSI.
+> Some vendor modules label the SPI pins `SCL`/`SDA` — that is clock/data
+> naming, not I²C. `SCL` = CLK = SCK, `SDA` = DIN = MOSI.
 
 ## Changing pins or driver
 
@@ -109,8 +143,8 @@ Edit `platformio.ini` `build_flags`:
 
 ```ini
 ; Driver options (pick one):
--D ST7789_DRIVER=1
-; -D GC9A01_DRIVER=1
+-D GC9A01_DRIVER=1          ; round 240x240 (default — the PCB v1 panel)
+; -D ST7789_DRIVER=1        ; legacy square breadboard module
 ; -D ILI9341_DRIVER=1
 
 ; Resolution
@@ -123,7 +157,7 @@ Edit `platformio.ini` `build_flags`:
 -D TFT_CS=10
 -D TFT_DC=9
 -D TFT_RST=14
--D TFT_BL=13
+-D TFT_BL=13                ; GPIO21 on the PCB v1
 ```
 
 ## If your display is I2C OLED instead (SSD1306 / SH1106)
