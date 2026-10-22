@@ -103,6 +103,13 @@ uint8_t  mood = static_cast<uint8_t>(PetMoodId::MOOD_CALM);
 uint8_t  item = static_cast<uint8_t>(PetItem::ITEM_NONE);
 uint32_t points = 0;
 uint8_t  happiness = 50;
+uint8_t  bgTheme = 0;   // PetCanvas scene theme (menu backdrop row / bg:)
+
+// Parental lock (optional 4-digit code, NVS "fina"). When set, the device
+// boots locked: the pet animates but the money screens ask for the code.
+// The boot recovery chord (both buttons) clears it along with BLE bonds.
+bool     pinSet = false;
+uint16_t pinCode = 0;
 bool     timeSynced = false;
 // Once the companion server has pushed state at least once it owns
 // stage/streak: the demo auto-evolve and local streak tick stay off
@@ -263,6 +270,7 @@ void blePushState(PetState s) {
   ui::setStats(streak, points, happiness);
   ui::setMenuAccessory(ITEM_NAMES[item]);   // keep the menu rows in sync
   ui::setMenuMood(MOOD_NAMES[mood]);
+  ui::setMenuBackdrop(FinagotchiPet::sceneThemeName(bgTheme));
   Serial.printf("BLE -> %s\n", buf);
 }
 
@@ -383,8 +391,10 @@ void handleCommand(const char* cmd) {
     // old apps never send it, unknown names are ignored.
     int t = FinagotchiPet::sceneThemeForName(cmd + 3);
     if (t >= 0) {
-      pet.setSceneTheme(static_cast<uint8_t>(t));
-      Serial.printf("BLE: scene theme '%s'\n", FinagotchiPet::sceneThemeName(static_cast<uint8_t>(t)));
+      bgTheme = static_cast<uint8_t>(t);
+      pet.setSceneTheme(bgTheme);
+      ui::setMenuBackdrop(FinagotchiPet::sceneThemeName(bgTheme));
+      Serial.printf("BLE: scene theme '%s'\n", FinagotchiPet::sceneThemeName(bgTheme));
     } else {
       Serial.printf("BLE: unknown bg '%s'\n", cmd + 3);
     }
@@ -998,6 +1008,49 @@ void actionCycleMood(float nowSec) {
   Serial.printf("Menu: mood=%u (%s)\n", mood, MOOD_NAMES[mood]);
 }
 
+// Menu backdrop row: cycle the PetCanvas scene theme locally. Cosmetic
+// only — the app's bg: write overrides it on connect. (bgTheme itself is
+// declared with the other BLE-mirrored state above.)
+void actionCycleBackdrop() {
+  bgTheme = (bgTheme + 1) % FinagotchiPet::kSceneThemeCount;
+  pet.setSceneTheme(bgTheme);
+  ui::setMenuBackdrop(FinagotchiPet::sceneThemeName(bgTheme));
+  Serial.printf("Menu: backdrop=%s\n", FinagotchiPet::sceneThemeName(bgTheme));
+}
+
+// --- parental lock (menu "Parental" row + lock screen callbacks) -------------
+
+// The row opens the code pad in the right mode: no code stored -> set one
+// (enter twice); code stored -> enter it to remove.
+void actionParentalLock() {
+  ui::showLock(pinSet ? 3 : 1);
+}
+
+bool actionPinCheck(uint16_t pin) {
+  return pinSet && pin == pinCode;
+}
+
+void actionPinStore(uint16_t pin) {
+  pinCode = pin;
+  pinSet = true;
+  prefs.begin("fina", false);
+  prefs.putUShort("pin", pinCode);
+  prefs.putBool("pinset", true);
+  prefs.end();
+  ui::setMenuLock("on");
+  Serial.println("Parental: code set");
+}
+
+void actionPinClear() {
+  pinSet = false;
+  pinCode = 0;
+  prefs.begin("fina", false);
+  prefs.putBool("pinset", false);
+  prefs.end();
+  ui::setMenuLock("off");
+  Serial.println("Parental: code removed");
+}
+
 // Menu "Open DCA": ask the app to open its DCA wizard/sheet.
 void actionOpenDca() {
   if (appConnected) {
@@ -1262,6 +1315,8 @@ void loadStats() {
   points = prefs.getUInt("points", 0);
   happiness = prefs.getUChar("happy", 50);
   serverLinked = prefs.getUChar("srvlink", 0) != 0;
+  pinSet = prefs.getBool("pinset", false);
+  pinCode = prefs.getUShort("pin", 0);
   prefs.end();
 }
 
@@ -1872,10 +1927,16 @@ void setup() {
 
   // Recovery chord: BOTH buttons held at boot -> erase stale BLE bonds from
   // NVS (a phone holding a dead bond after a re-flash fails authentication
-  // silently and never shows a fresh passkey).
+  // silently and never shows a fresh passkey) AND clear the parental code
+  // (the only way back in when the code is forgotten).
   bool wipeBonds = ui::bothButtonsHeld();
   if (wipeBonds) {
-    showBootStatus("BLE bonds erased");
+    pinSet = false;
+    pinCode = 0;
+    prefs.begin("fina", false);
+    prefs.putBool("pinset", false);
+    prefs.end();
+    showBootStatus("bonds + code erased");
     delay(1200);
   }
 
@@ -1900,9 +1961,13 @@ void setup() {
   // semantics that touch BLE/pet state stay here as callbacks.
   ui::Actions actions = { actionSyncNow, actionCycleReaction, actionFeedPet,
                           actionCycleItem, actionCycleMood, actionOpenDca,
-                          actionTogglePause, actionCreatePlan };
+                          actionCycleBackdrop, actionTogglePause, actionCreatePlan,
+                          actionParentalLock, actionPinCheck, actionPinStore,
+                          actionPinClear };
   ui::begin(&tft, &pet, actions);
   ui::setSubStage(subStage);
+  ui::setLocked(pinSet);                     // parental gate (NVS "fina"/"pinset")
+  ui::setMenuLock(pinSet ? "on" : "off");
   // Initial Wi-Fi glyph state (the boot attempt resolved before LVGL was up).
   ui::setWifiOnline(WiFi.status() == WL_CONNECTED);
 

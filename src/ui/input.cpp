@@ -23,6 +23,11 @@
   cycles the pet reaction, on the portfolio toggles SOL <-> USD amounts,
   on a detail view double-press also toggles pause (either button).
 
+  BACK/CANCEL (right button double-press, universal): cancels the code
+  pad, closes the detail view, leaves the current screen — the menu's
+  cosmetics page steps back to the apps page first, the create wheel
+  steps back one drum. No-op on the pet screen (already home).
+
   The focus group only ever holds the visible objects of the ACTIVE screen
   (see uiGroupSet) — hidden cards never swallow key presses. Card/row
   activation goes through LV_KEY_ENTER on the keypad indev so focus visuals
@@ -140,12 +145,21 @@ void onDetailShort() {
 // Short press (either button) = navigate forward. Screens cycle, so the
 // pet screen is always a few presses away.
 void onNavShort() {
+  if (uiScreenLockActive()) { uiScreenLockNext(); return; }
   lv_obj_t* act = lv_screen_active();
   if (uiScreenDcaDetailOpen()) {
     onDetailShort();
   } else if (act == g_ui.petScreen) {
-    uiScreenDcaShow();
-    Serial.println("NAV: portfolio screen");
+    if (g_ui.locked) {
+      // Parental gate: the portfolio (financial) is SKIPPED while locked —
+      // the cycle becomes pet -> menu -> pet so cosmetics stay reachable.
+      // The financial menu rows ask for the code on activation.
+      uiScreenMenuShow();
+      Serial.println("NAV: menu screen (locked: portfolio skipped)");
+    } else {
+      uiScreenDcaShow();
+      Serial.println("NAV: portfolio screen");
+    }
   } else if (act == g_ui.dcaScreen) {
     if (uiScreenDcaFocusAdvance()) {
       Serial.println("NAV: focus next card");
@@ -168,6 +182,7 @@ void onNavShort() {
 
 // Long press (either button) = the action of the current screen.
 void onActionLong(float nowSec) {
+  if (uiScreenLockActive()) { uiScreenLockConfirm(); return; }
   lv_obj_t* act = lv_screen_active();
   Serial.println("ACTION (long)");
   if (uiScreenDcaDetailOpen()) {
@@ -183,9 +198,42 @@ void onActionLong(float nowSec) {
   }
 }
 
+// BTN2 double-press = BACK, universal: cancel the code pad, close the
+// detail, leave the current screen (menu cosmetics page steps back to the
+// apps page, create wheel steps back a drum). Pet screen = home, so back
+// is a no-op there.
+void onBack() {
+  if (uiScreenLockActive()) {
+    uiScreenPetShow();
+    Serial.println("BACK: pet (code pad cancel)");
+    return;
+  }
+  if (uiScreenDcaDetailOpen()) {
+    uiScreenDcaCloseDetail();
+    Serial.println("BACK: close detail");
+    return;
+  }
+  lv_obj_t* act = lv_screen_active();
+  if (act == g_ui.dcaScreen) {
+    uiScreenPetShow();
+    Serial.println("BACK: pet screen");
+  } else if (act == g_ui.menuScreen) {
+    uiScreenMenuBack();
+    Serial.println("BACK: menu back");
+  } else if (act == g_ui.createScreen) {
+    uiScreenCreateBack();
+    Serial.println("BACK: create back");
+  }
+}
+
 // Bonus: left-button double-press extras (when the left button is alive).
 void onBtn1Double(float nowSec) {
   lv_obj_t* act = lv_screen_active();
+  if (uiScreenLockActive()) {   // code pad escape hatch: double = cancel
+    uiScreenPetShow();
+    Serial.println("lock: cancel");
+    return;
+  }
   if (act == g_ui.dcaScreen && !uiScreenDcaDetailOpen()) {
     uiScreenDcaToggleAmountUnit();
     Serial.printf("BTN1 double: amounts in %s\n", g_ui.amountInSol ? "SOL" : "USD");
@@ -198,6 +246,7 @@ void onBtn1Double(float nowSec) {
 // exists on the current screen — everywhere else every press is a short,
 // so fast tapping never swallows navigation.
 bool btn1HasDoubleHere() {
+  if (uiScreenLockActive()) return true;                        // cancel
   lv_obj_t* act = lv_screen_active();
   if (act == g_ui.petScreen) return true;                       // reaction
   if (act == g_ui.dcaScreen && !uiScreenDcaDetailOpen()) return true;  // USD/SOL
@@ -263,8 +312,18 @@ void uiInputUpdate() {
     }
   }
 
-  // Both buttons navigate on short, act on long — fully redundant.
-  if (short2) onNavShort();
+  // BTN2 double = BACK (universal): cancel the code pad / close detail /
+  // leave the screen. Singles keep navigating — fully redundant with BTN1.
+  static uint32_t lastShort2 = 0;
+  if (short2) {
+    if (millis() - lastShort2 < DOUBLE_PRESS_MS) {
+      lastShort2 = 0;
+      onBack();
+    } else {
+      lastShort2 = millis();
+      onNavShort();
+    }
+  }
 
   if (long1) onActionLong(nowSec);
 

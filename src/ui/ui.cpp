@@ -199,6 +199,29 @@ void ui::setMenuMood(const char* name) {
   uiScreenMenuSetMood(name);
 }
 
+void ui::setMenuBackdrop(const char* name) {
+  if (!g_ui.ready) return;
+  uiScreenMenuSetBackdrop(name);
+}
+
+void ui::setMenuLock(const char* name) {
+  if (!g_ui.ready) return;
+  uiScreenMenuSetLock(name);
+}
+
+void ui::showLock(int mode) {
+  if (!g_ui.ready) return;
+  uiScreenLockShow(mode);
+}
+
+bool ui::lockActive() {
+  return g_ui.ready && uiScreenLockActive();
+}
+
+void ui::setLocked(bool on) {
+  g_ui.locked = on;
+}
+
 void ui::setCreateTickers(const char* const* tickers, uint8_t n) {
   if (!g_ui.ready) return;
   uiScreenCreateSetTickers(tickers, n);

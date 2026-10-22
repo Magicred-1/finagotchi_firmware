@@ -25,10 +25,15 @@ struct Actions {
   void (*cycleItem)();                  // menu accessory row (item: push)
   void (*cycleMood)(float nowSec);      // menu mood row (mood: push)
   void (*openDca)();                    // menu "Open DCA" (BLE dca:req)
+  void (*cycleBackdrop)();              // menu backdrop row (scene theme cycle)
   void (*togglePause)(uint8_t slot);    // detail double-press (BLE dca:pause:)
   // Create-screen confirm; returns true when the request went out (app
   // connected) so the UI can pop back to the portfolio.
   bool (*createPlan)(const char* ticker, float amountSol, uint32_t freqSec);
+  void (*parentalLock)();               // menu "Parental" row (set/remove code)
+  bool (*pinCheck)(uint16_t pin);       // lock screen: validate entered code
+  void (*pinStore)(uint16_t pin);       // lock screen: save new code
+  void (*pinClear)();                   // lock screen: remove code
 };
 
 void begin(TFT_eSPI* tft, FinagotchiPet* pet, const Actions& actions);
@@ -68,12 +73,22 @@ void enqueueRewardToast(const char* text);
 // Menu screen row labels (main.cpp keeps them in sync from blePushState).
 void setMenuAccessory(const char* name);
 void setMenuMood(const char* name);
+void setMenuBackdrop(const char* name);
 
 // Create-plan screen: the tickers the user can pick (main's xStocks table).
 void setCreateTickers(const char* const* tickers, uint8_t n);
 
 // Timed status overlay (center of screen, auto-hides after ms).
 void showOverlay(const char* msg, uint32_t ms);
+
+// Parental lock (optional 4-digit code — main.cpp owns the NVS state).
+// When a code is set the device boots locked: the pet animates but leaving
+// the pet screen asks for the code. Modes: 0 unlock (validate), 1 set new
+// (enter twice), 3 remove (validate then clear).
+void showLock(int mode);
+bool lockActive();               // lock screen is up (input routes to it)
+void setLocked(bool on);         // boot state, from main's NVS load
+void setMenuLock(const char* name);   // "on"/"off" info word cache
 
 // BLE pairing passkey panel; hidden with hidePasskey() once pairing ends.
 void showPasskey(uint32_t passkey);
