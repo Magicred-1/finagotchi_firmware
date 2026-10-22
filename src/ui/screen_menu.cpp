@@ -332,6 +332,22 @@ bool uiScreenMenuFocusAdvance() {
   return true;   // rowFocused scrolls it into view + updates the info
 }
 
+// Crown CCW (PCB v1) = previous row. At the top of the list (or on the
+// back arrow) the caller backs out via uiScreenMenuBack.
+bool uiScreenMenuFocusPrev() {
+  if (!menuScr) return false;
+  lv_obj_t* f = focusedRow();
+  if (!f) {
+    lv_group_focus_obj(row[rowCountFor(page) - 1]);
+    infoFill();
+    return true;
+  }
+  if (f == backArrow) return false;
+  if (f == row[0]) return false;
+  lv_group_focus_prev(g_ui.group);
+  return true;
+}
+
 // Name caches are always written (BLE writes may arrive before the screen
 // is ever built); the builder reads them on first show. When the screen
 // exists and the info word is visible, just refresh it.

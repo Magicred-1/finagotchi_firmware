@@ -87,6 +87,7 @@ bool uiScreenDcaDetailOpen();
 void uiScreenDcaCloseDetail();
 void uiScreenDcaToggleAmountUnit();
 bool uiScreenDcaFocusAdvance();          // false: no more cards -> next screen
+bool uiScreenDcaFocusPrev();             // crown CCW; false: first card -> back out
 void uiScreenDcaTogglePause();           // detail double-press: pause/resume
 void uiScreenDcaSetWifiOnline(bool online);  // Wi-Fi glyph, portfolio header
 
@@ -98,6 +99,7 @@ void uiScreenCreateFreed();              // screen object deleted (auto_del)
 void uiScreenCreateShrink();             // free drum/summary widgets pre-return
 void uiScreenCreateBack();               // BTN2 double: back one drum / exit
 void uiScreenCreateFocusAdvance();       // short: next option (wraps) / edit
+void uiScreenCreateFocusPrev();          // crown CCW: previous option (wraps)
 void uiScreenCreateActivate(float nowSec); // long: confirm drum / CREATE
 void uiScreenCreateSetTickers(const char* const* tickers, uint8_t n);
 
@@ -109,6 +111,7 @@ void uiScreenMenuShow();                 // after the last portfolio card
 void uiScreenMenuFreed();                // screen object deleted (auto_del)
 void uiScreenMenuActivate(float nowSec); // long press: run the focused row
 bool uiScreenMenuFocusAdvance();         // false: no more rows -> pet screen
+bool uiScreenMenuFocusPrev();            // crown CCW; false: top of list -> back
 void uiScreenMenuSetAccessory(const char* name);
 void uiScreenMenuSetMood(const char* name);
 void uiScreenMenuSetBackdrop(const char* name);
@@ -124,4 +127,5 @@ void uiScreenLockShow(int mode);
 void uiScreenLockFreed();                // screen object deleted (auto_del)
 bool uiScreenLockActive();               // lock screen is the active screen
 void uiScreenLockNext();                 // short press: next digit (0-9 wrap)
+void uiScreenLockPrev();                 // crown CCW: previous digit (9-0 wrap)
 void uiScreenLockConfirm();              // long press: confirm digit / finish

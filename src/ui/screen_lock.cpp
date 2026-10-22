@@ -158,6 +158,13 @@ void uiScreenLockNext() {
   digitsDraw();
 }
 
+// Crown CCW (PCB v1): step the current digit down, wrapping 0 -> 9.
+void uiScreenLockPrev() {
+  if (!lockScr) return;
+  digits[pos] = (digits[pos] + 9) % 10;
+  digitsDraw();
+}
+
 void uiScreenLockConfirm() {
   if (!lockScr) return;
   if (++pos >= 4) complete();

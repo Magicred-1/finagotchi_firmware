@@ -402,6 +402,28 @@ void uiScreenCreateFocusAdvance() {
   else lv_group_focus_next(g_ui.group);
 }
 
+// Crown CCW (PCB v1) = previous option, wrapping at the top back to the
+// last (the wheel spins both ways). On the summary page it steps back a
+// drum instead, mirroring uiScreenCreateBack.
+void uiScreenCreateFocusPrev() {
+  if (!createScr) return;
+  if (page == PAGE_SUMMARY) {
+    showPage(page - 1);
+    return;
+  }
+  lv_obj_t* f = focused();
+  if (!f || f == backArrow) {
+    // Walk into the drum from the bottom: the back arrow leaves the group.
+    if (f == backArrow) lv_obj_set_hidden(backArrow, true);
+    uiGroupSet(opt, optCount, false);
+    lv_group_focus_obj(opt[optCount - 1]);
+    lv_obj_scroll_to_view(opt[optCount - 1], LV_ANIM_ON);
+    return;
+  }
+  if (f == opt[0]) lv_group_focus_obj(opt[optCount - 1]);
+  else lv_group_focus_prev(g_ui.group);
+}
+
 // Long press (either button) = confirm drum / CREATE.
 void uiScreenCreateActivate(float nowSec) {
   if (!createScr) return;

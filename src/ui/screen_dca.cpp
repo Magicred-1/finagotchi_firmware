@@ -661,6 +661,24 @@ bool uiScreenDcaFocusAdvance() {
   return false;   // on the last card: caller moves to the next screen
 }
 
+// Crown CCW (PCB v1) = previous card. The "+ New plan" card is always
+// last, so the first entry is card[0] with plans, else newCard itself;
+// rotating past it backs out to the pet screen (the caller's job).
+bool uiScreenDcaFocusPrev() {
+  if (!listScr) return false;
+  lv_obj_t* f = lv_group_get_focused(g_ui.group);
+  lv_obj_t* first = g_ui.planCount > 0 ? card[0] : newCard;
+  if (f && f != first) {
+    lv_group_focus_prev(g_ui.group);
+    return true;
+  }
+  if (!f) {   // nothing focused yet (e.g. after a refresh): land on the last
+    lv_group_focus_obj(newCard);
+    return true;
+  }
+  return false;
+}
+
 void uiScreenDcaTogglePause() {
   if (detailSlot < 0 || detailSlot >= static_cast<int8_t>(g_ui.planCount)) return;
   if (g_ui.actions.togglePause)

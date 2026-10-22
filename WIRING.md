@@ -50,6 +50,27 @@ the breadboard). The PCB also moves input to a crown encoder
 (A/B/push = GPIO15/16/4) plus a Cancel button (GPIO7); that's handled by the
 separate `pcb-v1` PlatformIO environment, not this one.
 
+### PCB v1 firmware (`pcb-v1` env)
+
+Flash with `pio run -e pcb-v1 -t upload`. The env targets the
+ESP32-S3-WROOM-1-**N8R2** (8 MB quad flash + 2 MB quad PSRAM) and switches
+the input map:
+
+| Input | GPIO | Polarity | Action |
+|-------|------|----------|--------|
+| Crown rotate | A=15, B=16 | quadrature, pull-ups | CW = navigate forward, CCW = backward (spins the create wheel, walks cards/rows; rotating past the top of a list backs out of the screen) |
+| Crown push | 4 | active-LOW | confirm / trigger the focused action; double-push = bonus extras (pet reaction, USD ↔ SOL, code-pad cancel) |
+| Cancel | 7 | active-HIGH | single press = universal BACK (same semantics as the breadboard's right-button double-press) |
+
+The parental code pad is fully crown-driven: rotate to set a digit
+(CW up / CCW down), push to confirm it, cancel to escape. The boot
+recovery chord (erase BLE bonds + parental code) is **crown push + cancel
+held while powering on**.
+
+If the dial navigates the wrong way on the assembled board, flip
+`CROWN_INVERT` in `src/ui/input.cpp` (or swap the A/B wires) — quadrature
+direction depends on which way the encoder was clocked into the footprint.
+
 ## Buttons
 
 Two momentary push buttons for local interaction, wired to GND. The firmware

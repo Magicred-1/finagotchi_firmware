@@ -28,6 +28,17 @@
   cosmetics page steps back to the apps page first, the create wheel
   steps back one drum. No-op on the pet screen (already home).
 
+  PCB v1 (FINAGOTCHI_PCB_V1) replaces the two buttons with a crown
+  encoder + a dedicated cancel button:
+
+    crown rotate CW  = navigate forward (same as short press)
+    crown rotate CCW = navigate backward: previous card/row/option,
+                       past the top of a list backs out of the screen
+    crown push       = confirm / trigger the focused action (same as
+                       long press); double-push keeps the bonus extras
+                       (pet reaction / USD <-> SOL / code-pad cancel)
+    cancel (GPIO7)   = BACK, single press, no double needed
+
   The focus group only ever holds the visible objects of the ACTIVE screen
   (see uiGroupSet) — hidden cards never swallow key presses. Card/row
   activation goes through LV_KEY_ENTER on the keypad indev so focus visuals
@@ -38,11 +49,20 @@
 
 namespace {
 
+#ifdef FINAGOTCHI_PCB_V1
+// PCB v1: crown encoder (quadrature A/B + active-LOW push, 10k pull-ups on
+// the board) and a dedicated active-HIGH cancel button (10k pull-down).
+constexpr uint8_t CROWN_A_PIN    = 15;
+constexpr uint8_t CROWN_B_PIN    = 16;
+constexpr uint8_t CROWN_PUSH_PIN = 4;    // same pin/polarity as breadboard BTN1
+constexpr uint8_t CANCEL_PIN     = 7;
+#else
 // Hardware reality: captures have shown each button electrically dead at
 // different times (flaky unit), so BOTH buttons carry the same mapping —
 // short = navigate, long = action — and the UI works with either one.
 constexpr uint8_t BUTTON_1_PIN = 4;    // left button
 constexpr uint8_t BUTTON_2_PIN = 37;   // right button
+#endif
 
 constexpr uint32_t DEBOUNCE_MS    = 30;
 constexpr uint32_t LONG_PRESS_MS  = 1000;
@@ -50,19 +70,25 @@ constexpr uint32_t DOUBLE_PRESS_MS = 500;
 
 struct Button {
   uint8_t  pin;
-  bool     lastRaw;
-  bool     state;      // debounced state (LOW = pressed)
+  uint8_t  activeLevel;  // LOW with pull-ups, HIGH for the PCB cancel button
+  bool     lastRaw;      // last raw reading, true = pressed side
+  bool     pressed;      // debounced state
   uint32_t lastChange;
   uint32_t pressedAt;
   bool     longFired;
 };
 
-Button btn1 = { BUTTON_1_PIN, HIGH, HIGH, 0, 0, false };
-Button btn2 = { BUTTON_2_PIN, HIGH, HIGH, 0, 0, false };
+#ifdef FINAGOTCHI_PCB_V1
+Button btnPush   = { CROWN_PUSH_PIN, LOW,  false, false, 0, 0, false };
+Button btnCancel = { CANCEL_PIN,     HIGH, false, false, 0, 0, false };
+#else
+Button btn1 = { BUTTON_1_PIN, LOW, false, false, 0, 0, false };
+Button btn2 = { BUTTON_2_PIN, LOW, false, false, 0, 0, false };
+#endif
 
 // Returns true on short-press release, sets longFired on long press.
 bool handleButton(Button& b, bool& longPress) {
-  bool raw = digitalRead(b.pin);
+  bool raw = digitalRead(b.pin) == b.activeLevel;
   uint32_t now = millis();
 
   if (raw != b.lastRaw) {
@@ -72,21 +98,21 @@ bool handleButton(Button& b, bool& longPress) {
 
   longPress = false;
 
-  if ((now - b.lastChange) > DEBOUNCE_MS && raw != b.state) {
-    b.state = raw;
-    if (b.state == LOW) {           // pressed
+  if ((now - b.lastChange) > DEBOUNCE_MS && raw != b.pressed) {
+    b.pressed = raw;
+    if (b.pressed) {                  // pressed
       b.pressedAt = now;
       b.longFired = false;
-    } else {                        // released
+    } else {                          // released
       if (!b.longFired && (now - b.pressedAt) < LONG_PRESS_MS) {
-        return true;                // short press
+        return true;                  // short press
       }
     }
   }
 
-  if (b.state == LOW && !b.longFired && (now - b.pressedAt) >= LONG_PRESS_MS) {
+  if (b.pressed && !b.longFired && (now - b.pressedAt) >= LONG_PRESS_MS) {
     b.longFired = true;
-    longPress = true;               // long press detected
+    longPress = true;                 // long press detected
   }
 
   return false;
@@ -226,6 +252,73 @@ void onBack() {
   }
 }
 
+#ifdef FINAGOTCHI_PCB_V1
+// Crown CCW = navigate backward: previous card/row/option; rotating past
+// the top of a list backs out of the screen (menu: apps page -> pet,
+// cosmetics -> apps; portfolio -> pet; create summary -> previous drum).
+void onNavPrev() {
+  if (uiScreenLockActive()) { uiScreenLockPrev(); return; }
+  if (uiScreenDcaDetailOpen()) {
+    uiScreenDcaCloseDetail();
+    Serial.println("NAV back: close detail");
+    return;
+  }
+  lv_obj_t* act = lv_screen_active();
+  if (act == g_ui.petScreen) {
+    uiScreenMenuShow();   // the cycle backwards: pet <- menu
+    Serial.println("NAV back: menu screen");
+  } else if (act == g_ui.dcaScreen) {
+    if (!uiScreenDcaFocusPrev()) {
+      uiScreenPetShow();
+      Serial.println("NAV back: pet screen");
+    } else {
+      Serial.println("NAV back: focus previous card");
+    }
+  } else if (act == g_ui.menuScreen) {
+    if (!uiScreenMenuFocusPrev()) {
+      uiScreenMenuBack();
+      Serial.println("NAV back: menu back");
+    } else {
+      Serial.println("NAV back: focus previous row");
+    }
+  } else if (act == g_ui.createScreen) {
+    uiScreenCreateFocusPrev();
+    Serial.println("NAV back: create: previous option");
+  }
+}
+
+// Quadrature decode, polled from uiInputUpdate (loop rate is kHz-class —
+// plenty for a thumb wheel). One detent = a full 4-transition quadrature
+// cycle; if the dial feels reversed on the assembled board, flip
+// CROWN_INVERT (or swap the A/B wires).
+uint8_t crownState = 0;   // (A<<1)|B
+int8_t  crownAcc   = 0;
+constexpr int8_t CROWN_TRANSITIONS_PER_STEP = 4;
+constexpr bool   CROWN_INVERT = false;
+// index = (old<<2)|new; 0 = no move, ±1 = single transition
+const int8_t kQem[16] = { 0,-1,1,0, 1,0,0,-1, -1,0,0,1, 0,1,-1,0 };
+
+void crownStep(int8_t dir) {
+  if (CROWN_INVERT) dir = -dir;
+  if (dir > 0) onNavShort();
+  else onNavPrev();
+}
+
+void pollCrown() {
+  uint8_t s = (digitalRead(CROWN_A_PIN) << 1) | digitalRead(CROWN_B_PIN);
+  if (s == crownState) return;
+  crownAcc += kQem[(crownState << 2) | s];
+  crownState = s;
+  if (crownAcc >= CROWN_TRANSITIONS_PER_STEP) {
+    crownAcc = 0;
+    crownStep(+1);
+  } else if (crownAcc <= -CROWN_TRANSITIONS_PER_STEP) {
+    crownAcc = 0;
+    crownStep(-1);
+  }
+}
+#endif // FINAGOTCHI_PCB_V1
+
 // Bonus: left-button double-press extras (when the left button is alive).
 void onBtn1Double(float nowSec) {
   lv_obj_t* act = lv_screen_active();
@@ -258,35 +351,53 @@ bool btn1HasDoubleHere() {
 namespace ui {
 
 // Boot-time recovery chord query (called from setup() before ui::begin):
-// true while BOTH buttons are held. Used to erase stale BLE bonds.
+// true while BOTH inputs are held. Used to erase stale BLE bonds and the
+// parental code. Breadboard: the two buttons. PCB v1: crown push + cancel.
 bool bothButtonsHeld() {
+#ifdef FINAGOTCHI_PCB_V1
+  pinMode(CROWN_PUSH_PIN, INPUT_PULLUP);
+  pinMode(CANCEL_PIN, INPUT_PULLDOWN);
+  delay(5);   // let the pulls settle
+  return digitalRead(CROWN_PUSH_PIN) == LOW && digitalRead(CANCEL_PIN) == HIGH;
+#else
   pinMode(BUTTON_1_PIN, INPUT_PULLUP);
   pinMode(BUTTON_2_PIN, INPUT_PULLUP);
   delay(5);   // let the pull-ups settle
   return digitalRead(BUTTON_1_PIN) == LOW && digitalRead(BUTTON_2_PIN) == LOW;
+#endif
 }
 
 } // namespace ui
 
 void uiInputInit() {
+#ifdef FINAGOTCHI_PCB_V1
+  pinMode(CROWN_A_PIN, INPUT_PULLUP);
+  pinMode(CROWN_B_PIN, INPUT_PULLUP);
+  pinMode(btnPush.pin, INPUT_PULLUP);
+  pinMode(btnCancel.pin, INPUT_PULLDOWN);
+  crownState = (digitalRead(CROWN_A_PIN) << 1) | digitalRead(CROWN_B_PIN);
+#else
   pinMode(btn1.pin, INPUT_PULLUP);
   pinMode(btn2.pin, INPUT_PULLUP);
+#endif
 
   lv_indev_t* indev = lv_indev_create();
   lv_indev_set_type(indev, LV_INDEV_TYPE_KEYPAD);
   lv_indev_set_read_cb(indev, keypadRead);
   lv_indev_set_group(indev, g_ui.group);
 
+#ifdef FINAGOTCHI_PCB_V1
+  Serial.printf("Input: crown A/B/push GPIO%d/%d/%d + cancel GPIO%d "
+                "(rotate = navigate, push = action, cancel = back)\n",
+                CROWN_A_PIN, CROWN_B_PIN, CROWN_PUSH_PIN, CANCEL_PIN);
+#else
   Serial.printf("Buttons: GPIO%d + GPIO%d (short = navigate, long = action)\n",
                 btn1.pin, btn2.pin);
+#endif
 }
 
 void uiInputUpdate() {
   float nowSec = millis() / 1000.0f;
-
-  bool long1, long2;
-  bool short1 = handleButton(btn1, long1);
-  bool short2 = handleButton(btn2, long2);
 
   // Deferred detail close: the double window expired without a second
   // press, so it was a plain short — close the detail (if still open).
@@ -297,6 +408,36 @@ void uiInputUpdate() {
       Serial.println("detail: close");
     }
   }
+
+#ifdef FINAGOTCHI_PCB_V1
+  pollCrown();   // CW detent = navigate forward, CCW = backward
+
+  bool pushLong, cancelLong;
+  bool pushShort   = handleButton(btnPush, pushLong);
+  bool cancelShort = handleButton(btnCancel, cancelLong);
+
+  if (cancelShort) onBack();   // dedicated back/cancel: single press
+
+  // Crown push = confirm / trigger the focused action (the long-press
+  // semantics on the breadboard). Double-push keeps the bonus extras
+  // (pet reaction / USD <-> SOL / code-pad cancel) where they exist.
+  static uint32_t lastPushShort = 0;
+  if (pushShort) {
+    if (btn1HasDoubleHere() && millis() - lastPushShort < DOUBLE_PRESS_MS) {
+      lastPushShort = 0;
+      onBtn1Double(nowSec);
+    } else {
+      lastPushShort = millis();
+      onActionLong(nowSec);
+    }
+  }
+
+  if (pushLong) onActionLong(nowSec);
+  (void)cancelLong;
+#else
+  bool long1, long2;
+  bool short1 = handleButton(btn1, long1);
+  bool short2 = handleButton(btn2, long2);
 
   // BTN1 double extras: the 500 ms double window only applies where the
   // screen has a double action (btn1HasDoubleHere) — otherwise every press
@@ -328,4 +469,5 @@ void uiInputUpdate() {
   if (long1) onActionLong(nowSec);
 
   if (long2) onActionLong(nowSec);
+#endif
 }
