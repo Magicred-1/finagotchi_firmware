@@ -237,7 +237,12 @@ and are never overdue.
 The device runs a **single-button scheme** (the left button is dead on some
 units): the **right button** carries the UI — **short press = navigate**,
 **long press = action** — and the left button, where alive, is a bonus
-action key. No on-screen button hints, state captions only. A short press
+action key. A **double-press of the right button is BACK/cancel
+everywhere**: it closes the plan detail view, leaves the current screen
+(the menu's cosmetics page steps back to the apps page first, the
+create-plan wheel steps back one drum), and cancels the parental code
+pad; on the pet screen it's a no-op (already home). No on-screen button
+hints, state captions only. A short press
 of the right button opens the full-screen **portfolio view**: a header
 with the total portfolio value (Σ holdings × price in USD, with a SOL
 equivalent under it when the `solusd:` rate is known), then one card per
@@ -268,16 +273,39 @@ fully standalone — the app is only needed for the final send. The token
 drum is entered on a back-arrow affordance (activate = back to the
 portfolio view); the right zone shows the values picked so far.
 
-The **menu screen** is a vertical, scrollable app list (launcher style):
-rows with a circular icon chip and the app name — **Accessory** (cycles
-the collectible locally, mirrored in the notify snapshot), **Mood**
-(cycles the emotion locally, mirrored likewise), **Feed pet** (primary,
-`feed:req`) and **Open DCA** (`dca:req`) — with a slim light-blue scrollbar on
-the right edge. Entering the menu focuses a back-arrow affordance in the
-reserved right zone (activating it returns to the pet screen); walking
-into the list replaces it with a short info word for the focused app
-(the current accessory/mood name). Short presses walk the focus down the
-rows (auto-scrolled into view), a long press runs the focused app.
+The **menu screen** is a vertical, scrollable launcher with two pages.
+The apps page holds **Feed pet** (primary, `feed:req`), **Portfolio**
+(jumps straight to the portfolio screen — the on-device DCA selection),
+**Cosmetics** (opens the second page) and **Open DCA** (`dca:req`). The
+cosmetics page holds **Accessory** (cycles the collectible locally,
+mirrored in the notify snapshot), **Mood** (cycles the emotion locally,
+mirrored likewise), **Backdrop** (cycles the PetCanvas scene theme
+locally — the `bg:` themes; cosmetic only, the app can override on
+connect) and **Parental** (optional code lock — see below). Rows show a
+circular icon chip and the app name, with a slim light-blue scrollbar on
+the right edge. Entering a page focuses a back-arrow affordance in the
+reserved right zone (on the apps page it returns to the pet screen, on
+the cosmetics page it steps back to the apps page); walking into the list
+replaces it with a short info word for the focused app (the current
+accessory/mood/backdrop name, or the lock state). Short presses walk the
+focus down the rows (auto-scrolled into view), a long press runs the
+focused app.
+
+**Parental lock (optional).** The Parental row opens a 4-digit code pad:
+with no code stored it sets one (entered twice), with a code stored it
+removes it after a matching entry. While a code is set the device boots
+**locked**: the pet, feeding and every cosmetic screen stay free, but
+the financial scope — the portfolio screen (plan detail and pause/resume
+included), the create-plan wheel, and the Portfolio / Open DCA menu
+rows — requires the code (short press cycles the digit, long press
+confirms, double-press cancels the pad; wrong entries reset with a
+"wrong code" toast). While locked the screen cycle skips the portfolio
+entirely (pet → menu → pet), so cosmetics stay reachable. One good code
+unlocks the session until reboot. The code lives in NVS
+(`fina`/`pinset`+`pin`) and never leaves the device — there is no BLE
+command for it and the app is unaffected. Forgotten code: the boot
+recovery chord (hold BOTH buttons while powering on) clears it along
+with the BLE bonds.
 
 The notify/read snapshot gains an **optional 7th field** — the number of
 active plan slots — and an **optional 8th field** — the 12-stage

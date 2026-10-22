@@ -107,11 +107,19 @@ pull-up); pressed = LOW. Active-low is what the firmware expects.
 > to move, long to act, and screens cycle so home is always a few presses
 > away. The UI shows no button hints — state captions only.
 
+> **Back / cancel:** double-press the RIGHT button (GPIO37) anywhere —
+> closes the detail view, leaves the current screen (the menu's cosmetics
+> page steps back to the apps page first, the create-plan wheel steps back
+> one drum), and cancels the parental code pad. No-op on the pet screen
+> (already home). The LEFT button's double keeps its bonus actions
+> (reaction cycle / USD ↔ SOL / pause toggle).
+
 > **Recovery chord:** hold BOTH buttons while powering on to erase all BLE
-> bonds from the device (splash shows "BLE bonds erased", serial logs the
-> count). Do this when the app fails to pair after a re-flash — a stale bond
-> on either side fails authentication silently and no fresh passkey appears
-> (also forget the device in the phone's Bluetooth settings).
+> bonds from the device AND clear the parental code (splash shows "bonds +
+> code erased"). Do this when the app fails to pair after a re-flash — a
+> stale bond on either side fails authentication silently and no fresh
+> passkey appears (also forget the device in the phone's Bluetooth
+> settings) — or when the parental code is forgotten.
 
 > On ESP32-S3 modules with **octal PSRAM** (e.g. N16R8), GPIO 33–37 are used
 > by the PSRAM bus — GPIO37 won't work as a button there. Use a quad-PSRAM
