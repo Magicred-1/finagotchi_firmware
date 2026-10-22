@@ -13,6 +13,14 @@
   - detail view: price, stats grid, countdown + progress bar
   - empty state with a hint when no plans are mirrored
 
+  Heap discipline (the device boots with only ~19 KB free): the list screen
+  is built LAZILY on first show and freed on exit (auto_del), like the menu
+  and create screens. Transitions never hold two screens' widgets at once:
+  entering the create wheel first frees the card column
+  (uiScreenDcaShrinkList), and returning from it frees the drum before this
+  list rebuilds (uiScreenCreateShrink). Every widget-touching entry point
+  guards on listScr being non-null.
+
   No button-hint text anywhere (left = move, right = select — the UI is
   instruction-free).
 */
@@ -79,11 +87,11 @@ void hsv2rgb(float h, float s, float v, uint8_t& r, uint8_t& g, uint8_t& b) {
   int seg = static_cast<int>(h * 6.0f) % 6;
   switch (seg) {
     case 0: rr = c; gg = x; bb = 0; break;
-    case 1: rr = x; gg = c; bb = 0; break;
-    case 2: rr = 0; gg = c; bb = x; break;
+    case 1: rr = x; gg = c; bb = c; break;
+    case 2: rr = 0; gg = 0; bb = c; break;
     case 3: rr = 0; gg = x; bb = c; break;
-    case 4: rr = x; gg = 0; bb = c; break;
-    default: rr = c; gg = 0; bb = x; break;
+    case 4: rr = 0; gg = 0; bb = x; break;
+    default: rr = 0; gg = x; bb = x; break;
   }
   r = static_cast<uint8_t>((rr + m) * 255.0f);
   g = static_cast<uint8_t>((gg + m) * 255.0f);
@@ -102,17 +110,17 @@ lv_color_t tokenColor(const char* ticker) {
     // xStocks
     { "SPYX",  225,  60,  57 },   // SPYx  — State Street red
     { "GOOGLX", 66, 133, 244 },   // GOOGLx — Google blue
-    { "AAPLX", 162, 170, 173 },   // AAPLx  — Apple silver
-    { "TSLAX", 232,  33,  39 },   // TSLAx  — Tesla red
-    { "NVDAX", 118, 185,   0 },   // NVDAx  — NVIDIA green
-    { "METAX",   0, 129, 251 },   // METAx  — Meta blue
-    { "MSFTX",   0, 164, 239 },   // MSFTx  — Microsoft blue
-    { "AMZNX", 255, 153,   0 },   // AMZNx  — Amazon orange
-    { "MSTRX", 247, 147,  26 },   // MSTRx  — Strategy orange
-    { "CRCLX",  41,  98, 255 },   // CRCLx  — Circle blue
-    { "NFLXX", 229,   9,  20 },   // NFLXx  — Netflix red
-    { "COINX",   0,  82, 255 },   // COINx  — Coinbase blue
-    { "HOODX",   0, 200,   5 },   // HOODx  — Robinhood green
+    { "AAPLX", 162, 170, 173 },   // AAPLx — Apple silver
+    { "TSLAX", 232,  33,  39 },   // TSLAx — Tesla red
+    { "NVDAX", 118, 185,   0 },   // NVDAx — NVIDIA green
+    { "METAX",   0, 129, 251 },   // METAx — Meta blue
+    { "MSFTX",   0, 164, 239 },   // MSFTx — Microsoft blue
+    { "AMZNX", 255, 153,   0 },   // AMZNx — Amazon orange
+    { "MSTRX", 247, 147,  26 },   // MSTRx — Strategy orange
+    { "CRCLX",  41,  98, 255 },   // CRCLx — Circle blue
+    { "NFLXX", 229,   9,  20 },   // NFLXx — Netflix red
+    { "COINX",   0,  82, 255 },   // COINx — Coinbase blue
+    { "HOODX",   0, 200,   5 },   // HOODx — Robinhood green
   };
   for (const auto& k : KNOWN)
     if (strcmp(ticker, k.sym) == 0) return lv_color_make(k.r, k.g, k.b);
@@ -125,8 +133,9 @@ lv_color_t tokenColor(const char* ticker) {
 
 // --- widgets -----------------------------------------------------------------
 
-lv_obj_t* listScr;
+lv_obj_t* listScr;                 // nullptr while freed (lazy build)
 lv_obj_t* detailScr;
+lv_obj_t* col;                     // card column (child of listScr)
 lv_obj_t* wifiLabel;
 lv_obj_t* totalVal;
 lv_obj_t* totalSol;
@@ -155,12 +164,14 @@ int8_t detailSlot = -1;
 
 void openDetail(uint8_t slot);   // defined below
 lv_obj_t* buildDetailScreen();
+lv_obj_t* buildListScreen();
 
 // Group membership must track visibility exactly: hidden cards in the
 // focus group swallow LV_KEY_NEXT presses (focus moves to an invisible
 // card and the buttons look dead). Rebuilds the group with the visible
 // cards only — the plan slots plus the always-visible "+ New plan" card.
 void groupSetCards(bool keepFocus) {
+  if (!listScr) return;
   lv_obj_t* visible[kDcaMaxPlans + 1];
   uint8_t n = 0;
   for (size_t i = 0; i < g_ui.planCount; i++) visible[n++] = card[i];
@@ -168,7 +179,7 @@ void groupSetCards(bool keepFocus) {
   uiGroupSet(visible, n, keepFocus);
 }
 
-// Monogram chip fallback: white initials on the token color (48 px circle).
+// Monogram-chip fallback: white initials on the token color (48 px circle).
 void fillChip(lv_obj_t* chip, const char* ticker) {
   size_t tl = strlen(ticker);
   char init[4] = { 0, 0, 0, 0 };
@@ -191,6 +202,7 @@ void fmtValue(const DcaPlan& p, char* buf, size_t n) {
 // --- header: total portfolio value + SOL equivalent ----------------------------
 
 void headerFill() {
+  if (!listScr) return;
   double total = 0.0;
   bool anyPrice = false;
   for (size_t i = 0; i < g_ui.planCount; i++) {
@@ -356,21 +368,21 @@ lv_obj_t* buildDetailScreen() {
   uiThemeCard(detailPanel);
 
   dLogo = lv_image_create(detailScr);
-  lv_obj_align(dLogo, LV_ALIGN_TOP_LEFT, 24, 28);
+  lv_obj_align(dLogo, LV_ALIGN_TOP_LEFT, 32, 40);
 
   dChip = uiThemeLabel(detailScr, &lv_font_montserrat_20, lv_color_white());
   lv_obj_set_size(dChip, 48, 48);
-  lv_obj_align(dChip, LV_ALIGN_TOP_LEFT, 24, 28);
+  lv_obj_align(dChip, LV_ALIGN_TOP_LEFT, 32, 40);
   lv_obj_set_style_bg_opa(dChip, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(dChip, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_text_align(dChip, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_pad_top(dChip, 12, 0);
 
   dTicker = uiThemeLabel(detailScr, &lv_font_montserrat_20, UI_COL_TEXT);
-  lv_obj_align(dTicker, LV_ALIGN_TOP_LEFT, 84, 30);
+  lv_obj_align(dTicker, LV_ALIGN_TOP_LEFT, 92, 42);
 
   dPrice = uiThemeLabel(detailScr, &lv_font_montserrat_28, UI_COL_TEXT);
-  lv_obj_align(dPrice, LV_ALIGN_TOP_LEFT, 84, 54);
+  lv_obj_align(dPrice, LV_ALIGN_TOP_LEFT, 92, 66);
 
   static const char* STAT_CAPTIONS[4] = { "BUY", "BUYS", "HELD", "VALUE" };
   const int statX[4] = { 24, 128, 24, 128 };
@@ -385,26 +397,25 @@ lv_obj_t* buildDetailScreen() {
 
   nbCap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(nbCap, "NEXT BUY");
-  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 24, 190);
+  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 28, 188);
 
   dCountdown = uiThemeLabel(detailScr, &lv_font_montserrat_16, UI_COL_TEXT);
   lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -24, 186);
 
+  // Progress bar: shorter and higher than the square layout — at the old
+  // width/height the round panel clipped both ends.
   dBar = lv_bar_create(detailScr);
-  lv_obj_set_size(dBar, 192, 6);
-  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 212);
+  lv_obj_set_size(dBar, 168, 6);
+  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 202);
   lv_bar_set_range(dBar, 0, 100);
   lv_obj_set_style_bg_color(dBar, UI_COL_BORDER, 0);
 
   return detailScr;
 }
 
-} // namespace
+// --- list screen builder (lazy — see the heap note at the top) -------------------
 
-lv_obj_t* uiScreenDcaCreate() {
-  buildLogos();
-
-  // --- portfolio list screen ---
+lv_obj_t* buildListScreen() {
   listScr = lv_obj_create(nullptr);
   uiThemeScreen(listScr);
 
@@ -416,22 +427,22 @@ lv_obj_t* uiScreenDcaCreate() {
   // corner, so it rides the title row instead of the corner).
   wifiLabel = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(wifiLabel, LV_SYMBOL_WIFI);
-  lv_obj_align(wifiLabel, LV_ALIGN_TOP_MID, 48, 12);
+  lv_obj_align(wifiLabel, LV_ALIGN_TOP_MID, 40, 14);
 
   totalVal = uiThemeLabel(listScr, &lv_font_montserrat_28, UI_COL_TEXT);
   lv_label_set_text(totalVal, "$0.00");
-  lv_obj_align(totalVal, LV_ALIGN_TOP_MID, 0, 26);
+  lv_obj_align(totalVal, LV_ALIGN_TOP_MID, 0, 28);
 
   totalSol = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_MUTED);
-  lv_obj_align(totalSol, LV_ALIGN_TOP_MID, 0, 58);
+  lv_obj_align(totalSol, LV_ALIGN_TOP_MID, 0, 60);
   lv_obj_set_hidden(totalSol, true);
 
   // Scrollable card column (extends to the bottom safe zone — no hint bar).
   // With up to kDcaMaxPlans(8) cards + the "+ New plan" card this always
   // overflows: vertical scroll, slim light-blue scrollbar like the menu list.
-  lv_obj_t* col = lv_obj_create(listScr);
-  lv_obj_set_size(col, 240, 158);
-  lv_obj_align(col, LV_ALIGN_TOP_MID, 0, 76);
+  col = lv_obj_create(listScr);
+  lv_obj_set_size(col, 224, 150);   // < 240: keeps the scrollbar off the circle edge
+  lv_obj_align(col, LV_ALIGN_TOP_MID, 0, 80);
   lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(col, 0, 0);
   lv_obj_set_style_pad_all(col, 2, 0);
@@ -497,41 +508,7 @@ lv_obj_t* uiScreenDcaCreate() {
   lv_label_set_text(emptyHint, "open the app to start a DCA plan");
   lv_obj_align(emptyHint, LV_ALIGN_CENTER, 0, 18);
 
-  buildDetailScreen();
-
-  return listScr;
-}
-
-void uiScreenDcaReleaseDetail() {
-  if (!detailScr || lv_screen_active() == detailScr) return;
-  lv_obj_delete(detailScr);
-  detailScr = nullptr;
-}
-
-void uiScreenDcaShow() {
-  detailSlot = -1;
-  headerFill();
-  groupSetCards(false);
-  // Coming back from the create wheel? Its widgets free on exit (boot-heap
-  // discipline): the transition's auto_del deletes the old screen object.
-  bool freeCreate = g_ui.createScreen && lv_screen_active() == g_ui.createScreen;
-  lv_screen_load_anim(listScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, freeCreate);
-  if (freeCreate) uiScreenCreateFreed();
-}
-
-void uiScreenPetShow() {
-  if (detailSlot >= 0) detailSlot = -1;
-  uiGroupSet(nullptr, 0, false);   // the pet screen has no focusables
-  // Lazy screens (menu / create) free their widgets on exit via auto_del.
-  bool freeMenu = g_ui.menuScreen && lv_screen_active() == g_ui.menuScreen;
-  bool freeCreate = g_ui.createScreen && lv_screen_active() == g_ui.createScreen;
-  lv_screen_load_anim(g_ui.petScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0,
-                      freeMenu || freeCreate);
-  if (freeMenu) uiScreenMenuFreed();
-  if (freeCreate) uiScreenCreateFreed();
-}
-
-void uiScreenDcaPlansChanged() {
+  // Cards/empty state reflect the plan mirror immediately on build.
   for (size_t i = 0; i < kDcaMaxPlans; i++) {
     if (i < g_ui.planCount) {
       cardFill(static_cast<uint8_t>(i));
@@ -543,11 +520,99 @@ void uiScreenDcaPlansChanged() {
   bool empty = g_ui.planCount == 0;
   lv_obj_set_hidden(emptyLabel, !empty);
   lv_obj_set_hidden(emptyHint, !empty);
-  // Keep group membership in sync with visibility, but only while a
-  // portfolio screen is up — the menu screen owns the group when active.
-  lv_obj_t* act = lv_screen_active();
-  if (act == listScr || act == detailScr) groupSetCards(true);
+
+  return listScr;
+}
+
+} // namespace
+
+// Eager half of the bring-up (ui::begin): the logo descriptors are static
+// and cheap; the list screen itself builds lazily on first show.
+lv_obj_t* uiScreenDcaCreate() {
+  buildLogos();
+  return nullptr;
+}
+
+bool uiScreenDcaOnList() {
+  return listScr && lv_screen_active() == listScr;
+}
+
+// Free the card column but keep the screen shell (header stays up during
+// the 250 ms exit animation): lets the create wheel build its drum before
+// the shell is auto-deleted — the two full screens never coexist.
+void uiScreenDcaShrinkList() {
+  if (!listScr || !col) return;
+  lv_obj_delete(col);   // cards + "+ New plan" go with it
+  col = nullptr;
+  uiGroupSet(nullptr, 0, false);   // no dangling focused objects
+}
+
+void uiScreenDcaListFreed() {
+  // The screen object was deleted via an exit transition's auto_del; only
+  // the pointers need clearing (card/* pointers dangle with it — every
+  // entry point guards on listScr).
+  listScr = nullptr;
+  g_ui.dcaScreen = nullptr;
+}
+
+void uiScreenDcaReleaseDetail() {
+  if (!detailScr || lv_screen_active() == detailScr) return;
+  lv_obj_delete(detailScr);
+  detailScr = nullptr;
+}
+
+void uiScreenDcaShow() {
+  // Returning from the create wheel? Free its drum FIRST so this list can
+  // rebuild underneath (return-trip heap peak — see uiScreenCreateShrink).
+  bool fromCreate = g_ui.createScreen && lv_screen_active() == g_ui.createScreen;
+  if (fromCreate) uiScreenCreateShrink();
+  if (!listScr) { buildListScreen(); g_ui.dcaScreen = listScr; }
+  detailSlot = -1;
   headerFill();
+  groupSetCards(false);
+  // Lazy screens (menu / create) free their widgets on exit via auto_del.
+  bool freeMenu = g_ui.menuScreen && lv_screen_active() == g_ui.menuScreen;
+  lv_screen_load_anim(listScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0,
+                      fromCreate || freeMenu);
+  if (fromCreate) uiScreenCreateFreed();
+  if (freeMenu) uiScreenMenuFreed();
+}
+
+void uiScreenPetShow() {
+  if (detailSlot >= 0) detailSlot = -1;
+  uiGroupSet(nullptr, 0, false);   // the pet screen has no focusables
+  // Lazy screens (menu / create / portfolio list / lock) free on exit.
+  bool freeMenu = g_ui.menuScreen && lv_screen_active() == g_ui.menuScreen;
+  bool freeCreate = g_ui.createScreen && lv_screen_active() == g_ui.createScreen;
+  bool freeDca = listScr && lv_screen_active() == listScr;
+  bool freeLock = g_ui.lockScreen && lv_screen_active() == g_ui.lockScreen;
+  lv_screen_load_anim(g_ui.petScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0,
+                      freeMenu || freeCreate || freeDca || freeLock);
+  if (freeMenu) uiScreenMenuFreed();
+  if (freeCreate) uiScreenCreateFreed();
+  if (freeDca) uiScreenDcaListFreed();
+  if (freeLock) uiScreenLockFreed();
+}
+
+void uiScreenDcaPlansChanged() {
+  if (listScr) {
+    for (size_t i = 0; i < kDcaMaxPlans; i++) {
+      if (i < g_ui.planCount) {
+        cardFill(static_cast<uint8_t>(i));
+        lv_obj_set_hidden(card[i], false);
+      } else {
+        lv_obj_set_hidden(card[i], true);
+      }
+    }
+    bool empty = g_ui.planCount == 0;
+    lv_obj_set_hidden(emptyLabel, !empty);
+    lv_obj_set_hidden(emptyHint, !empty);
+    // Keep group membership in sync with visibility, but only while a
+    // portfolio screen is up — the menu screen owns the group when active.
+    lv_obj_t* act = lv_screen_active();
+    if (act == listScr || act == detailScr) groupSetCards(true);
+    headerFill();
+  }
   if (detailSlot >= 0) {
     if (detailSlot < static_cast<int8_t>(g_ui.planCount)) detailFill();
     else uiScreenDcaCloseDetail();
@@ -556,11 +621,12 @@ void uiScreenDcaPlansChanged() {
 }
 
 void uiScreenDcaHeaderChanged() {
-  headerFill();
+  headerFill();   // guards on listScr itself
   if (g_ui.amountInSol) uiScreenDcaTick();   // SOL-denominated labels moved
 }
 
 void uiScreenDcaTick() {
+  if (!listScr) return;
   for (size_t i = 0; i < g_ui.planCount; i++) cardFill(static_cast<uint8_t>(i));
   if (detailSlot >= 0) detailFill();
 }
@@ -582,6 +648,7 @@ void uiScreenDcaToggleAmountUnit() {
 }
 
 bool uiScreenDcaFocusAdvance() {
+  if (!listScr) return false;
   lv_obj_t* f = lv_group_get_focused(g_ui.group);
   if (f && f != newCard) {   // the "+ New plan" card is always last
     lv_group_focus_next(g_ui.group);
@@ -601,5 +668,6 @@ void uiScreenDcaTogglePause() {
 }
 
 void uiScreenDcaSetWifiOnline(bool online) {
+  if (!listScr) return;
   lv_obj_set_style_text_color(wifiLabel, online ? UI_COL_PRIMARY : UI_COL_MUTED, 0);
 }

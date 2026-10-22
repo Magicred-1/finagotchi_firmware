@@ -21,7 +21,9 @@ struct UiState {
   lv_obj_t*   dcaScreen = nullptr;
   lv_obj_t*   menuScreen = nullptr;
   lv_obj_t*   createScreen = nullptr;
+  lv_obj_t*   lockScreen = nullptr;
   lv_group_t* group = nullptr;
+  bool        locked = false;      // parental gate: pet screen only until unlocked
 
   // DCA plan mirror (ui::setDcaPlan/clearDcaPlans)
   DcaPlan  plans[kDcaMaxPlans] = {};
@@ -73,6 +75,9 @@ void uiScreenPetTick();                  // 1 s countdown refresh
 // screen_dca.cpp (portfolio / positions)
 lv_obj_t* uiScreenDcaCreate();
 void uiScreenDcaReleaseDetail();         // free the inactive detail before lazy screens
+bool uiScreenDcaOnList();                // list screen exists and is active
+void uiScreenDcaShrinkList();            // free the card column (heap peak)
+void uiScreenDcaListFreed();             // screen object deleted (auto_del)
 void uiScreenDcaShow();                  // BTN2 short on the pet screen
 void uiScreenPetShow();                  // escape: back to the pet screen
 void uiScreenDcaPlansChanged();
@@ -90,6 +95,8 @@ void uiScreenDcaSetWifiOnline(bool online);  // Wi-Fi glyph, portfolio header
 // discipline; see ui.cpp).
 void uiScreenCreateShow();               // from the "+ New plan" card
 void uiScreenCreateFreed();              // screen object deleted (auto_del)
+void uiScreenCreateShrink();             // free drum/summary widgets pre-return
+void uiScreenCreateBack();               // BTN2 double: back one drum / exit
 void uiScreenCreateFocusAdvance();       // short: next option (wraps) / edit
 void uiScreenCreateActivate(float nowSec); // long: confirm drum / CREATE
 void uiScreenCreateSetTickers(const char* const* tickers, uint8_t n);
@@ -104,3 +111,17 @@ void uiScreenMenuActivate(float nowSec); // long press: run the focused row
 bool uiScreenMenuFocusAdvance();         // false: no more rows -> pet screen
 void uiScreenMenuSetAccessory(const char* name);
 void uiScreenMenuSetMood(const char* name);
+void uiScreenMenuSetBackdrop(const char* name);
+void uiScreenMenuSetLock(const char* name);
+
+// BTN2 double-press = back: cosmetics page steps back to the apps page,
+// apps page exits to the pet screen.
+void uiScreenMenuBack();
+
+// screen_lock.cpp (parental code pad) — lazy build + free, same pattern.
+// Modes: 0 unlock, 1 set new, 2 set confirm (internal), 3 remove.
+void uiScreenLockShow(int mode);
+void uiScreenLockFreed();                // screen object deleted (auto_del)
+bool uiScreenLockActive();               // lock screen is the active screen
+void uiScreenLockNext();                 // short press: next digit (0-9 wrap)
+void uiScreenLockConfirm();              // long press: confirm digit / finish

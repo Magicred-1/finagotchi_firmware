@@ -56,8 +56,7 @@ lv_obj_t* backArrow;      // right zone, TOKEN drum only
 lv_obj_t* list;           // drum list
 lv_obj_t* opt[MAX_OPTIONS];
 lv_obj_t* optLogo[MAX_OPTIONS];    // lv_image (tokens with a logo)
-lv_obj_t* optMono[MAX_OPTIONS];    // monogram/glyph label (fallback, $, D/W/M)
-lv_obj_t* optChip[MAX_OPTIONS];
+lv_obj_t* optMono[MAX_OPTIONS];    // monogram/glyph chip (fallback, $, D/W/M)
 lv_obj_t* optText[MAX_OPTIONS];
 
 lv_obj_t* sumAmount;
@@ -230,13 +229,15 @@ lv_obj_t* buildCreateScreen() {
   lv_obj_align(stepLabel, LV_ALIGN_TOP_MID, 0, 16);
 
   // --- drum list (launcher idiom: clip edges, slim accent scrollbar) ---
+  // Inset from the top-left corner (the round panel clips it) and shorter
+  // at the bottom; rows still scroll through the remaining edge zones.
   list = lv_obj_create(createScr);
-  lv_obj_set_size(list, 160, 184);
-  lv_obj_align(list, LV_ALIGN_TOP_LEFT, 16, 38);
+  lv_obj_set_size(list, 156, 176);
+  lv_obj_align(list, LV_ALIGN_TOP_LEFT, 24, 40);
   lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(list, 0, 0);
   lv_obj_set_style_pad_all(list, 2, 0);
-  lv_obj_set_style_pad_row(list, 8, 0);
+  lv_obj_set_style_pad_row(list, 10, 0);
   lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
   lv_obj_set_scroll_dir(list, LV_DIR_VER);
@@ -249,7 +250,7 @@ lv_obj_t* buildCreateScreen() {
 
   for (uint8_t i = 0; i < MAX_OPTIONS; i++) {
     opt[i] = lv_obj_create(list);
-    lv_obj_set_size(opt[i], 146, 40);
+    lv_obj_set_size(opt[i], 140, 40);
     uiThemeGlass(opt[i], true);
     lv_obj_set_style_radius(opt[i], UI_RADIUS_SMALL, 0);
     lv_obj_set_style_bg_color(opt[i], UI_COL_SURFACE, LV_STATE_FOCUSED);
@@ -261,33 +262,36 @@ lv_obj_t* buildCreateScreen() {
     lv_obj_set_user_data(opt[i], reinterpret_cast<void*>(static_cast<intptr_t>(i)));
     lv_obj_add_event_cb(opt[i], rowFocused, LV_EVENT_FOCUSED, nullptr);
 
-    optChip[i] = lv_obj_create(opt[i]);
-    lv_obj_set_size(optChip[i], 28, 28);
-    lv_obj_align(optChip[i], LV_ALIGN_LEFT_MID, 6, 0);
-    lv_obj_set_style_radius(optChip[i], LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(optChip[i], UI_COL_SURFACE, 0);
-    lv_obj_set_style_bg_opa(optChip[i], LV_OPA_40, 0);
-    lv_obj_set_style_border_width(optChip[i], 1, 0);
-    lv_obj_set_style_border_color(optChip[i], UI_COL_BORDER, 0);
-    lv_obj_set_style_border_opa(optChip[i], LV_OPA_30, 0);
-    lv_obj_set_style_pad_all(optChip[i], 0, 0);
-    lv_obj_set_scrollable(optChip[i], false);
-    lv_obj_set_clickable(optChip[i], false);
+    // Token rows show the logo (scaled 48 -> 28) or a monogram/glyph chip —
+    // both direct children of the row. The old chip container cost one
+    // lv_obj per option row (13 rows) at lazy-build time, and the 48 px
+    // logo overflowed the 28 px chip it was centered in.
+    optLogo[i] = lv_image_create(opt[i]);
+    lv_obj_align(optLogo[i], LV_ALIGN_LEFT_MID, 6, 0);
+    lv_image_set_scale(optLogo[i], 149);   // 256 * 28 / 48
 
-    // Token rows show the logo (optLogo) or a monogram/glyph (optMono).
-    optLogo[i] = lv_image_create(optChip[i]);
-    lv_obj_center(optLogo[i]);
-    optMono[i] = uiThemeLabel(optChip[i], &lv_font_montserrat_12, UI_COL_TEXT);
-    lv_obj_center(optMono[i]);
+    optMono[i] = uiThemeLabel(opt[i], &lv_font_montserrat_12, UI_COL_TEXT);
+    lv_obj_set_size(optMono[i], 28, 28);
+    lv_obj_align(optMono[i], LV_ALIGN_LEFT_MID, 6, 0);
+    lv_obj_set_style_radius(optMono[i], LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(optMono[i], UI_COL_SURFACE, 0);
+    lv_obj_set_style_bg_opa(optMono[i], LV_OPA_40, 0);
+    lv_obj_set_style_border_width(optMono[i], 1, 0);
+    lv_obj_set_style_border_color(optMono[i], UI_COL_BORDER, 0);
+    lv_obj_set_style_border_opa(optMono[i], LV_OPA_30, 0);
+    lv_obj_set_style_text_align(optMono[i], LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_top(optMono[i], 7, 0);
 
     optText[i] = uiThemeLabel(opt[i], &lv_font_montserrat_14, UI_COL_TEXT);
     lv_obj_align(optText[i], LV_ALIGN_LEFT_MID, 42, 0);
   }
 
   // --- right zone: back arrow (TOKEN drum) + picked-values info ---
+  // Moved down/in from the old corner position — the round panel clipped
+  // the chip's top-right edge there.
   backArrow = lv_obj_create(createScr);
   lv_obj_set_size(backArrow, 40, 40);
-  lv_obj_align(backArrow, LV_ALIGN_TOP_RIGHT, -14, 52);
+  lv_obj_align(backArrow, LV_ALIGN_TOP_RIGHT, -20, 60);
   uiThemeGlass(backArrow, true);
   lv_obj_set_style_radius(backArrow, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_border_width(backArrow, 3, LV_STATE_FOCUSED);
@@ -301,18 +305,18 @@ lv_obj_t* buildCreateScreen() {
 
   infoLabel = uiThemeLabel(createScr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_obj_set_style_text_align(infoLabel, LV_TEXT_ALIGN_RIGHT, 0);
-  lv_obj_align(infoLabel, LV_ALIGN_TOP_RIGHT, -14, 104);
+  lv_obj_align(infoLabel, LV_ALIGN_TOP_RIGHT, -20, 108);
   lv_obj_set_hidden(infoLabel, true);
 
   // --- summary view ---
   sumAmount = uiThemeLabel(createScr, &lv_font_montserrat_28, UI_COL_TEXT);
-  lv_obj_align(sumAmount, LV_ALIGN_CENTER, 0, -32);
+  lv_obj_align(sumAmount, LV_ALIGN_CENTER, 0, -40);
   sumPlan = uiThemeLabel(createScr, &lv_font_montserrat_16, UI_COL_MUTED);
-  lv_obj_align(sumPlan, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_align(sumPlan, LV_ALIGN_CENTER, 0, -4);
 
   createRow = lv_obj_create(createScr);
   lv_obj_set_size(createRow, 150, 40);
-  lv_obj_align(createRow, LV_ALIGN_CENTER, 0, 56);
+  lv_obj_align(createRow, LV_ALIGN_CENTER, 0, 60);
   lv_obj_set_style_bg_color(createRow, UI_COL_PRIMARY, 0);
   lv_obj_set_style_bg_color(createRow, UI_COL_PRIMARY_PRESSED, LV_STATE_FOCUSED);
   lv_obj_set_style_bg_opa(createRow, LV_OPA_COVER, 0);
@@ -342,9 +346,15 @@ void uiScreenCreateSetTickers(const char* const* list, uint8_t n) {
 void uiScreenCreateShow() {
   Serial.printf("Create: heap free before build %u\n", ESP.getFreeHeap());
   uiScreenDcaReleaseDetail();
+  // Free the portfolio's card column BEFORE building the drum: the device
+  // boots with ~19 KB free and two full screens never coexist (the shell
+  // stays up for the exit animation, then auto_del takes it).
+  bool freeDca = uiScreenDcaOnList();
+  if (freeDca) uiScreenDcaShrinkList();
   if (!createScr) g_ui.createScreen = buildCreateScreen();   // lazy build
   showPage(PAGE_TOKEN);
-  lv_screen_load_anim(createScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
+  lv_screen_load_anim(createScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, freeDca);
+  if (freeDca) uiScreenDcaListFreed();
   Serial.printf("Create: ready, heap free %u\n", ESP.getFreeHeap());
 }
 
@@ -353,6 +363,23 @@ void uiScreenCreateFreed() {
   // only the pointers need clearing. Selections and tickers stay cached.
   createScr = nullptr;
   g_ui.createScreen = nullptr;
+}
+
+void uiScreenCreateShrink() {
+  // Free the drum/summary widgets but keep the screen shell: the portfolio
+  // rebuilds its card list underneath BEFORE this shell is auto-deleted by
+  // the return transition — the two full screens never coexist (heap peak
+  // discipline; the drum build alone leaves only ~3 KB free).
+  if (!createScr) return;
+  lv_obj_delete(list);          // drum incl. all option rows
+  lv_obj_delete(sumAmount);
+  lv_obj_delete(sumPlan);
+  lv_obj_delete(createRow);
+  lv_obj_delete(infoLabel);
+  lv_obj_delete(backArrow);
+  lv_obj_delete(stepLabel);
+  list = nullptr;
+  uiGroupSet(nullptr, 0, false);   // no dangling focused objects
 }
 
 // Short press (either button) = navigate.
@@ -380,4 +407,13 @@ void uiScreenCreateActivate(float nowSec) {
   if (!createScr) return;
   (void)nowSec;
   confirmFocused();
+}
+
+// BTN2 double-press = back one step: summary -> frequency -> amount ->
+// token; on the token drum it leaves the wheel back to the portfolio (the
+// same path the back-arrow affordance takes).
+void uiScreenCreateBack() {
+  if (!createScr) return;
+  if (page > PAGE_TOKEN) showPage(page - 1);
+  else uiScreenDcaShow();
 }
