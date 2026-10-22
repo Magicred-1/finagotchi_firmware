@@ -3,7 +3,8 @@
   engine's TFT_eSprite framebuffer (the sprite holds ONLY the pet scene),
   with the chrome rebuilt as LVGL widgets in the app's design language
   (theme.h):
-  - stage badge (top-left) and battery gauge (top-right)
+  - stage badge (top-center) and battery gauge + Wi-Fi glyph (top corners,
+    inset past the round panel's clipped corners)
   - sync spinner + caption while advertising
   - next-buy chip: auto-rotating plan pill with cross-fade, warning border
     when overdue
@@ -105,9 +106,11 @@ lv_obj_t* uiScreenPetCreate() {
   uiThemeScreen(scr);
 
   // Rounded navy portrait frame around the existing 160px RGB565 canvas.
+  // Slightly smaller than the square layout and nudged down: frees a clean
+  // chrome band at the top (badge / Wi-Fi / battery) on the round panel.
   lv_obj_t* portrait = lv_obj_create(scr);
-  lv_obj_set_size(portrait, 176, 176);
-  lv_obj_align(portrait, LV_ALIGN_CENTER, 0, -4);
+  lv_obj_set_size(portrait, 168, 168);
+  lv_obj_align(portrait, LV_ALIGN_CENTER, 0, 2);
   lv_obj_set_style_bg_color(portrait, UI_COL_BG, 0);
   lv_obj_set_style_bg_opa(portrait, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(portrait, UI_RADIUS_CARD, 0);
@@ -124,42 +127,46 @@ lv_obj_t* uiScreenPetCreate() {
                        pet->frameHeight(), LV_COLOR_FORMAT_RGB565_SWAPPED);
   lv_obj_center(canvas);
 
-  // Stage badge (top-left), with the slim stage/XP track under it.
+  // Stage badge (top-center, with the slim stage/XP track under it). The
+  // round panel clips the corners, so the badge rides the top dead zone
+  // instead of the old top-left corner.
   badgeLabel = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_TEXT);
   uiThemeGlass(badgeLabel, false);
   lv_obj_set_style_radius(badgeLabel, UI_RADIUS_SMALL, 0);
   lv_obj_set_style_pad_hor(badgeLabel, UI_SP2, 0);
   lv_obj_set_style_pad_ver(badgeLabel, UI_SP1, 0);
-  lv_obj_align(badgeLabel, LV_ALIGN_TOP_LEFT, 10, 6);
+  lv_obj_align(badgeLabel, LV_ALIGN_TOP_MID, 0, 8);
 
   stageTrack = lv_bar_create(scr);
   lv_obj_set_size(stageTrack, 60, 4);
-  lv_obj_align(stageTrack, LV_ALIGN_TOP_LEFT, 12, 28);
+  lv_obj_align(stageTrack, LV_ALIGN_TOP_MID, 0, 30);
   lv_bar_set_range(stageTrack, 0, 12);
   lv_obj_set_style_bg_color(stageTrack, UI_COL_BORDER, 0);
   lv_obj_set_style_bg_opa(stageTrack, LV_OPA_20, 0);
   lv_obj_set_style_bg_color(stageTrack, UI_COL_PRIMARY, LV_PART_INDICATOR);
 
-  // Wi-Fi status glyph (top-right, left of the battery): accent when online,
-  // muted when offline. Always visible — also on USB power (no battery).
+  // Wi-Fi status glyph (top-left, inset past the circle's edge): accent
+  // when online, muted when offline. Always visible — also on USB power.
   wifiLabel = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(wifiLabel, LV_SYMBOL_WIFI);
-  lv_obj_align(wifiLabel, LV_ALIGN_TOP_RIGHT, -46, 8);
+  lv_obj_align(wifiLabel, LV_ALIGN_TOP_LEFT, 44, 32);
 
-  // Battery gauge (top-right): battery symbol + %, colored by level,
-  // hidden on USB power.
+  // Battery gauge (top-right, same inset as the Wi-Fi glyph — the round
+  // panel's corner would clip it at the old -10 offset): symbol + %,
+  // colored by level, hidden on USB power.
   battLabel = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_MUTED);
-  lv_obj_align(battLabel, LV_ALIGN_TOP_RIGHT, -10, 8);
+  lv_obj_align(battLabel, LV_ALIGN_TOP_RIGHT, -44, 32);
 
-  // Sync spinner + caption (advertising scene).
+  // Sync spinner + caption (advertising scene). Sits below the badge/track
+  // row so the two never overlap on the round panel.
   spinner = lv_spinner_create(scr);
   lv_spinner_set_anim_params(spinner, 1000, 270);
   lv_obj_set_size(spinner, 26, 26);
-  lv_obj_align(spinner, LV_ALIGN_TOP_MID, 0, 26);
+  lv_obj_align(spinner, LV_ALIGN_TOP_MID, 0, 42);
   lv_obj_set_style_arc_color(spinner, UI_COL_PRIMARY, LV_PART_INDICATOR);
   spinnerCaption = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(spinnerCaption, "waiting for connection");
-  lv_obj_align(spinnerCaption, LV_ALIGN_TOP_MID, 0, 58);
+  lv_obj_align(spinnerCaption, LV_ALIGN_TOP_MID, 0, 72);
   lv_obj_set_hidden(spinner, true);
   lv_obj_set_hidden(spinnerCaption, true);
 
@@ -261,8 +268,11 @@ void uiScreenPetToast(const char* text, bool reward) {
   lv_obj_set_style_pad_ver(t, 5, 0);
   lv_obj_align(t, LV_ALIGN_CENTER, 0, 48);
 
-  // Float up ~40 px over 1.2 s (ease out), hold, fade 0.7 s, then delete —
-  // same timing as the old sprite toasts, now with real alpha.
+  // Float up ~40 px over 1.2 s (ease out), hold, then slide out and
+  // delete. POSITION-ONLY on purpose: an opacity fade makes LVGL render
+  // the toast through a layer buffer (~29 KB contiguous for 32-bit alpha)
+  // which this device never has free — every fading toast silently failed
+  // to draw ("Allocating layer buffer failed" in the LVGL log).
   lv_anim_t a;
   lv_anim_init(&a);
   lv_anim_set_var(&a, t);
@@ -272,17 +282,16 @@ void uiScreenPetToast(const char* text, bool reward) {
   lv_anim_set_exec_cb(&a, reinterpret_cast<lv_anim_exec_xcb_t>(lv_obj_set_y));
   lv_anim_start(&a);
 
-  lv_anim_t f;
-  lv_anim_init(&f);
-  lv_anim_set_var(&f, t);
-  lv_anim_set_values(&f, LV_OPA_COVER, LV_OPA_TRANSP);
-  lv_anim_set_duration(&f, 700);
-  lv_anim_set_delay(&f, 1800);
-  lv_anim_set_exec_cb(&f, [](void* obj, int32_t v) {
-    lv_obj_set_style_opa(static_cast<lv_obj_t*>(obj), static_cast<lv_opa_t>(v), 0);
-  });
-  lv_anim_set_completed_cb(&f, toastDone);
-  lv_anim_start(&f);
+  lv_anim_t out;
+  lv_anim_init(&out);
+  lv_anim_set_var(&out, t);
+  lv_anim_set_values(&out, 8, -28);
+  lv_anim_set_duration(&out, 600);
+  lv_anim_set_delay(&out, 1800);
+  lv_anim_set_path_cb(&out, lv_anim_path_ease_in);
+  lv_anim_set_exec_cb(&out, reinterpret_cast<lv_anim_exec_xcb_t>(lv_obj_set_y));
+  lv_anim_set_completed_cb(&out, toastDone);
+  lv_anim_start(&out);
 }
 
 void uiScreenPetPlansChanged() {
