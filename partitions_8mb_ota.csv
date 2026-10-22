@@ -1,0 +1,10 @@
+# Finagotchi dual-slot OTA layout for the 8 MB flash (ESP32-S3 N8 / N8R2).
+# Replaces huge_app.csv on hardware builds — see OTA.md §2.
+# NVS offsets stay standard so pet state/provisioning survive the switch.
+# firmware.bin is ~1.6 MB with LVGL+BLE; 3.5 MB per slot is headroom.
+# Name,   Type, SubType, Offset,  Size,     Flags
+nvs,      data, nvs,     0x9000,   0x6000,
+phy_init, data, phy,     0xf000,   0x1000,
+ota_0,    app,  ota_0,   0x10000,  0x380000,
+ota_1,    app,  ota_1,   0x390000, 0x380000,
+otadata,  data, ota,     0x710000, 0x2000,

@@ -3,6 +3,7 @@
   -> menu cycle): a vertical, scrollable launcher with TWO PAGES.
 
     APPS page:        [+] Feed pet   [=] Portfolio   [~] Cosmetics   [] Open DCA
+                      [v] Update (OTA firmware check; info word = FW_VERSION)
     COSMETICS page:   [] Accessory   :) Mood         [~] Backdrop   [.] Parental
 
   - each row: circular icon chip + app name; rows scroll vertically, the
@@ -20,7 +21,8 @@
     the pet screen (contract unchanged). BTN long (either button) runs the
     focused row with the 160 ms press pulse.
 
-  Pages reuse the same four row objects (restyled on switch) — the screen
+  Pages reuse the same five row objects (restyled on switch; the cosmetics
+  page uses only the first four) — the screen
   is built lazily on first show and freed on exit, and the page switch
   costs zero heap. The focus group only ever holds the visible objects
   (uiGroupSet discipline). The BLE/state side of every action lives in
@@ -28,27 +30,33 @@
 */
 
 #include "ui_internal.h"
+#include "../version.h"   // FW_VERSION for the Update row's info word
 
 namespace {
 
 constexpr uint8_t PAGE_APPS = 0;
 constexpr uint8_t PAGE_COSMETICS = 1;
-constexpr uint8_t ROW_COUNT = 4;   // max rows on either page
+constexpr uint8_t APP_ROW_COUNT = 5;
+constexpr uint8_t COSMETIC_ROW_COUNT = 4;
+constexpr uint8_t ROW_COUNT = APP_ROW_COUNT;   // row objects = fullest page
 
 struct RowDef { const char* name; const char* glyph; bool primary; };
-const RowDef APP_ROWS[ROW_COUNT] = {
+const RowDef APP_ROWS[APP_ROW_COUNT] = {
   { "Feed pet",  LV_SYMBOL_PLUS,  true  },   // primary action
   { "Portfolio", LV_SYMBOL_LIST,  false },   // on-device DCA selection
   { "Cosmetics", LV_SYMBOL_EDIT,  false },   // -> COSMETICS page
   { "Open DCA",  LV_SYMBOL_BARS,  false },   // app-side request (dca:req)
+  { "Update",    LV_SYMBOL_DOWNLOAD, false }, // OTA firmware update (OTA.md)
 };
-const RowDef COSMETIC_ROWS[ROW_COUNT] = {
+const RowDef COSMETIC_ROWS[COSMETIC_ROW_COUNT] = {
   { "Accessory", LV_SYMBOL_IMAGE,     false },
   { "Mood",      ":)",                false },
   { "Backdrop",  LV_SYMBOL_TINT,      false },
   { "Parental",  LV_SYMBOL_EYE_CLOSE, false },   // optional code lock
 };
-uint8_t rowCountFor(uint8_t) { return ROW_COUNT; }   // both pages are full
+uint8_t rowCountFor(uint8_t p) {
+  return p == PAGE_APPS ? APP_ROW_COUNT : COSMETIC_ROW_COUNT;
+}
 
 uint8_t page = PAGE_APPS;
 
@@ -58,6 +66,7 @@ char accessoryName[12] = "none";
 char moodName[12] = "calm";
 char backdropName[12] = "default";
 char lockName[8] = "off";
+char fwInfo[12];   // "v<FW_VERSION>", filled by the builder (version.h)
 
 lv_obj_t* menuScr;
 lv_obj_t* list;
@@ -83,6 +92,7 @@ void infoFill() {
     else if (f == row[1]) text = "plans";
     else if (f == row[2]) text = accessoryName;
     else if (f == row[3]) text = "SOL->USDC";
+    else if (f == row[4]) text = fwInfo;   // current firmware version
   } else {
     if (f == row[0])      text = accessoryName;
     else if (f == row[1]) text = moodName;
@@ -128,6 +138,7 @@ void activate(uint8_t idx, float nowSec) {
       case 1: uiScreenDcaShow(); break;          // DCA selection (on-device)
       case 2: showPage(PAGE_COSMETICS); break;
       case 3: if (a.openDca) a.openDca(); break;
+      case 4: if (a.checkUpdate) a.checkUpdate(); break;   // OTA check
     }
   } else {
     switch (idx) {
@@ -194,6 +205,7 @@ void showPage(uint8_t p) {
 lv_obj_t* buildMenuScreen() {
   menuScr = lv_obj_create(nullptr);
   uiThemeScreen(menuScr);
+  snprintf(fwInfo, sizeof(fwInfo), "v%s", FW_VERSION);
 
   // --- scrollable app list (left ~70%) ---
   // Inset from the top-left corner (the round panel clips it) and shorter
@@ -276,7 +288,11 @@ void uiScreenMenuShow() {
   // Enter on the APPS page, at the top: the back affordance is focused
   // first (long-press/action = pet screen); the rows follow in the chain.
   showPage(PAGE_APPS);
-  lv_screen_load_anim(menuScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
+  // Returning from the OTA confirm screen: free its widgets (auto_del),
+  // the same lazy-screen discipline the other exits use.
+  bool freeOta = g_ui.otaScreen && lv_screen_active() == g_ui.otaScreen;
+  lv_screen_load_anim(menuScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, freeOta);
+  if (freeOta) uiScreenOtaFreed();
 }
 
 void uiScreenMenuFreed() {

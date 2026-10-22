@@ -34,3 +34,8 @@
 // the pinned root CA in api_root_ca.h (Let's Encrypt) — replace it if your
 // override host uses a different issuer.
 // #define STATE_SYNC_URL "https://api.finagotchi.app/device/state"
+
+// OTA firmware manifest (OTA.md): GET ?env=<board>&v=<FW_VERSION> -> 204
+// when current, else {version,url,sha256,size,notes}. Same pinned-CA TLS
+// path as the state sync.
+// #define FIRMWARE_MANIFEST_URL "https://api.finagotchi.app/firmware/latest"

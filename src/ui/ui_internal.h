@@ -22,6 +22,7 @@ struct UiState {
   lv_obj_t*   menuScreen = nullptr;
   lv_obj_t*   createScreen = nullptr;
   lv_obj_t*   lockScreen = nullptr;
+  lv_obj_t*   otaScreen = nullptr;
   lv_group_t* group = nullptr;
   bool        locked = false;      // parental gate: pet screen only until unlocked
 
@@ -129,3 +130,12 @@ bool uiScreenLockActive();               // lock screen is the active screen
 void uiScreenLockNext();                 // short press: next digit (0-9 wrap)
 void uiScreenLockPrev();                 // crown CCW: previous digit (9-0 wrap)
 void uiScreenLockConfirm();              // long press: confirm digit / finish
+
+// screen_ota.cpp (firmware update confirm) — lazy build + free, same pattern.
+// Nothing to navigate: push/long = confirm (actions.otaConfirm -> schedule +
+// reboot into OTA mode), back/cancel = abort (actions.otaCancel + menu).
+void uiScreenOtaShow(const char* newVersion, uint32_t size);
+void uiScreenOtaFreed();                 // screen object deleted (auto_del)
+bool uiScreenOtaActive();                // OTA screen is the active screen
+void uiScreenOtaConfirm();               // push / long press
+void uiScreenOtaCancel();                // back / cancel

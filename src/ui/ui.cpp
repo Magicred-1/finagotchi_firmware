@@ -251,3 +251,8 @@ void ui::showPasskey(uint32_t passkey) {
 void ui::hidePasskey() {
   lv_obj_set_hidden(passkeyBox, true);
 }
+
+void ui::showOtaConfirm(const char* newVersion, uint32_t size) {
+  if (!g_ui.ready) return;
+  uiScreenOtaShow(newVersion, size);
+}

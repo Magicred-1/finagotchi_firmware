@@ -1,0 +1,70 @@
+# Firmware release workflow (OTA.md §7): tag fw-v* -> build all three envs,
+# rename finagotchi-<env>-<version>.bin (version from src/version.h),
+# SHA-256 them, create a GitHub Release with the binaries plus a
+# manifest-snippet.json to paste into the API repo's data/firmware.json.
+#
+# NOTE: the snippet's url points at the GitHub release asset. The device
+# validates TLS against the pinned ISRG Root X1 (Let's Encrypt) — GitHub's
+# cert chain does not validate against it, so before a release can actually
+# be pulled by devices the binaries must be served from an LE-issued host
+# (api.finagotchi.app proxy, or any LE-fronted bucket). See OTA.md §3.
+
+name: firmware release
+
+on:
+  push:
+    tags: ['fw-v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4   # FW_BUILD injects the git short hash
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: pio-${{ hashFiles('platformio.ini') }}
+
+      - name: Install PlatformIO
+        run: pip install platformio
+
+      - name: Build all envs
+        run: pio run -e esp32-s3 -e esp32-s3-sim -e pcb-v1
+
+      - name: Package binaries + manifest snippet
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -n 's/.*FW_VERSION = "\([^"]*\)".*/\1/p' src/version.h)
+          echo "Firmware version from src/version.h: $VERSION"
+          mkdir -p release
+          for ENV in esp32-s3 esp32-s3-sim pcb-v1; do
+            cp ".pio/build/$ENV/firmware.bin" "release/finagotchi-$ENV-$VERSION.bin"
+          done
+          cd release
+          shasum -a 256 *.bin > SHA256SUMS.txt
+          python3 ../tools/make_manifest.py "$VERSION" "$GH_REPO" "$GH_TAG" . manifest-snippet.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Firmware ${{ github.ref_name }}
+          body: |
+            One-time migration: devices still on the `huge_app` partition
+            table (any pre-OTA build) cannot OTA themselves into the dual-slot
+            layout — the FIRST flash of this build goes over USB
+            (`pio run -e <env> -t upload`). Every flash after that is wireless.
+
+            To publish: paste `manifest-snippet.json` into the API repo's
+            `data/firmware.json` and rehost the binaries on a Let's
+            Encrypt-issued host (the device pins ISRG Root X1) — see
+            OTA.md §3.
+          files: release/*

@@ -14,6 +14,7 @@
     points:<n>  happy:<0-100>  streak:<n>
     dca:count:<n>  dca:plan:<i>:<en>:<epoch>:<amt>:<TICKER>:<buys>:<holdings>
     dca:clear  dca:hit:<n>:<TICKER>  solusd:<rate>
+    ota:start   (firmware update check -> on-device confirm; see OTA.md)
   While the app is connected, the demo auto-evolve, the day-based streak
   check and the relay DCA poll are paused (the app is authoritative).
 
@@ -46,6 +47,8 @@
 #include "config.h"
 #include "logo.h"
 #include "api_root_ca.h"
+#include "version.h"
+#include "ota.h"
 #include "pet.h"
 #include "ui/ui.h"
 
@@ -62,6 +65,13 @@
 // PEM too if the override host is not issued by Let's Encrypt.
 #ifndef STATE_SYNC_URL
 #define STATE_SYNC_URL "https://api.finagotchi.app/device/state"
+#endif
+
+// OTA firmware manifest endpoint (OTA.md §3): GET ?env=<board>&v=<FW_VERSION>
+// -> 204 when current, else {version,url,sha256,size,notes}. Same pinned-CA
+// TLS path as the state sync, no auth (public, like the price data).
+#ifndef FIRMWARE_MANIFEST_URL
+#define FIRMWARE_MANIFEST_URL "https://api.finagotchi.app/firmware/latest"
 #endif
 
 // Legacy standalone DCA relay poll. The current backend has NO
@@ -160,6 +170,7 @@ volatile bool priceDirty = false;          // price feed -> loop task handoff
 volatile bool syncRequested = false;       // BTN1 -> poll task: sync now
 void     fetchPrices();                    // defined in the poll section below
 bool     pollDcaRelay();                   // defined in the poll section below
+void     actionCheckUpdate();              // defined in the OTA section below
 
 void loadPlans() {
   prefs.begin("finagotchi", true);
@@ -255,16 +266,18 @@ bool setupWiFiTime();          // defined in the Wi-Fi section below
 void updateStreakFromTime();
 const char* wifiFailCode();    // Wi-Fi section: wifi:fail code mapping
 
-// Push "<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>]"
-// (read + notify). The 7th field is optional: old firmware parses only the
-// first six, new firmware tolerates its absence. Can exceed 20 bytes — the
-// app should negotiate MTU >= 64.
+// Push "<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>[:<sub>
+// [:fw:<ver>]]]" (read + notify). The optional trailing fields are
+// tolerated-absent: old firmware parses only the first six, old apps stop
+// at what they know. The 9th field is the firmware version ("fw:1.0.0") so
+// the app can offer an update when the API's manifest is newer (OTA.md §1).
+// Can exceed 20 bytes — the app should negotiate MTU >= 64.
 void blePushState(PetState s) {
   if (!pCharacteristic) return;
-  char buf[48];
-  snprintf(buf, sizeof(buf), "%s:%lu:%u:%u:%lu:%u:%u:%u",
+  char buf[64];
+  snprintf(buf, sizeof(buf), "%s:%lu:%u:%u:%lu:%u:%u:%u:fw:%s",
            STAGE_NAMES[static_cast<size_t>(s)], static_cast<unsigned long>(streak), mood, item,
-           static_cast<unsigned long>(points), happiness, dcaCount, subStage);
+           static_cast<unsigned long>(points), happiness, dcaCount, subStage, FW_VERSION);
   pCharacteristic->setValue(buf);
   pCharacteristic->notify();
   ui::setStats(streak, points, happiness);
@@ -285,6 +298,22 @@ void bleNotifyWifi(bool ok, const char* code) {
   char buf[48];
   if (ok) snprintf(buf, sizeof(buf), "wifi:ok:%s", wifiSsid);
   else snprintf(buf, sizeof(buf), "wifi:fail:%s", code ? code : "off");
+  pCharacteristic->setValue(buf);
+  pCharacteristic->notify();
+  Serial.printf("BLE -> %s\n", buf);
+  blePushState(pet.state());   // restore the snapshot as the read value
+}
+
+// OTA status report to the app: "ota:status:<state>" as a separate
+// notification on the state characteristic (same pattern as wifi:ok/fail —
+// the app monitors it, old apps ignore it). States: idle | checking |
+// current | available:<ver> | scheduled:<ver> | error:<reason> with reason
+// in battery|wifi|http|manifest. The download itself runs in OTA mode after
+// a reboot (BLE is down there), so no progress states exist.
+void bleNotifyOta(const char* state) {
+  if (!pCharacteristic) return;
+  char buf[48];
+  snprintf(buf, sizeof(buf), "ota:status:%s", state);
   pCharacteristic->setValue(buf);
   pCharacteristic->notify();
   Serial.printf("BLE -> %s\n", buf);
@@ -517,6 +546,11 @@ void handleCommand(const char* cmd) {
       prefs.end();
       Serial.printf("BLE: SOL/USD=%.2f\n", static_cast<double>(rate));
     }
+  }
+  else if (strcmp(cmd, "ota:start") == 0) {
+    // Same flow as the menu "Update" row: battery/Wi-Fi guard, manifest
+    // check, then the on-device confirm screen (push = update).
+    actionCheckUpdate();
   }
   else if (strncmp(cmd, "epoch:", 6) == 0) {
     // Fallback clock set from the app (devices whose Wi-Fi has no NTP
@@ -1144,6 +1178,22 @@ void updateBattery() {
                              (BATTERY_FULL_MV - BATTERY_EMPTY_MV));
   pct = pct < 0 ? 0 : (pct > 100 ? 100 : pct);
   ui::setBattery(static_cast<uint8_t>(pct));
+}
+
+// Fresh, unsmoothed read for the OTA battery guard (updateBattery's EMA
+// trails by design, and the guard wants the value now). Returns 100 when no
+// battery is present = USB power — the PCB has no VBUS sense pin, so the
+// OTA guard is battery-only.
+int batteryPercentNow() {
+  uint32_t sum = 0;
+  for (int i = 0; i < 8; i++) {
+    sum += analogReadMilliVolts(BATTERY_ADC_PIN);
+    delay(5);
+  }
+  int mv = static_cast<int>(sum / 8 * BATTERY_DIVIDER);
+  if (mv < BATTERY_PRESENT_MV) return 100;
+  int pct = (mv - BATTERY_EMPTY_MV) * 100 / (BATTERY_FULL_MV - BATTERY_EMPTY_MV);
+  return pct < 0 ? 0 : (pct > 100 ? 100 : pct);
 }
 
 // ---------------------------------------------------------------------------
@@ -1854,6 +1904,148 @@ void stateSyncTask(void*) {
 }
 
 // ---------------------------------------------------------------------------
+// OTA firmware update check (menu "Update" row / BLE ota:start)
+//
+// Flow (OTA.md §4): guard (battery, Wi-Fi) -> GET the manifest over the
+// pinned-CA TLS path -> 204 = "up to date" toast; newer = confirm screen.
+// A confirmed update is stashed in NVS and the device REBOOTS into OTA mode
+// (ota.cpp), which downloads with BLE/LVGL/pet down — the N8 build idles
+// with ~19 KB free heap, no room for a TLS handshake next to the live UI.
+// The check runs on the loop task (blocking, user-triggered) — same
+// discipline as the BLE provisioning reconnect.
+// ---------------------------------------------------------------------------
+
+// env param for the manifest request: the API serves per-hardware builds.
+#ifdef FINAGOTCHI_PCB_V1
+constexpr const char* OTA_ENV = "pcb-v1";
+#else
+constexpr const char* OTA_ENV = "esp32-s3";
+#endif
+
+constexpr uint32_t OTA_SLOT_SIZE = 0x380000;   // ota_0/ota_1, partitions_8mb_ota.csv
+constexpr int OTA_MIN_BATTERY_PCT = 40;
+
+// The manifest that passed validation, stashed until confirm/cancel.
+struct OtaManifest {
+  char version[16];
+  char url[224];
+  char sha256[65];
+  uint32_t size;
+};
+OtaManifest otaManifest;
+volatile bool otaCheckRequested = false;   // menu/BLE -> loop task handoff
+uint32_t otaCheckAt = 0;                   // lets the "checking" overlay render first
+
+void actionCheckUpdate() {
+  otaCheckAt = millis();
+  otaCheckRequested = true;
+  ui::showOverlay("checking for update...", 10000);
+  Serial.println("OTA: check requested");
+}
+
+void runOtaCheck() {
+  otaCheckRequested = false;
+
+  // Battery guard: a brownout mid-flash is what the second slot exists for,
+  // but don't invite it. (batteryPercentNow returns 100 on USB power.)
+  int batt = batteryPercentNow();
+  if (batt < OTA_MIN_BATTERY_PCT) {
+    ui::showOverlay("battery too low", 2500);
+    bleNotifyOta("error:battery");
+    Serial.printf("OTA: refused, battery %d%% (need %d%%)\n", batt, OTA_MIN_BATTERY_PCT);
+    return;
+  }
+  bleNotifyOta("checking");
+
+  if (WiFi.status() != WL_CONNECTED) {
+    setupWiFiTime();   // join + NTP, blocks up to ~10 s — user-triggered
+  }
+  if (WiFi.status() != WL_CONNECTED) {
+    ui::showOverlay("no wifi", 2500);
+    bleNotifyOta("error:wifi");
+    Serial.println("OTA: no wifi, aborting check");
+    return;
+  }
+  if (!timeSynced) {
+    // Pinned-CA validation needs a plausible clock (same guard as the sync).
+    configTzTime(TZ_POSIX, "pool.ntp.org", "time.nist.gov");
+    struct tm ti;
+    for (int i = 0; i < 10 && !timeSynced; i++)
+      if (getLocalTime(&ti, 200) && ti.tm_year > 120) timeSynced = true;
+  }
+
+  char url[256];
+  snprintf(url, sizeof(url), "%s?env=%s&v=%s", FIRMWARE_MANIFEST_URL, OTA_ENV, FW_VERSION);
+  static char body[768];   // static: keep the loop task stack small
+  int code = 0;
+  // Anonymous GET, but over the pinned ISRG Root X1 path (never insecure).
+  size_t n = httpGetJson(url, body, sizeof(body), nullptr, &code, kApiRootCa);
+  if (code == HTTP_CODE_NO_CONTENT) {   // 204: device is current
+    ui::enqueueToast("up to date");
+    bleNotifyOta("current");
+    Serial.printf("OTA: firmware %s is current\n", FW_VERSION);
+    return;
+  }
+  if (n == 0) {
+    ui::showOverlay("update check failed", 2500);
+    bleNotifyOta("error:http");
+    Serial.printf("OTA: manifest fetch failed (HTTP %d)\n", code);
+    return;
+  }
+
+  char ver[16], furl[sizeof(otaManifest.url)], sha[65];
+  uint32_t size = static_cast<uint32_t>(jsonNumber(body, "\"size\":"));
+  bool ok = jsonString(body, "\"version\":", ver, sizeof(ver)) &&
+            jsonString(body, "\"url\":", furl, sizeof(furl)) &&
+            jsonString(body, "\"sha256\":", sha, sizeof(sha)) &&
+            size > 0 && size <= OTA_SLOT_SIZE;
+  if (ok) {
+    // sha256 must be exactly 64 hex chars — anything else is a
+    // placeholder/corrupt manifest; never schedule an unverifiable image.
+    if (strlen(sha) != 64) ok = false;
+    else for (size_t i = 0; i < 64; i++)
+      if (!isxdigit(static_cast<uint8_t>(sha[i]))) { ok = false; break; }
+  }
+  if (!ok) {
+    ui::showOverlay("bad manifest", 2500);
+    bleNotifyOta("error:manifest");
+    Serial.println("OTA: manifest rejected (bad version/url/sha256/size)");
+    return;
+  }
+  if (strcmp(ver, FW_VERSION) == 0) {   // server sent 200 for the same build
+    ui::enqueueToast("up to date");
+    bleNotifyOta("current");
+    return;
+  }
+
+  strlcpy(otaManifest.version, ver, sizeof(otaManifest.version));
+  strlcpy(otaManifest.url, furl, sizeof(otaManifest.url));
+  strlcpy(otaManifest.sha256, sha, sizeof(otaManifest.sha256));
+  otaManifest.size = size;
+  char st[32];
+  snprintf(st, sizeof(st), "available:%s", ver);
+  bleNotifyOta(st);
+  Serial.printf("OTA: update available: %s (%lu bytes)\n",
+                ver, static_cast<unsigned long>(size));
+  ui::showOtaConfirm(ver, size);
+}
+
+// Confirm screen, push: notify the app, stash the manifest in NVS and
+// reboot into OTA mode (ota.cpp runs the download from there).
+void actionOtaConfirmed() {
+  char st[32];
+  snprintf(st, sizeof(st), "scheduled:%s", otaManifest.version);
+  bleNotifyOta(st);
+  ota::schedule(otaManifest.url, otaManifest.sha256, otaManifest.size,
+                otaManifest.version);   // never returns
+}
+
+void actionOtaCancelled() {
+  bleNotifyOta("idle");
+  Serial.println("OTA: update aborted by user");
+}
+
+// ---------------------------------------------------------------------------
 // Display
 // ---------------------------------------------------------------------------
 
@@ -1920,6 +2112,13 @@ void setup() {
 #endif
 
   tft.setRotation(0);
+
+  // OTA mode: a confirmed update stashed in NVS (ota::schedule) takes over
+  // the boot BEFORE splash/WiFi/BLE/LVGL/pet — OTA mode is Serial + raw
+  // TFT_eSPI + Wi-Fi only, so the TLS download gets the whole heap. Never
+  // returns (every path ends in ESP.restart()).
+  if (ota::pending()) ota::run(tft);
+
   showSplash(1500);
 
   loadStats();               // restore streak/points before BLE advertises them
@@ -1963,7 +2162,8 @@ void setup() {
                           actionCycleItem, actionCycleMood, actionOpenDca,
                           actionCycleBackdrop, actionTogglePause, actionCreatePlan,
                           actionParentalLock, actionPinCheck, actionPinStore,
-                          actionPinClear };
+                          actionPinClear, actionCheckUpdate, actionOtaConfirmed,
+                          actionOtaCancelled };
   ui::begin(&tft, &pet, actions);
   ui::setSubStage(subStage);
   ui::setLocked(pinSet);                     // parental gate (NVS "fina"/"pinset")
@@ -2051,6 +2251,9 @@ void loop() {
   updateBattery();
   if (cmdPending) processCommand();
   if (provPending) processProvision();
+  // OTA check (menu row / BLE ota:start): deferred ~50 ms so the "checking"
+  // overlay renders before the blocking manifest fetch.
+  if (otaCheckRequested && millis() - otaCheckAt >= 50) runOtaCheck();
 
   // Task-side Wi-Fi rejoin -> wifi:ok notify (queued by noteWifiLink; all
   // BLE work happens on the loop task).

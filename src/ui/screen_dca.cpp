@@ -581,17 +581,19 @@ void uiScreenDcaShow() {
 void uiScreenPetShow() {
   if (detailSlot >= 0) detailSlot = -1;
   uiGroupSet(nullptr, 0, false);   // the pet screen has no focusables
-  // Lazy screens (menu / create / portfolio list / lock) free on exit.
+  // Lazy screens (menu / create / portfolio list / lock / ota) free on exit.
   bool freeMenu = g_ui.menuScreen && lv_screen_active() == g_ui.menuScreen;
   bool freeCreate = g_ui.createScreen && lv_screen_active() == g_ui.createScreen;
   bool freeDca = listScr && lv_screen_active() == listScr;
   bool freeLock = g_ui.lockScreen && lv_screen_active() == g_ui.lockScreen;
+  bool freeOta = g_ui.otaScreen && lv_screen_active() == g_ui.otaScreen;
   lv_screen_load_anim(g_ui.petScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0,
-                      freeMenu || freeCreate || freeDca || freeLock);
+                      freeMenu || freeCreate || freeDca || freeLock || freeOta);
   if (freeMenu) uiScreenMenuFreed();
   if (freeCreate) uiScreenCreateFreed();
   if (freeDca) uiScreenDcaListFreed();
   if (freeLock) uiScreenLockFreed();
+  if (freeOta) uiScreenOtaFreed();
 }
 
 void uiScreenDcaPlansChanged() {

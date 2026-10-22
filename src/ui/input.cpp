@@ -17,7 +17,8 @@
       long  = action for the current screen:
               pet = sync now, portfolio = open the focused card,
               detail = pause/resume the plan, menu = run focused action,
-              create = cycle the focused field's value / send
+              create = cycle the focused field's value / send,
+              ota confirm = schedule the update and reboot into OTA mode
 
   Bonus (left button only, when alive): double-press on the pet screen
   cycles the pet reaction, on the portfolio toggles SOL <-> USD amounts,
@@ -209,6 +210,9 @@ void onNavShort() {
 // Long press (either button) = the action of the current screen.
 void onActionLong(float nowSec) {
   if (uiScreenLockActive()) { uiScreenLockConfirm(); return; }
+  // OTA confirm screen: push/long = schedule the update + reboot into OTA
+  // mode (nothing else on that screen to act on).
+  if (uiScreenOtaActive()) { uiScreenOtaConfirm(); return; }
   lv_obj_t* act = lv_screen_active();
   Serial.println("ACTION (long)");
   if (uiScreenDcaDetailOpen()) {
@@ -232,6 +236,11 @@ void onBack() {
   if (uiScreenLockActive()) {
     uiScreenPetShow();
     Serial.println("BACK: pet (code pad cancel)");
+    return;
+  }
+  if (uiScreenOtaActive()) {
+    uiScreenOtaCancel();   // abort the update, back to the menu
+    Serial.println("BACK: ota abort");
     return;
   }
   if (uiScreenDcaDetailOpen()) {

@@ -34,6 +34,9 @@ struct Actions {
   bool (*pinCheck)(uint16_t pin);       // lock screen: validate entered code
   void (*pinStore)(uint16_t pin);       // lock screen: save new code
   void (*pinClear)();                   // lock screen: remove code
+  void (*checkUpdate)();                // menu "Update" row + BLE ota:start
+  void (*otaConfirm)();                 // OTA confirm screen: push = schedule + reboot
+  void (*otaCancel)();                  // OTA confirm screen: cancel (BLE status)
 };
 
 void begin(TFT_eSPI* tft, FinagotchiPet* pet, const Actions& actions);
@@ -93,6 +96,11 @@ void setMenuLock(const char* name);   // "on"/"off" info word cache
 // BLE pairing passkey panel; hidden with hidePasskey() once pairing ends.
 void showPasskey(uint32_t passkey);
 void hidePasskey();
+
+// OTA confirm screen (lazy build + free, like the menu/lock screens): the
+// manifest said a newer firmware exists — show version + size, push =
+// schedule the update and reboot into OTA mode, cancel = back to the menu.
+void showOtaConfirm(const char* newVersion, uint32_t size);
 
 // Top-right Wi-Fi status glyph (light blue online / muted offline). Driven by
 // main.cpp's link tracking (noteWifiLink edge detector + WiFi event hook).

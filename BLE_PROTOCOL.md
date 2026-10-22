@@ -70,15 +70,18 @@ everything and reconnect.
 
 ## Device -> App (read / notify)
 
-Value is a UTF-8 string: `<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>][:<subStage>]`
+Value is a UTF-8 string: `<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>][:<subStage>][:fw:<version>]`
 
-Example: `coinling:3:1:2:12500:87:0:5`
+Example: `coinling:3:1:2:12500:87:0:5:fw:1.0.0`
 
 Sent on connect and whenever any field changes, plus when the day-based
 streak rolls over at midnight. The optional 7th field is `dcaCount`
 (device-owned). The optional 8th field is `subStage` (1-12), which lets
 the hardware show the full 12-stage evolution line while still rendering
-one of the four base creature forms.
+one of the four base creature forms. The optional 9th field is the
+firmware version (`fw:1.0.0`) — the app compares it against the API's
+firmware manifest to offer an update (see `ota:start` below). Old apps
+tolerate it absent; new apps must tolerate it absent (pre-OTA firmware).
 
 > The string can exceed 20 bytes — the firmware requests MTU 256; the app
 > must still complete the MTU exchange (automatic on iOS, `requestMTU(256)` on
@@ -116,6 +119,29 @@ task's rejoin transitions to connected (`wifi:ok`). The device logs the raw
 ("WiFi: join failed, status=… reason=…"). Like the other `*:req`/`wifi:*`
 strings, it never starts with a stage name, so old apps ignore it; after the
 notification the device restores the state snapshot as the read value.
+
+### `ota:status:<state>` (firmware update status, device → app)
+
+Sent as a separate notification on the state characteristic (same mechanism
+and old-app tolerance as `wifi:ok`/`wifi:fail` — it never starts with a
+stage name; after the notification the device restores the state snapshot
+as the read value) while an OTA check/update is in flight. States:
+
+- `ota:status:idle` — an available update was aborted on the confirm screen
+- `ota:status:checking` — a manifest check is running
+- `ota:status:current` — the firmware is up to date (manifest answered 204,
+  or echoed the running version)
+- `ota:status:available:<version>` — an update exists; the on-device
+  confirm screen is up (push = update, cancel = abort)
+- `ota:status:scheduled:<version>` — the user confirmed; the device stores
+  the manifest in NVS and **reboots into OTA mode** (BLE is down from this
+  point — there are no download progress notifications)
+- `ota:status:error:<reason>` — the check was refused/failed; reason is one
+  of `battery` (< 40%), `wifi`, `http`, `manifest`
+
+The download itself runs after the reboot in a minimal OTA mode (no BLE/LVGL
+— see the firmware repo's OTA.md). On failure the device clears the pending
+marker and reboots back into the old firmware untouched.
 
 ### `feed:req` (feed request, device → app)
 
@@ -212,6 +238,7 @@ truncated away.
 | `dca:hit:<n>:<TICKER>` | A buy just executed: "+n TICKER" reward toast (app amber) + dance reaction + sparkle burst |
 | `solusd:<rate>` | SOL/USD rate (float) for the portfolio amount unit toggle (USD ⇄ SOL); persisted in NVS (`finagotchi`/`solUsd`) |
 | `epoch:<sec>` | Fallback wall-clock set (unix seconds). Only applied if NTP has never synced; ignored afterwards |
+| `ota:start` | Start the firmware-update flow: battery/Wi-Fi guard, manifest check against the API, then the on-device confirm screen (the user still confirms on the device — push = update, cancel = abort). Progress is reported as `ota:status:<state>` notifications (see above). The device reboots into OTA mode for the actual download |
 
 Writes may use write-with-response or write-without-response — the
 characteristic exposes both properties. Writes with an unrecognized payload
@@ -276,7 +303,9 @@ portfolio view); the right zone shows the values picked so far.
 The **menu screen** is a vertical, scrollable launcher with two pages.
 The apps page holds **Feed pet** (primary, `feed:req`), **Portfolio**
 (jumps straight to the portfolio screen — the on-device DCA selection),
-**Cosmetics** (opens the second page) and **Open DCA** (`dca:req`). The
+**Cosmetics** (opens the second page), **Open DCA** (`dca:req`) and
+**Update** (OTA firmware check — see `ota:status:`; its info word is the
+current firmware version). The
 cosmetics page holds **Accessory** (cycles the collectible locally,
 mirrored in the notify snapshot), **Mood** (cycles the emotion locally,
 mirrored likewise), **Backdrop** (cycles the PetCanvas scene theme
@@ -308,18 +337,20 @@ recovery chord (hold BOTH buttons while powering on) clears it along
 with the BLE bonds.
 
 The notify/read snapshot gains an **optional 7th field** — the number of
-active plan slots — and an **optional 8th field** — the 12-stage
-sub-stage index:
+active plan slots — an **optional 8th field** — the 12-stage
+sub-stage index — and an **optional 9th field** — the firmware version
+(`fw:<x.y.z>`):
 
 ```
-<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>][:<subStage>]
+<stage>:<streak>:<mood>:<item>:<points>:<happy>[:<dcaCount>][:<subStage>][:fw:<version>]
 ```
 
-New firmware tolerates either optional field being absent; old firmware
+New firmware tolerates any optional field being absent; old firmware
 ignores extra fields. The count is device-owned — the app may echo it back
 in a snapshot write, where it is parsed but ignored. The sub-stage index
 (1-12) controls the on-screen evolution badge and is independent of the
-four base creature shapes.
+four base creature shapes. The version field is read-only — the firmware
+never parses it from a snapshot write.
 
 ### Standalone mode (app disconnected)
 
