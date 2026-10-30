@@ -52,8 +52,9 @@ known xStock mint (mint table in `src/main.cpp`, sourced from the issuer's
 `/api/v2/public/assets` API). xStock tickers without a known mint fall back
 to the issuer's indicative quote
 (`/public/assets/<symbol>/price-data` → `{"quote": <number|null>}`, null
-while the market is closed — cached value kept). TLS is unverified
-(`setInsecure`) — the data is public and read-only.
+while the market is closed — cached value kept). TLS is validated against
+each provider's pinned roots (`src/price_root_ca.h`); a failed handshake
+keeps the cached prices.
 
 ### Legacy DCA relay defines
 

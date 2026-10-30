@@ -38,18 +38,23 @@
 #include <BLEServer.h>
 #include <BLE2902.h>
 #include <WiFi.h>
+#include <esp_wifi.h>   // esp_wifi_set_country (channels 12-13 domain)
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <time.h>
 #include <sys/time.h>
+#include <esp_sntp.h>   // SNTP sync callback (late NTP -> timeSynced)
+#include <esp_ota_ops.h>   // first-boot self-test after an OTA (rollback)
 #include <Preferences.h>
 #include <array>
 #include "config.h"
 #include "logo.h"
 #include "api_root_ca.h"
+#include "price_root_ca.h"
 #include "version.h"
 #include "ota.h"
 #include "pet.h"
+#include "feedback.h"
 #include "ui/ui.h"
 
 // Defaults so older config.h copies (pre-DCA) still build.
@@ -117,7 +122,7 @@ uint8_t  bgTheme = 0;   // PetCanvas scene theme (menu backdrop row / bg:)
 
 // Parental lock (optional 4-digit code, NVS "fina"). When set, the device
 // boots locked: the pet animates but the money screens ask for the code.
-// The boot recovery chord (both buttons) clears it along with BLE bonds.
+// Boot recovery clears it along with BLE bonds (crown-only hold on PCB v1).
 bool     pinSet = false;
 uint16_t pinCode = 0;
 bool     timeSynced = false;
@@ -171,6 +176,8 @@ volatile bool syncRequested = false;       // BTN1 -> poll task: sync now
 void     fetchPrices();                    // defined in the poll section below
 bool     pollDcaRelay();                   // defined in the poll section below
 void     actionCheckUpdate();              // defined in the OTA section below
+void     otaCheckFromTask();               // OTA section: runs on the poll task
+volatile bool otaCheckRequested = false;   // menu/BLE -> poll task handoff
 
 void loadPlans() {
   prefs.begin("finagotchi", true);
@@ -406,12 +413,22 @@ void handleCommand(const char* cmd) {
       return;
     }
     float yaw, pitch;
-    if (sscanf(cmd + 5, "%f,%f", &yaw, &pitch) == 2) {
+    // NaN/inf would poison the gaze blend (clamping NaN yields NaN) and
+    // the face renders garbage until reboot.
+    if (sscanf(cmd + 5, "%f,%f", &yaw, &pitch) == 2 &&
+        isfinite(yaw) && isfinite(pitch)) {
       pet.setLook(yaw, pitch, nowSec);
     }
   }
   else if (strncmp(cmd, "mood:", 5) == 0) {
-    mood = static_cast<uint8_t>(atoi(cmd + 5));
+    // Bounds-check BEFORE storing: mood indexes MOOD_NAMES in
+    // blePushState, so an out-of-range id was an out-of-bounds read.
+    long m = strtol(cmd + 5, nullptr, 10);
+    if (m < 0 || m >= static_cast<long>(kMoodCount)) {
+      Serial.printf("BLE: mood %ld out of range\n", m);
+      return;
+    }
+    mood = static_cast<uint8_t>(m);
     pet.setMood(static_cast<PetMoodId>(mood), nowSec);
     blePushState(pet.state());
   }
@@ -429,8 +446,9 @@ void handleCommand(const char* cmd) {
     }
   }
   else if (strncmp(cmd, "item:", 5) == 0) {
-    item = static_cast<uint8_t>(atoi(cmd + 5));
-    if (item >= kItemCount) item = 0;   // unknown ids degrade to none
+    long it = strtol(cmd + 5, nullptr, 10);
+    // Unknown ids degrade to none (atoi + uint8_t truncation let 256 alias 0).
+    item = static_cast<uint8_t>(it >= 0 && it < static_cast<long>(kItemCount) ? it : 0);
     pet.setItem(static_cast<PetItem>(item));
     blePushState(pet.state());
   }
@@ -486,6 +504,18 @@ void handleCommand(const char* cmd) {
     char tick[7];
     int got = sscanf(cmd + 9, "%u:%u:%lu:%f:%6[^:]:%lu:%f:%f",
                      &i, &en, &epoch, &amt, tick, &buys, &hold, &price);
+    // Reject values the UI can't render sanely (NaN/inf/negative amounts,
+    // tickers with control or non-ASCII bytes the font has no glyphs for).
+    if (got >= 7) {
+      bool tickOk = tick[0] != 0;
+      for (const char* t = tick; *t; t++)
+        if (!isalnum(static_cast<uint8_t>(*t))) { tickOk = false; break; }
+      if (!tickOk || !isfinite(amt) || amt < 0.0f || !isfinite(hold) || hold < 0.0f ||
+          (got == 8 && (!isfinite(price) || price < 0.0f))) {
+        Serial.println("BLE: dca:plan rejected (bad ticker/number)");
+        return;
+      }
+    }
     if (got >= 7 && i >= kDcaMaxPlans) {
       Serial.printf("BLE: dca:plan slot %u over capacity (max %u)\n", i,
                     static_cast<unsigned>(kDcaMaxPlans));
@@ -526,7 +556,7 @@ void handleCommand(const char* cmd) {
     // dca:hit:<n>:<TICKER> — a buy just executed: toast + dance + sparkles.
     unsigned n;
     char tick[7];
-    if (sscanf(cmd + 8, "%u:%6s", &n, tick) == 2) {
+    if (sscanf(cmd + 8, "%u:%6[A-Za-z0-9]", &n, tick) == 2) {
       char t[24];
       snprintf(t, sizeof(t), "+%u %s", n > 999 ? 999 : n, tick);
       ui::enqueueRewardToast(t);   // a buy landed: amber celebration toast
@@ -538,7 +568,7 @@ void handleCommand(const char* cmd) {
   else if (strncmp(cmd, "solusd:", 7) == 0) {
     // SOL/USD rate for the DCA-screen amount unit toggle (persisted).
     float rate = strtof(cmd + 7, nullptr);
-    if (rate > 0.0f) {
+    if (isfinite(rate) && rate > 0.0f && rate < 1e6f) {
       solUsdRate = rate;
       ui::setSolUsd(rate);
       prefs.begin("finagotchi", false);
@@ -557,7 +587,7 @@ void handleCommand(const char* cmd) {
     // access). Ignored once NTP has synced — NTP stays authoritative.
     if (!timeSynced) {
       time_t t = static_cast<time_t>(strtoul(cmd + 6, nullptr, 10));
-      if (t > 1700000000) {   // sanity: reject clearly-bogus values
+      if (t > 1700000000 && t < 4102444800) {   // sanity: 2023..2100
         struct timeval tv = { t, 0 };
         settimeofday(&tv, nullptr);
         timeSynced = true;
@@ -603,26 +633,39 @@ void handleCommand(const char* cmd) {
   }
 }
 
-// Received writes are stashed here and processed on the loop task: the
+// Received writes are queued here and processed on the loop task: the
 // Bluedroid BTC task that runs onWrite has a small stack, and doing
 // printf/strtok/sscanf/NVS/notify in the callback overflowed it (stack
-// canary panic, BTC_TASK).
-char cmdBuf[96];
-volatile size_t cmdLen = 0;
-volatile bool cmdPending = false;
+// canary panic, BTC_TASK). A small FIFO (not a single slot): the app
+// streams dca:count + one dca:plan per plan back-to-back, and a single
+// slot silently dropped every write that landed while the loop was busy
+// rendering — plans went missing. Slots hold a full ATT payload (MTU 256
+// - 3), so ';'-batched writes are never cut mid-command.
+constexpr size_t CMD_SLOT_LEN = 254;
+constexpr uint8_t CMD_SLOTS = 8;
+char cmdQueue[CMD_SLOTS][CMD_SLOT_LEN];
+uint16_t cmdQueueLen[CMD_SLOTS];
+volatile uint8_t cmdHead = 0;   // written by the BTC task
+volatile uint8_t cmdTail = 0;   // written by the loop task
+volatile uint32_t cmdDropped = 0;
 portMUX_TYPE cmdMux = portMUX_INITIALIZER_UNLOCKED;
+
+bool cmdPending() { return cmdHead != cmdTail; }
 
 class CmdCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic* c) override {
     std::string v = c->getValue();
     if (v.empty()) return;
     portENTER_CRITICAL(&cmdMux);
-    if (!cmdPending) {   // drop if the previous write is still queued
-      size_t n = v.size() < sizeof(cmdBuf) - 1 ? v.size() : sizeof(cmdBuf) - 1;
-      memcpy(cmdBuf, v.data(), n);
-      cmdBuf[n] = 0;
-      cmdLen = n;
-      cmdPending = true;
+    if (static_cast<uint8_t>(cmdHead - cmdTail) < CMD_SLOTS) {
+      uint8_t slot = cmdHead % CMD_SLOTS;
+      size_t n = v.size() < CMD_SLOT_LEN - 1 ? v.size() : CMD_SLOT_LEN - 1;
+      memcpy(cmdQueue[slot], v.data(), n);
+      cmdQueue[slot][n] = 0;
+      cmdQueueLen[slot] = static_cast<uint16_t>(n);
+      cmdHead++;
+    } else {
+      cmdDropped++;   // logged from the loop task
     }
     portEXIT_CRITICAL(&cmdMux);
   }
@@ -630,13 +673,20 @@ class CmdCallbacks : public BLECharacteristicCallbacks {
 
 // Runs on the loop task: log + dispatch one received write.
 void processCommand() {
-  char buf[96];
+  char buf[CMD_SLOT_LEN];
   size_t n;
   portENTER_CRITICAL(&cmdMux);
-  n = cmdLen;
-  memcpy(buf, cmdBuf, n + 1);
-  cmdPending = false;
+  uint8_t slot = cmdTail % CMD_SLOTS;
+  n = cmdQueueLen[slot];
+  memcpy(buf, cmdQueue[slot], n + 1);
+  cmdTail++;
+  uint32_t dropped = cmdDropped;
+  cmdDropped = 0;
   portEXIT_CRITICAL(&cmdMux);
+  if (dropped) Serial.printf("BLE: %lu write(s) dropped (queue full)\n",
+                             static_cast<unsigned long>(dropped));
+  // Embedded NULs would hide the rest of the payload from the parser.
+  n = strnlen(buf, n);
 
   // Log length + payload. Hex-dump non-ASCII writes so binary or
   // truncated payloads are still visible on the serial monitor.
@@ -671,6 +721,7 @@ void processCommand() {
 // ---------------------------------------------------------------------------
 
 volatile bool passkeyPending = false;
+volatile bool authPushPending = false;   // BTC task -> loop: push snapshot after pairing
 uint32_t pairingPasskey = 0;
 
 class SecCallbacks : public BLESecurityCallbacks {
@@ -692,10 +743,12 @@ class SecCallbacks : public BLESecurityCallbacks {
     return true;
   }
   bool onConfirmPIN(uint32_t pin) override {
-    // Numeric Comparison (both sides have displays): auto-yes.
-    Serial.printf("BLE security: numeric comparison %06lu (auto-yes)\n",
+    // Numeric Comparison never applies to a DisplayOnly responder; a request
+    // here means a downgraded/odd pairing — refuse instead of auto-accepting
+    // (auto-yes made the comparison worthless against a MITM).
+    Serial.printf("BLE security: numeric comparison %06lu rejected\n",
                   static_cast<unsigned long>(pin));
-    return true;
+    return false;
   }
   void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) override {
     passkeyPending = false;
@@ -711,7 +764,9 @@ class SecCallbacks : public BLESecurityCallbacks {
       // app gets data immediately. A FAILED here with a previously-paired
       // phone = stale bond (phone side: forget the device; device side:
       // hold both buttons at boot to erase bonds — see WIRING.md).
-      blePushState(pet.state());
+      // blePushState touches LVGL (stats/menu labels): defer it to the
+      // loop task — this callback runs on the BTC task.
+      authPushPending = true;
     }
   }
 };
@@ -722,15 +777,20 @@ void eraseBleBonds() {
   int num = esp_ble_get_bond_device_num();
   Serial.printf("BLE: %d bonded device(s) in NVS\n", num);
   if (num <= 0) return;
-  esp_ble_bond_dev_t list[10];
-  int count = num < 10 ? num : 10;
+  // Heap list sized to the real count: a fixed 10-entry array left bonds
+  // 11+ behind (the stack keeps up to CONFIG_BT_SMP_MAX_BONDS = 15).
+  esp_ble_bond_dev_t* list = static_cast<esp_ble_bond_dev_t*>(
+      malloc(sizeof(esp_ble_bond_dev_t) * static_cast<size_t>(num)));
+  if (!list) return;
+  int count = num;
   if (esp_ble_get_bond_device_list(&count, list) == ESP_OK) {
     for (int i = 0; i < count; i++) esp_ble_remove_bond_device(list[i].bd_addr);
     Serial.printf("BLE: erased %d bond(s)\n", count);
   }
+  free(list);
 }
 
-// Writes are stashed and processed on the loop task (see cmdBuf above).
+// Writes are stashed and processed on the loop task (see cmdQueue above).
 // Sized for the full 3-field payload: 32 + 63 + 128 + 2 separators + NUL.
 char provBuf[232];
 volatile size_t provLen = 0;
@@ -752,6 +812,17 @@ class ProvCallbacks : public BLECharacteristicCallbacks {
     portEXIT_CRITICAL(&provMux);
   }
 };
+
+void logCredentialShape(const char* field, const char* value, size_t len) {
+  unsigned nonPrint = 0;
+  for (size_t i = 0; i < len; i++) {
+    uint8_t c = static_cast<uint8_t>(value[i]);
+    if (c < 32 || c > 126) nonPrint++;
+  }
+  Serial0.printf("PROV: %s leading_space=%d trailing_space=%d non_print=%u\n",
+                 field, len > 0 && value[0] == ' ',
+                 len > 0 && value[len - 1] == ' ', nonPrint);
+}
 
 // Screen overlays (status messages + the pairing passkey panel) are LVGL
 // widgets on lv_layer_top() — see ui/ui.cpp. The passkey panel is driven
@@ -776,6 +847,7 @@ void processProvision() {
   char* nl = strchr(buf, '\n');
   if (!nl) {
     Serial.println("PROV: rejected (expected \"ssid\\npass\")");
+    ui::setConnectStatus("setup failed - retry");
     ui::showOverlay("WiFi setup failed", 2500);
     return;
   }
@@ -790,15 +862,22 @@ void processProvision() {
     token = nl2 + 1;
   }
   size_t sl = strlen(ssid), pl = strlen(pass);
+  Serial0.printf("PROV: payload=%u ssid_len=%u pass_len=%u token=%d\n",
+                 static_cast<unsigned>(n), static_cast<unsigned>(sl),
+                 static_cast<unsigned>(pl), token ? 1 : 0);
+  logCredentialShape("ssid", ssid, sl);
+  logCredentialShape("pass", pass, pl);
   if (sl < 1 || sl > 32 || pl > 63 || (pl > 0 && pl < 8)) {
     Serial.printf("PROV: rejected (ssid %u chars, pass %u chars)\n",
                   static_cast<unsigned>(sl), static_cast<unsigned>(pl));
+    ui::setConnectStatus("setup failed - retry");
     ui::showOverlay("WiFi setup failed", 2500);
     return;
   }
   size_t tl = token ? strlen(token) : 0;
   if (token && (tl < 1 || tl > 128)) {
     Serial.printf("PROV: rejected (token %u chars)\n", static_cast<unsigned>(tl));
+    ui::setConnectStatus("setup failed - retry");
     ui::showOverlay("WiFi setup failed", 2500);
     return;
   }
@@ -825,17 +904,26 @@ void processProvision() {
       Serial.printf("PROV: already on '%s'\n", ssid);
       char msg[48];
       snprintf(msg, sizeof(msg), "Already on %s", ssid);
+      ui::setMenuWifi("online");
+      ui::setConnectStatus("online");
       ui::showOverlay(msg, 2500);
       ui::setWifiOnline(true);
       bleNotifyWifi(true, nullptr);
     } else {
       // Same creds but offline: attempt one rejoin and report the outcome.
       Serial.println("PROV: unchanged but offline, rejoining");
+      ui::setMenuWifi("joining");
+      ui::setConnectStatus("joining Wi-Fi...");
       ui::showOverlay("WiFi rejoining...", 2500);
+      ui::showWifiSetup(true);
       timeSynced = setupWiFiTime();   // blocks up to ~10 s, user-triggered
+      ui::showWifiSetup(false);
       if (timeSynced) updateStreakFromTime();
       bool ok = WiFi.status() == WL_CONNECTED;
-      ui::showOverlay(ok ? "Online!" : "WiFi failed", 2500);
+      ui::setMenuWifi(ok ? "online" : "retry");
+      ui::setConnectStatus(ok ? "online" : "Wi-Fi failed - retry");
+      ui::showOverlay(ok ? (timeSynced ? "Online!" : "Online - clock pending")
+                         : "WiFi failed", 2500);
       ui::setWifiOnline(ok);
       bleNotifyWifi(ok, ok ? nullptr : wifiFailCode());
     }
@@ -850,6 +938,8 @@ void processProvision() {
   strlcpy(wifiSsid, ssid, sizeof(wifiSsid));
   strlcpy(wifiPass, pass, sizeof(wifiPass));
   if (token) strlcpy(deviceToken, token, sizeof(deviceToken));
+  ui::setMenuWifi("joining");
+  ui::setConnectStatus("joining Wi-Fi...");
   Serial.printf("PROV: credentials for '%s' saved%s, reconnecting...\n", ssid,
                 token ? " (+ device token)" : "");
   ui::showOverlay("WiFi saved, joining...", 4000);
@@ -857,19 +947,83 @@ void processProvision() {
   // Driver stays initialized: a plain disconnect (driver up), then
   // setupWiFiTime -> wifiRejoin brings STA back with the new credentials.
   WiFi.disconnect(false);
+  ui::showWifiSetup(true);
   timeSynced = setupWiFiTime();   // blocks up to ~10 s, once, user-triggered
+  ui::showWifiSetup(false);
   updateStreakFromTime();
-  ui::showOverlay(timeSynced ? "Online!" : "WiFi failed", 2500);
-  ui::setWifiOnline(WiFi.status() == WL_CONNECTED);
+  bool ok = WiFi.status() == WL_CONNECTED;
+  ui::setMenuWifi(ok ? "online" : "retry");
+  ui::setConnectStatus(ok ? "online" : "Wi-Fi failed - retry");
+  ui::showOverlay(ok ? (timeSynced ? "Online!" : "Online - clock pending")
+                     : "WiFi failed", 2500);
+  ui::setWifiOnline(ok);
   // Report the real join result to the app (it monitors the state
   // characteristic) — wifi:ok:<ssid> or wifi:fail:<code>.
-  bleNotifyWifi(WiFi.status() == WL_CONNECTED, wifiFailCode());
+  bleNotifyWifi(ok, ok ? nullptr : wifiFailCode());
 }
+
+// ---------------------------------------------------------------------------
+// Serial Wi-Fi provisioning (no app needed) accepts native USB or UART0.
+// Protocol (two lines, so spaces in SSIDs/passwords are fine):
+//   wifi:MySSID<enter>
+//   MyPass<enter>
+// Feeds the SAME buffer/flag as BLE provisioning.
+// ---------------------------------------------------------------------------
+char serBuf[96];
+size_t serLen = 0;
+char pendingSsid[40];       // set by the "wifi:<ssid>" line
+bool havePendingSsid = false;
+
+void pollSerial() {
+  Stream* port = Serial0.available() ? static_cast<Stream*>(&Serial0)
+                                     : static_cast<Stream*>(&Serial);
+  while (port->available()) {
+    char c = static_cast<char>(port->read());
+    if (c == '\r') continue;
+    if (c != '\n') {
+      if (serLen < sizeof(serBuf) - 1) serBuf[serLen++] = c;
+      continue;
+    }
+    serBuf[serLen] = 0;
+    serLen = 0;
+    if (serBuf[0] == 0) continue;
+    if (strncmp(serBuf, "wifi:", 5) == 0) {
+      strlcpy(pendingSsid, serBuf + 5, sizeof(pendingSsid));
+      havePendingSsid = true;
+      port->printf("SER: ssid '%s' — now type the password and press enter\n",
+                   pendingSsid);
+    } else if (havePendingSsid) {
+      // same payload shape as the BLE characteristic: "ssid\npass"
+      portENTER_CRITICAL(&provMux);
+      if (!provPending) {
+        int n = snprintf(provBuf, sizeof(provBuf), "%s\n%s", pendingSsid, serBuf);
+        if (n > 0 && n < static_cast<int>(sizeof(provBuf))) {
+          provLen = n;
+          provPending = true;
+        }
+      }
+      portEXIT_CRITICAL(&provMux);
+      havePendingSsid = false;
+      port->println("SER: provisioning...");
+    } else if (strcmp(serBuf, "help") == 0) {
+      port->println("SER: wifi:MySSID <enter>, then the password <enter>");
+    } else {
+      port->printf("SER: unknown command '%s' (try 'help')\n", serBuf);
+    }
+  }
+}
+
+// These callbacks run on the Bluedroid BTC task. LVGL is NOT thread-safe:
+// touching widgets here raced the loop task's lv_timer_handler / screen
+// deletes and corrupted LVGL's event list (LoadProhibited panic in
+// lv_event_mark_deleted when a phone connected while the user navigated).
+// So they only flip flags; loop() applies the UI side (linkUiPending).
+volatile bool linkUiPending = false;
 
 class SrvCallbacks : public BLEServerCallbacks {
   void onConnect(BLEServer* s) override {
     appConnected = true;
-    ui::setSyncWait(false);
+    linkUiPending = true;
     Serial.println("App connected (demo paused).");
   }
   void onConnect(BLEServer* s, esp_ble_gatts_cb_param_t* param) override {
@@ -882,8 +1036,7 @@ class SrvCallbacks : public BLEServerCallbacks {
   }
   void onDisconnect(BLEServer* s) override {
     appConnected = false;
-    pet.clearLook(millis() / 1000.0f);
-    ui::setSyncWait(true);
+    linkUiPending = true;     // loop: spinner, status, clearLook
     dcaNudgePending = true;   // overdue nudge may apply again offline
     s->getAdvertising()->start();    // keep advertising for the next connection
     Serial.println("App disconnected (demo resumed).");
@@ -907,6 +1060,14 @@ void setupBLE(bool wipeBonds) {
   pSecurity->setKeySize(16);
   pSecurity->setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
   pSecurity->setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
+  // Requesting MITM is not enough: a peer that advertises NoInputNoOutput
+  // still negotiates Just Works and gets an encrypted (but unauthenticated)
+  // link — enough to satisfy *_ENCRYPTED permissions and push Wi-Fi
+  // credentials or commands without ever seeing the on-screen passkey.
+  // Refuse any pairing weaker than the requested SC+MITM+bond mode.
+  uint8_t onlySpecified = ESP_BLE_ONLY_ACCEPT_SPECIFIED_AUTH_ENABLE;
+  esp_ble_gap_set_security_param(ESP_BLE_SM_ONLY_ACCEPT_SPECIFIED_SEC_AUTH,
+                                 &onlySpecified, sizeof(onlySpecified));
 
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new SrvCallbacks());
@@ -921,16 +1082,18 @@ void setupBLE(bool wipeBonds) {
                                              // or those packets are dropped
   );
   pCharacteristic->setCallbacks(new CmdCallbacks());
-  // Encrypted reads + writes on the STATE characteristic too: pairing (the
-  // passkey) is then required on first contact — the phone initiates it on
-  // the first state read/subscribe instead of only when provisioning Wi-Fi.
-  // Base READ/WRITE bits included per the proven provisioning-char pattern;
-  // the 2-byte CCCD descriptor below keeps default (unencrypted) perms, so
-  // enabling notifications after bonding still works.
+  // Authenticated (MITM / passkey) encryption on reads + writes of the STATE
+  // characteristic: pairing (the passkey) is then required on first contact
+  // — the phone initiates it on the first state read/subscribe. The plain
+  // ENCRYPTED bits accepted a Just Works link; ENC_MITM does not. The base
+  // READ/WRITE bits are kept per the proven provisioning-char pattern (the
+  // stack still enforces the strongest requirement present). The 2-byte
+  // CCCD descriptor below keeps default perms so enabling notifications
+  // after bonding still works.
   pCharacteristic->setAccessPermissions(ESP_GATT_PERM_READ |
-                                        ESP_GATT_PERM_READ_ENCRYPTED |
+                                        ESP_GATT_PERM_READ_ENC_MITM |
                                         ESP_GATT_PERM_WRITE |
-                                        ESP_GATT_PERM_WRITE_ENCRYPTED);
+                                        ESP_GATT_PERM_WRITE_ENC_MITM);
   // CCCD (0x2902) as a plain 2-byte descriptor: BLE2902() allocates the
   // default ESP_GATT_MAX_ATTR_LEN (600 B) for a value that is only ever 2
   // bytes, and that oversized malloc is what starved on a full heap.
@@ -940,15 +1103,16 @@ void setupBLE(bool wipeBonds) {
   pCharacteristic->addDescriptor(cccd);
   pCharacteristic->setValue("egg:0:0:0:0:50");
 
-  // Wi-Fi provisioning: encrypted writes only — the stack rejects writes on
-  // an unpaired link, which is what forces the passkey pairing first.
+  // Wi-Fi provisioning: authenticated (passkey) encrypted writes only — the
+  // stack rejects writes on an unpaired or Just Works link, which is what
+  // forces the passkey pairing first.
   BLECharacteristic* pProvChar = pService->createCharacteristic(
       PROV_CHARACTERISTIC_UUID,
       BLECharacteristic::PROPERTY_WRITE |
       BLECharacteristic::PROPERTY_WRITE_NR
   );
   pProvChar->setAccessPermissions(ESP_GATT_PERM_WRITE |
-                                  ESP_GATT_PERM_WRITE_ENCRYPTED);
+                                  ESP_GATT_PERM_WRITE_ENC_MITM);
   pProvChar->setCallbacks(new ProvCallbacks());
   pService->start();
 
@@ -967,7 +1131,7 @@ void setupBLE(bool wipeBonds) {
 // that touch BLE/pet state, registered with ui::begin() in setup().
 // ---------------------------------------------------------------------------
 
-// Reaction cycle for BTN1 double-press (pet screen)
+// Reaction cycle for the menu's Play row.
 const std::array<PetReaction, 4> REACT_CYCLE = {
   PetReaction::REACT_JUMP, PetReaction::REACT_SPIN,
   PetReaction::REACT_GLOW, PetReaction::REACT_DANCE
@@ -1054,6 +1218,32 @@ void actionCycleBackdrop() {
 
 // --- parental lock (menu "Parental" row + lock screen callbacks) -------------
 
+// Brute-force throttle: a 4-digit code is only 10,000 guesses. The first
+// PIN_FREE_TRIES wrong codes are free; every further miss locks the pad for
+// 30 s, doubling per miss up to 15 min. The failure count lives in NVS
+// ("pinfail"), so rebooting does not reset it — the lockout re-arms at boot.
+constexpr uint8_t  PIN_FREE_TRIES = 5;
+constexpr uint32_t PIN_LOCKOUT_BASE_MS = 30000;
+constexpr uint32_t PIN_LOCKOUT_MAX_MS = 15UL * 60UL * 1000UL;
+uint8_t  pinFails = 0;
+uint32_t pinLockoutUntil = 0;   // millis(); 0 = none
+
+void pinArmLockout() {
+  if (pinFails < PIN_FREE_TRIES) { pinLockoutUntil = 0; return; }
+  uint8_t over = pinFails - PIN_FREE_TRIES;
+  uint32_t ms = over >= 5 ? PIN_LOCKOUT_MAX_MS : PIN_LOCKOUT_BASE_MS << over;
+  if (ms > PIN_LOCKOUT_MAX_MS) ms = PIN_LOCKOUT_MAX_MS;
+  pinLockoutUntil = millis() + ms;
+  if (pinLockoutUntil == 0) pinLockoutUntil = 1;
+}
+
+uint32_t pinLockoutRemainingMs() {
+  if (pinLockoutUntil == 0) return 0;
+  int32_t left = static_cast<int32_t>(pinLockoutUntil - millis());
+  if (left <= 0) { pinLockoutUntil = 0; return 0; }
+  return static_cast<uint32_t>(left);
+}
+
 // The row opens the code pad in the right mode: no code stored -> set one
 // (enter twice); code stored -> enter it to remove.
 void actionParentalLock() {
@@ -1061,15 +1251,41 @@ void actionParentalLock() {
 }
 
 bool actionPinCheck(uint16_t pin) {
-  return pinSet && pin == pinCode;
+  if (!pinSet) return false;
+  if (pinLockoutRemainingMs() > 0) return false;   // UI shows the wait
+  if (pin == pinCode) {
+    if (pinFails) {
+      pinFails = 0;
+      prefs.begin("fina", false);
+      prefs.putUChar("pinfail", 0);
+      prefs.end();
+    }
+    return true;
+  }
+  // Wrong code: count it (persisted, so a power cycle doesn't reset the
+  // budget) and, past the free tries, back off exponentially.
+  if (pinFails < 255) pinFails++;
+  prefs.begin("fina", false);
+  prefs.putUChar("pinfail", pinFails);
+  prefs.end();
+  pinArmLockout();
+  Serial.printf("Parental: wrong code (%u failed)\n", pinFails);
+  return false;
+}
+
+uint32_t actionPinLockoutMs() {
+  return pinLockoutRemainingMs();
 }
 
 void actionPinStore(uint16_t pin) {
   pinCode = pin;
   pinSet = true;
+  pinFails = 0;
+  pinLockoutUntil = 0;
   prefs.begin("fina", false);
   prefs.putUShort("pin", pinCode);
   prefs.putBool("pinset", true);
+  prefs.putUChar("pinfail", 0);
   prefs.end();
   ui::setMenuLock("on");
   Serial.println("Parental: code set");
@@ -1078,29 +1294,18 @@ void actionPinStore(uint16_t pin) {
 void actionPinClear() {
   pinSet = false;
   pinCode = 0;
+  pinFails = 0;
+  pinLockoutUntil = 0;
   prefs.begin("fina", false);
   prefs.putBool("pinset", false);
+  prefs.putUChar("pinfail", 0);
   prefs.end();
   ui::setMenuLock("off");
   Serial.println("Parental: code removed");
 }
 
-// Menu "Open DCA": ask the app to open its DCA wizard/sheet.
-void actionOpenDca() {
-  if (appConnected) {
-    pCharacteristic->setValue("dca:req");
-    pCharacteristic->notify();
-    blePushState(pet.state());
-    ui::enqueueToast("opening DCA...");
-    Serial.println("Menu: DCA open requested from app");
-  } else {
-    ui::enqueueToast("connect the app");
-    Serial.println("Menu: DCA open requested (no app connected)");
-  }
-}
-
-// Detail double-press: pause/resume a plan. Optimistic local toggle (the
-// app rewrites the whole table back, reconciling), then dca:pause:<slot>.
+// Detail confirm: pause/resume a plan. Optimistic local toggle (the app
+// rewrites the whole table back, reconciling), then dca:pause:<slot>.
 void actionTogglePause(uint8_t slot) {
   if (slot >= dcaCount) return;
   if (!appConnected) {
@@ -1235,7 +1440,9 @@ const char* wifiReasonStr(int r) {
     case 3:   return "AUTH_LEAVE";
     case 4:   return "ASSOC_EXPIRE";
     case 5:   return "ASSOC_TOOMANY";
+    case 8:   return "ASSOC_LEAVE";
     case 15:  return "4WAY_HANDSHAKE_TIMEOUT (wrong password?)";
+    case 39:  return "TIMEOUT";
     case 201: return "NO_AP_FOUND (SSID not found)";
     case 202: return "AUTH_FAIL";
     case 204: return "HANDSHAKE_TIMEOUT";
@@ -1244,6 +1451,9 @@ const char* wifiReasonStr(int r) {
   }
 }
 
+volatile bool wifiGotIpPending = false;    // event -> loop: start NTP, icon, notify
+volatile bool ntpSyncedPending = false;    // SNTP callback -> loop: clock is real
+
 void hookWifiEvents() {
   if (wifiEventsHooked) return;
   wifiEventsHooked = true;
@@ -1251,10 +1461,25 @@ void hookWifiEvents() {
     lastDisconnectReason = info.wifi_sta_disconnected.reason;
     Serial.printf("WiFi: STA disconnected, reason=%d (%s)\n",
                   lastDisconnectReason, wifiReasonStr(lastDisconnectReason));
+    Serial0.printf("WiFi: disconnected reason=%d (%s)\n",
+                   lastDisconnectReason, wifiReasonStr(lastDisconnectReason));
     // Runs on the Wi-Fi event task: just flag it, loop() updates the icon.
     wifiOnlineState = false;
     wifiOnlinePending = true;
   }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+  // The boot join is non-blocking, so nothing else notices when it lands:
+  // without this the icon stayed "offline" until the first poll (60 s) and
+  // NTP never started, leaving the streak/countdowns on "--".
+  WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t) {
+    wifiOnlineState = true;
+    wifiOnlinePending = true;
+    wifiGotIpPending = true;
+  }, ARDUINO_EVENT_WIFI_STA_GOT_IP);
+  // SNTP completion (lwIP task): the only reliable "clock is real" signal
+  // for syncs that land after the short blocking waits gave up.
+  sntp_set_time_sync_notification_cb([](struct timeval*) {
+    ntpSyncedPending = true;
+  });
 }
 
 // wifi:fail code for the current state (called after a failed attempt).
@@ -1275,13 +1500,26 @@ const char* wifiFailCode() {
 bool wifiBootOffline = false;   // set when the boot attempt fails/skips
 bool wifiWasUp = false;         // link edge detector (rejoin notify)
 volatile bool wifiNotifyPending = false;   // task -> loop: send wifi:ok
+SemaphoreHandle_t wifiJoinMutex = xSemaphoreCreateMutex();
 
-void wifiRejoin() {
+void wifiRejoinUnlocked() {
   if (!wifiSsid[0]) return;   // no SSID configured: stay fully off Wi-Fi
   hookWifiEvents();
   lastDisconnectReason = 0;
   WiFi.mode(WIFI_STA);
+  // Channels 12-13: the ESP32's default regulatory domain only scans 1-11, so
+  // a mesh that auto-hops its 2.4 GHz band up there becomes invisible and
+  // every join reports reason=201 (NO_AP_FOUND). Pin a 1-13 domain.
+  static bool countrySet = false;
+  if (!countrySet) {
+    countrySet = true;
+    wifi_country_t country = {"01", 1, 13, WIFI_COUNTRY_POLICY_MANUAL};
+    esp_wifi_set_country(&country);
+  }
   wl_status_t st = WiFi.begin(wifiSsid, wifiPass);
+  // NB: esp_wifi_set_ps(WIFI_PS_NONE) here would ABORT the chip — the
+  // coexistence config mandates modem sleep while Wi-Fi + BLE are both on.
+  Serial0.printf("WiFi: begin status=%d\n", static_cast<int>(st));
   if (st == WL_NO_SHIELD) {   // driver not initialized / wedged
     Serial.println("WiFi: STA enable failed, full radio re-init");
     WiFi.mode(WIFI_OFF);
@@ -1289,6 +1527,12 @@ void wifiRejoin() {
     WiFi.mode(WIFI_STA);
     WiFi.begin(wifiSsid, wifiPass);
   }
+}
+
+void wifiRejoin() {
+  xSemaphoreTake(wifiJoinMutex, portMAX_DELAY);
+  wifiRejoinUnlocked();
+  xSemaphoreGive(wifiJoinMutex);
 }
 
 // Link edge detector, called from the poll tasks' connected branches: on a
@@ -1316,13 +1560,24 @@ bool setupWiFiTime() {
     wifiBootOffline = true;
     return false;
   }
-  wifiRejoin();
+
+  // A background poll must not call WiFi.begin() halfway through a user's
+  // provisioning join and restart the WPA handshake.
+  xSemaphoreTake(wifiJoinMutex, portMAX_DELAY);
+  wifiRejoinUnlocked();
   Serial.print("WiFi connecting");
+
+  // Chunked waits pump LVGL so the join spinner (showWifiSetup) animates
+  // through what is otherwise a fully blocked loop task.
+  auto joinWait = [](uint32_t sliceMs) {
+    const uint32_t t0 = millis();
+    while (millis() - t0 < sliceMs) { ui::pump(); delay(20); }
+  };
 
   // Non-blocking-ish: give up after 10 s so the pet still runs offline.
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
-    delay(250);
+    joinWait(250);
     Serial.print(".");
   }
 
@@ -1330,12 +1585,68 @@ bool setupWiFiTime() {
     Serial.printf("\nWiFi: join failed, status=%d reason=%d (%s)\n",
                   WiFi.status(), lastDisconnectReason,
                   wifiReasonStr(lastDisconnectReason));
+    Serial0.printf("WiFi: join failed status=%d reason=%d (%s)\n",
+                   WiFi.status(), lastDisconnectReason,
+                   wifiReasonStr(lastDisconnectReason));
     // disconnect(false): drop the association but keep the driver UP —
     // disconnect(true)/WIFI_OFF wedge the deinit on this stack and every
     // later esp_wifi_init fails (NO_MEM), killing standalone sync.
     WiFi.disconnect(false);
-    wifiBootOffline = true;
-    return false;
+    int16_t apCount = WiFi.scanNetworks();
+    bool targetSeen = false;
+    int strongestRssi = -1000;
+    int32_t strongestChannel = 0;
+    uint8_t strongestBssid[6] = {};
+    for (int16_t i = 0; i < apCount; i++) {
+      if (strcmp(WiFi.SSID(i).c_str(), wifiSsid) != 0) continue;
+      targetSeen = true;
+      int rssi = WiFi.RSSI(i);
+      Serial0.printf("WiFi: target seen channel=%d rssi=%d encryption=%d\n",
+                     WiFi.channel(i), rssi,
+                     static_cast<int>(WiFi.encryptionType(i)));
+      if (rssi > strongestRssi) {
+        strongestRssi = rssi;
+        strongestChannel = WiFi.channel(i);
+        memcpy(strongestBssid, WiFi.BSSID(i), sizeof(strongestBssid));
+      }
+    }
+    Serial0.printf("WiFi: scan aps=%d target_seen=%d heap=%u\n",
+                   apCount, targetSeen ? 1 : 0, ESP.getFreeHeap());
+    WiFi.scanDelete();
+
+    // Mesh/multi-AP networks can leave the radio roaming through weak or
+    // busy nodes until the WPA handshake expires. Retry the strongest AP.
+    if (targetSeen) {
+      lastDisconnectReason = 0;
+      WiFi.mode(WIFI_STA);
+      wl_status_t directed = WiFi.begin(wifiSsid, wifiPass, strongestChannel,
+                                        strongestBssid);
+      Serial0.printf("WiFi: directed begin channel=%d status=%d\n",
+                     static_cast<int>(strongestChannel), static_cast<int>(directed));
+      start = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - start < 8000) joinWait(250);
+    }
+    // Last resort: some mesh APs ignore a first association burst while
+    // band-steering. Drop the link, pause, and try once more without the
+    // BSSID lock so any node of the mesh can answer.
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial0.println("WiFi: third round (no BSSID lock)");
+      WiFi.disconnect(false);
+      delay(500);
+      lastDisconnectReason = 0;
+      WiFi.begin(wifiSsid, wifiPass);
+      start = millis();
+      while (WiFi.status() != WL_CONNECTED && millis() - start < 8000) joinWait(250);
+    }
+    if (WiFi.status() != WL_CONNECTED) {
+      Serial0.printf("WiFi: final join failure status=%d reason=%d (%s)\n",
+                     WiFi.status(), lastDisconnectReason,
+                     wifiReasonStr(lastDisconnectReason));
+      WiFi.disconnect(false);
+      wifiBootOffline = true;
+      xSemaphoreGive(wifiJoinMutex);
+      return false;
+    }
   }
 
   Serial.printf("\nWiFi connected, IP=%s\n", WiFi.localIP().toString().c_str());
@@ -1352,6 +1663,7 @@ bool setupWiFiTime() {
     }
   }
   Serial.println(timeSynced ? "Time synced." : "NTP sync timed out.");
+  xSemaphoreGive(wifiJoinMutex);
   return timeSynced;
 }
 
@@ -1367,7 +1679,9 @@ void loadStats() {
   serverLinked = prefs.getUChar("srvlink", 0) != 0;
   pinSet = prefs.getBool("pinset", false);
   pinCode = prefs.getUShort("pin", 0);
+  pinFails = prefs.getUChar("pinfail", 0);
   prefs.end();
+  if (pinSet) pinArmLockout();   // a reboot must not reset the guess budget
 }
 
 // Recalculate the streak from the local date. Call after NTP sync and
@@ -1517,6 +1831,9 @@ void dcaPollTask(void*) {
   bool first = true;
   uint32_t lastPoll = millis();
   for (;;) {
+    // OTA manifest check (menu row / BLE ota:start): runs here, off the
+    // loop task, so the UI keeps animating and accepting input meanwhile.
+    if (otaCheckRequested) otaCheckFromTask();
     if (syncRequested) {
       syncRequested = false;
       if (!appConnected) {
@@ -1568,8 +1885,10 @@ void dcaPollTask(void*) {
 // while the stock market is closed): one batched call for SOL + every plan.
 // Unknown xStock tickers fall back to the issuer API
 // (/public/assets/<symbol>/price-data -> {"quote": <number|null>}).
-// HTTPS with an unverified TLS context: the data is public and read-only.
-// Failures keep the last cached price.
+// HTTPS validated against each provider's pinned roots (price_root_ca.h):
+// the data is public, but it drives the portfolio values on screen, so an
+// unverified context let any on-path attacker fake them. Failures keep the
+// last cached price.
 // solUsdRate / priceDirty are declared with the plan storage above.
 // ---------------------------------------------------------------------------
 
@@ -1604,18 +1923,24 @@ const char* mintFor(const char* ticker) {
 // One retry: the first TLS/DNS attempt occasionally fails on fresh Wi-Fi.
 // `auth` (optional) is sent as the Authorization header value; `codeOut`
 // (optional) receives the last HTTP status. A 401 is never retried.
-// `rootCa` (optional) pins the trust anchor: pass it for any request that
-// carries credentials; without it the TLS context is unverified, which is
-// only acceptable for public read-only data (the price feeds).
+// `rootCa` pins the trust anchor and is REQUIRED: every request is
+// validated (never setInsecure). A null CA is a programming error and the
+// request is refused rather than silently downgraded.
 size_t httpGetJson(const char* url, char* buf, size_t len,
-                   const char* auth = nullptr, int* codeOut = nullptr,
-                   const char* rootCa = nullptr) {
+                   const char* auth, int* codeOut, const char* rootCa) {
+  if (codeOut) *codeOut = 0;
+  buf[0] = 0;
+  if (!rootCa || strncmp(url, "https://", 8) != 0) return 0;
   for (int attempt = 0; attempt < 2; attempt++) {
     WiFiClientSecure client;           // task-local: fresh TLS session
-    if (rootCa) client.setCACert(rootCa);
-    else        client.setInsecure();  // public read-only data only
+    client.setCACert(rootCa);
+    client.setHandshakeTimeout(10);    // seconds; a stalled AP must not hang the task
     HTTPClient http;
     http.setTimeout(5000);
+    http.setReuse(false);
+    // Never follow redirects: a 3xx could bounce a Bearer token or the
+    // firmware URL to another host.
+    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
     if (!http.begin(client, url)) return 0;
     if (auth) http.addHeader("Authorization", auth);
     int code = http.GET();
@@ -1682,7 +2007,7 @@ void fetchPrices() {
   }
 
   static char body[3072];   // static: keep the poll task stack small
-  if (httpGetJson(url, body, sizeof(body)) > 0) {
+  if (httpGetJson(url, body, sizeof(body), nullptr, nullptr, kJupiterRootCa) > 0) {
     const char* sol = strstr(body, SOL_MINT);
     float rate = sol ? jsonNumber(sol, "\"usdPrice\":") : 0.0f;
     if (rate > 0.0f) {
@@ -1715,7 +2040,8 @@ void fetchPrices() {
     snprintf(qurl, sizeof(qurl),
              "https://api.xstocks.fi/api/v2/public/assets/%s/price-data", sym);
     char qbody[192];
-    if (httpGetJson(qurl, qbody, sizeof(qbody)) == 0) continue;
+    if (httpGetJson(qurl, qbody, sizeof(qbody), nullptr, nullptr, kXStocksRootCa) == 0)
+      continue;
     float quote = jsonNumber(qbody, "\"quote\":");
     if (quote > 0.0f) {
       plans[i].priceUsd = quote;
@@ -1933,72 +2259,91 @@ struct OtaManifest {
   uint32_t size;
 };
 OtaManifest otaManifest;
-volatile bool otaCheckRequested = false;   // menu/BLE -> loop task handoff
-uint32_t otaCheckAt = 0;                   // lets the "checking" overlay render first
+volatile bool otaCheckBusy = false;        // a check is in flight (debounce)
+
+// Check outcome, produced on the poll task and applied on the loop task
+// (UI + BLE notify are loop-only). otaResultPending is set LAST, after the
+// manifest/status fields are written.
+enum class OtaResult : uint8_t { Current, Available, Battery, Wifi, Http, Manifest };
+volatile OtaResult otaResult = OtaResult::Current;
+volatile bool otaResultPending = false;
+volatile bool otaCheckingNotify = false;   // poll task -> loop: ota:status:checking
 
 void actionCheckUpdate() {
-  otaCheckAt = millis();
+  if (otaCheckBusy || otaCheckRequested) {
+    ui::enqueueToast("already checking...");
+    return;
+  }
   otaCheckRequested = true;
-  ui::showOverlay("checking for update...", 10000);
+  ui::showOverlay("Checking for update...", 20000);
   Serial.println("OTA: check requested");
 }
 
-void runOtaCheck() {
-  otaCheckRequested = false;
-
+// Runs on the poll task (TLS-sized 8 KB stack): the old loop-task version
+// froze buttons, BLE commands and every animation for up to ~20 s while it
+// joined Wi-Fi and fetched the manifest. No UI/BLE calls here.
+OtaResult runOtaCheck() {
   // Battery guard: a brownout mid-flash is what the second slot exists for,
   // but don't invite it. (batteryPercentNow returns 100 on USB power.)
   int batt = batteryPercentNow();
   if (batt < OTA_MIN_BATTERY_PCT) {
-    ui::showOverlay("battery too low", 2500);
-    bleNotifyOta("error:battery");
     Serial.printf("OTA: refused, battery %d%% (need %d%%)\n", batt, OTA_MIN_BATTERY_PCT);
-    return;
+    return OtaResult::Battery;
   }
-  bleNotifyOta("checking");
+  otaCheckingNotify = true;
 
-  if (WiFi.status() != WL_CONNECTED) {
-    setupWiFiTime();   // join + NTP, blocks up to ~10 s — user-triggered
+  if (WiFi.status() != WL_CONNECTED && wifiSsid[0]) {
+    wifiRejoin();   // non-blocking begin; wait here (this task only)
+    uint32_t t0 = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - t0 < 15000)
+      vTaskDelay(pdMS_TO_TICKS(250));
   }
   if (WiFi.status() != WL_CONNECTED) {
-    ui::showOverlay("no wifi", 2500);
-    bleNotifyOta("error:wifi");
     Serial.println("OTA: no wifi, aborting check");
-    return;
+    return OtaResult::Wifi;
   }
-  if (!timeSynced) {
-    // Pinned-CA validation needs a plausible clock (same guard as the sync).
+  // Pinned-CA validation needs a plausible clock (cert validity window).
+  if (time(nullptr) < 1700000000) {
     configTzTime(TZ_POSIX, "pool.ntp.org", "time.nist.gov");
-    struct tm ti;
-    for (int i = 0; i < 10 && !timeSynced; i++)
-      if (getLocalTime(&ti, 200) && ti.tm_year > 120) timeSynced = true;
+    uint32_t t0 = millis();
+    while (time(nullptr) < 1700000000 && millis() - t0 < 8000)
+      vTaskDelay(pdMS_TO_TICKS(200));
+    if (time(nullptr) < 1700000000) {
+      Serial.println("OTA: clock not synced, TLS would fail");
+      return OtaResult::Wifi;
+    }
   }
 
   char url[256];
   snprintf(url, sizeof(url), "%s?env=%s&v=%s", FIRMWARE_MANIFEST_URL, OTA_ENV, FW_VERSION);
-  static char body[768];   // static: keep the loop task stack small
+  static char body[768];   // static: keep the task stack small
   int code = 0;
   // Anonymous GET, but over the pinned ISRG Root X1 path (never insecure).
   size_t n = httpGetJson(url, body, sizeof(body), nullptr, &code, kApiRootCa);
   if (code == HTTP_CODE_NO_CONTENT) {   // 204: device is current
-    ui::enqueueToast("up to date");
-    bleNotifyOta("current");
     Serial.printf("OTA: firmware %s is current\n", FW_VERSION);
-    return;
+    return OtaResult::Current;
   }
   if (n == 0) {
-    ui::showOverlay("update check failed", 2500);
-    bleNotifyOta("error:http");
     Serial.printf("OTA: manifest fetch failed (HTTP %d)\n", code);
-    return;
+    return OtaResult::Http;
   }
 
   char ver[16], furl[sizeof(otaManifest.url)], sha[65];
-  uint32_t size = static_cast<uint32_t>(jsonNumber(body, "\"size\":"));
+  double sizeD = static_cast<double>(jsonNumber(body, "\"size\":"));
   bool ok = jsonString(body, "\"version\":", ver, sizeof(ver)) &&
             jsonString(body, "\"url\":", furl, sizeof(furl)) &&
             jsonString(body, "\"sha256\":", sha, sizeof(sha)) &&
-            size > 0 && size <= OTA_SLOT_SIZE;
+            sizeD > 0.0 && sizeD <= static_cast<double>(OTA_SLOT_SIZE);
+  // The image must come over HTTPS (OTA mode pins the CA; a plain-http url
+  // would be refused there anyway — reject it up front).
+  if (ok && strncmp(furl, "https://", 8) != 0) ok = false;
+  // Version is shown on screen and sent over BLE: digits/dots only.
+  if (ok) {
+    if (!ver[0]) ok = false;
+    for (const char* v = ver; ok && *v; v++)
+      if (!isdigit(static_cast<uint8_t>(*v)) && *v != '.') ok = false;
+  }
   if (ok) {
     // sha256 must be exactly 64 hex chars — anything else is a
     // placeholder/corrupt manifest; never schedule an unverifiable image.
@@ -2007,27 +2352,63 @@ void runOtaCheck() {
       if (!isxdigit(static_cast<uint8_t>(sha[i]))) { ok = false; break; }
   }
   if (!ok) {
-    ui::showOverlay("bad manifest", 2500);
-    bleNotifyOta("error:manifest");
     Serial.println("OTA: manifest rejected (bad version/url/sha256/size)");
-    return;
+    return OtaResult::Manifest;
   }
-  if (strcmp(ver, FW_VERSION) == 0) {   // server sent 200 for the same build
-    ui::enqueueToast("up to date");
-    bleNotifyOta("current");
-    return;
-  }
+  if (strcmp(ver, FW_VERSION) == 0) return OtaResult::Current;   // 200 for the same build
 
   strlcpy(otaManifest.version, ver, sizeof(otaManifest.version));
   strlcpy(otaManifest.url, furl, sizeof(otaManifest.url));
   strlcpy(otaManifest.sha256, sha, sizeof(otaManifest.sha256));
-  otaManifest.size = size;
-  char st[32];
-  snprintf(st, sizeof(st), "available:%s", ver);
-  bleNotifyOta(st);
+  otaManifest.size = static_cast<uint32_t>(sizeD);
   Serial.printf("OTA: update available: %s (%lu bytes)\n",
-                ver, static_cast<unsigned long>(size));
-  ui::showOtaConfirm(ver, size);
+                ver, static_cast<unsigned long>(otaManifest.size));
+  return OtaResult::Available;
+}
+
+// Poll-task wrapper: run the check, hand the result to the loop.
+void otaCheckFromTask() {
+  otaCheckRequested = false;
+  otaCheckBusy = true;
+  OtaResult r = runOtaCheck();
+  otaResult = r;
+  otaResultPending = true;
+  otaCheckBusy = false;
+}
+
+// Loop task: show the outcome + notify the app.
+void applyOtaResult() {
+  otaResultPending = false;
+  ui::hideOverlay();   // retire the "checking" overlay
+  switch (otaResult) {
+    case OtaResult::Current:
+      ui::enqueueToast("up to date");
+      bleNotifyOta("current");
+      break;
+    case OtaResult::Battery:
+      ui::showOverlay("Battery too low\ncharge to 40% first", 3000);
+      bleNotifyOta("error:battery");
+      break;
+    case OtaResult::Wifi:
+      ui::showOverlay("No Wi-Fi\nset it up in the app", 3000);
+      bleNotifyOta("error:wifi");
+      break;
+    case OtaResult::Http:
+      ui::showOverlay("Update check failed\ntry again later", 3000);
+      bleNotifyOta("error:http");
+      break;
+    case OtaResult::Manifest:
+      ui::showOverlay("Update unavailable\ntry again later", 3000);
+      bleNotifyOta("error:manifest");
+      break;
+    case OtaResult::Available: {
+      char st[32];
+      snprintf(st, sizeof(st), "available:%s", otaManifest.version);
+      bleNotifyOta(st);
+      ui::showOtaConfirm(otaManifest.version, otaManifest.size);
+      break;
+    }
+  }
 }
 
 // Confirm screen, push: notify the app, stash the manifest in NVS and
@@ -2036,6 +2417,8 @@ void actionOtaConfirmed() {
   char st[32];
   snprintf(st, sizeof(st), "scheduled:%s", otaManifest.version);
   bleNotifyOta(st);
+  ui::showOverlay("Restarting to update...", 5000);
+  for (int i = 0; i < 10; i++) { ui::pump(); delay(20); }   // let it render
   ota::schedule(otaManifest.url, otaManifest.sha256, otaManifest.size,
                 otaManifest.version);   // never returns
 }
@@ -2054,9 +2437,33 @@ constexpr uint32_t FRAME_MS  = 33;      // ~30 fps target
 constexpr uint32_t EVOLVE_MS = 8000;    // lifecycle stage duration
 constexpr uint32_t STREAK_CHECK_MS = 60000;  // re-check the day every minute
 
+// AFK nap (ui::afkActive): scene slows to a breathing cadence and the
+// backlight drops — the panel backlight is most of the battery budget.
+constexpr uint32_t AFK_FRAME_MS = 400;
+
+#ifndef AFK_BL_DUTY
+#define AFK_BL_DUTY 28          // ~11% of full brightness (8-bit duty)
+#endif
+
 uint32_t lastFrame = 0;
 uint32_t lastEvolve = 0;
 uint32_t lastStreakCheck = 0;
+
+// Backlight on a PWM channel so AFK can dim instead of only on/off.
+// Channel 6: the buzzer owns ledc channel 0 (feedback.cpp).
+constexpr uint8_t BL_LEDC_CH = 6;
+
+void backlightSet(uint8_t duty) {
+#ifdef TFT_BL
+  static bool pwmInit = false;
+  if (!pwmInit) {
+    ledcSetup(BL_LEDC_CH, 5000, 8);
+    ledcAttachPin(TFT_BL, BL_LEDC_CH);
+    pwmInit = true;
+  }
+  ledcWrite(BL_LEDC_CH, TFT_BACKLIGHT_ON ? duty : 255 - duty);
+#endif
+}
 
 void showSplash(uint32_t durationMs) {
   const uint16_t navy = tft.color565(0x0B, 0x28, 0x58);
@@ -2097,18 +2504,54 @@ void showBootStatus(const char* msg) {
   tft.drawString(msg, tft.width() / 2, tft.height() - 16);
 }
 
+// --- OTA rollback (Tier 2, OTA.md §5) ----------------------------------------
+// The core's bootloader is built with CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE,
+// but initArduino() marks a freshly flashed OTA image valid before setup()
+// even runs — so an image that boot-loops or wedges was never rolled back.
+// Claiming verification here keeps the new image PENDING_VERIFY until the
+// self-test below passes; any reset before that (crash, watchdog, brownout)
+// makes the bootloader fall back to the previous slot.
+constexpr uint32_t OTA_SELFTEST_MS = 30000;   // healthy uptime that counts as "works"
+bool otaVerifyPending = false;
+
+void otaSelfTestBegin() {
+  const esp_partition_t* running = esp_ota_get_running_partition();
+  esp_ota_img_states_t st;
+  otaVerifyPending = running &&
+      esp_ota_get_state_partition(running, &st) == ESP_OK &&
+      st == ESP_OTA_IMG_PENDING_VERIFY;
+  if (otaVerifyPending)
+    Serial.printf("OTA: new image on %s pending self-test (%lu s)\n", running->label,
+                  static_cast<unsigned long>(OTA_SELFTEST_MS / 1000));
+}
+
+// Called every loop pass: the UI is up, the loop is spinning and the heap
+// is sane for OTA_SELFTEST_MS -> keep this image.
+void otaSelfTestPoll() {
+  if (!otaVerifyPending || millis() < OTA_SELFTEST_MS) return;
+  if (ESP.getFreeHeap() < 8 * 1024) return;   // starving: let the WDT decide
+  otaVerifyPending = false;
+  esp_err_t err = esp_ota_mark_app_valid_cancel_rollback();
+  Serial.printf("OTA: self-test passed, image marked valid (%s)\n", esp_err_to_name(err));
+}
+
 } // namespace
+
+// Weak hook in the core (esp32-hal-misc.c, C linkage): true = the sketch
+// validates the image itself (see otaSelfTestPoll).
+extern "C" bool verifyRollbackLater() { return true; }
 
 void setup() {
   Serial.begin(115200);
+  Serial0.begin(115200);
   delay(200);
   Serial.println("\nfinagotchi_firmware starting...");
+  Serial0.println("UART0 Wi-Fi diagnostics ready");
 
   tft.init();
 
 #ifdef TFT_BL
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
+  backlightSet(255);   // full brightness (PWM, so AFK can dim it later)
 #endif
 
   tft.setRotation(0);
@@ -2118,22 +2561,24 @@ void setup() {
   // TFT_eSPI + Wi-Fi only, so the TLS download gets the whole heap. Never
   // returns (every path ends in ESP.restart()).
   if (ota::pending()) ota::run(tft);
+  otaSelfTestBegin();
 
   showSplash(1500);
 
   loadStats();               // restore streak/points before BLE advertises them
   loadWiFiCreds();           // app-provisioned credentials override config.h
 
-  // Recovery chord: BOTH buttons held at boot -> erase stale BLE bonds from
-  // NVS (a phone holding a dead bond after a re-flash fails authentication
-  // silently and never shows a fresh passkey) AND clear the parental code
-  // (the only way back in when the code is forgotten).
-  bool wipeBonds = ui::bothButtonsHeld();
+  // Recovery: both breadboard buttons, or a 4 s crown hold on PCB v1.
+  // Erases stale BLE bonds and the parental code without requiring SW1.
+  bool wipeBonds = ui::recoveryRequested();
   if (wipeBonds) {
     pinSet = false;
     pinCode = 0;
+    pinFails = 0;
+    pinLockoutUntil = 0;
     prefs.begin("fina", false);
     prefs.putBool("pinset", false);
+    prefs.putUChar("pinfail", 0);
     prefs.end();
     showBootStatus("bonds + code erased");
     delay(1200);
@@ -2146,12 +2591,9 @@ void setup() {
   setupBLE(wipeBonds);
   Serial.printf("heap after BLE: %u free\n", ESP.getFreeHeap());
 
-  // Boot status is still drawn direct-to-TFT: LVGL takes over after Wi-Fi.
-  showBootStatus("WiFi...");
-  setupWiFiTime();
+  // Wi-Fi joins asynchronously below. A bad saved password must never hold
+  // startup on a blocking status screen before the pet and controls exist.
   updateStreakFromTime();    // may bump streak if a new day started
-  showBootStatus(timeSynced ? "Time synced" : "Offline mode");
-  delay(800);
 
   pet.begin(&tft, 88.0f);    // smaller pet, room for the stats bar
   pet.setState(PetState::PET_EGG, millis() / 1000.0f);
@@ -2159,17 +2601,20 @@ void setup() {
   // LVGL takes over the display: pet canvas + chrome widgets. Button
   // semantics that touch BLE/pet state stay here as callbacks.
   ui::Actions actions = { actionSyncNow, actionCycleReaction, actionFeedPet,
-                          actionCycleItem, actionCycleMood, actionOpenDca,
+                          actionCycleItem, actionCycleMood,
                           actionCycleBackdrop, actionTogglePause, actionCreatePlan,
                           actionParentalLock, actionPinCheck, actionPinStore,
                           actionPinClear, actionCheckUpdate, actionOtaConfirmed,
-                          actionOtaCancelled };
+                          actionOtaCancelled, actionPinLockoutMs };
   ui::begin(&tft, &pet, actions);
   ui::setSubStage(subStage);
   ui::setLocked(pinSet);                     // parental gate (NVS "fina"/"pinset")
   ui::setMenuLock(pinSet ? "on" : "off");
-  // Initial Wi-Fi glyph state (the boot attempt resolved before LVGL was up).
-  ui::setWifiOnline(WiFi.status() == WL_CONNECTED);
+  bool wifiUp = WiFi.status() == WL_CONNECTED;
+  ui::setMenuWifi(wifiUp ? "online" : (wifiSsid[0] ? "saved" : "not set"));
+  ui::setConnectStatus(wifiUp ? "online" : "waiting for app");
+  ui::setWifiOnline(wifiUp);
+  wifiRejoin();   // non-blocking: keep using the pet while Wi-Fi authenticates
 
   // Create-plan screen: offer the xStocks the device ships mints/logos for.
   static const char* createTickers[sizeof(XSTOCK_MINTS) / sizeof(XSTOCK_MINTS[0])];
@@ -2183,6 +2628,7 @@ void setup() {
 #endif
 
   setupBattery();
+  feedback::begin();          // PCB v1: buzzer GPIO17 + haptic GPIO18 (no-op off-PCB)
   Serial.printf("heap after UI: %u free, %u min-free\n",
                 ESP.getFreeHeap(), ESP.getMinFreeHeap());
   blePushState(pet.state());
@@ -2203,12 +2649,25 @@ void setup() {
   Serial.printf("heap after tasks: %u free\n", ESP.getFreeHeap());
 
   lastEvolve = millis();
+  feedback::chime();          // boot/wake two-tone (PCB v1 only)
+  if (WiFi.status() != WL_CONNECTED)
+    Serial.println("SER: offline — provision Wi-Fi over serial: "
+                   "'wifi:MySSID' <enter>, then the password <enter>");
   Serial.println("Pet running.");
 }
 
 void loop() {
   uint32_t nowMs = millis();
   float nowSec = nowMs / 1000.0f;
+
+  // AFK nap edges drive the backlight; the nap also slows the pet scene and
+  // adds a small loop idle below (backlight + SPI traffic dominate draw).
+  static bool afkWas = false;
+  const bool afkNow = ui::afkActive();
+  if (afkNow != afkWas) {
+    afkWas = afkNow;
+    backlightSet(afkNow ? AFK_BL_DUTY : 255);
+  }
 
   // Lightweight frame stats, off by default (build with -D UI_PERF_LOG=1):
   // every 10 s, average pet-render time per frame and LVGL time per pass.
@@ -2219,8 +2678,8 @@ void loop() {
 #endif
 
   // Pet scene renders at the FRAME_MS cadence; LVGL (buttons, timers,
-  // screen flush) runs every pass.
-  if (nowMs - lastFrame >= FRAME_MS) {
+  // screen flush) runs every pass. Napping: slow breathing only.
+  if (nowMs - lastFrame >= (afkNow ? AFK_FRAME_MS : FRAME_MS)) {
     lastFrame = nowMs;
     ui::renderPetFrame(nowSec);
 #if UI_PERF_LOG
@@ -2248,12 +2707,16 @@ void loop() {
   }
 #endif
 
+  otaSelfTestPoll();          // OTA rollback: confirm a new image once healthy
   updateBattery();
-  if (cmdPending) processCommand();
+  feedback::update();         // walk the beep/buzz pattern (non-blocking)
+  pollSerial();               // serial Wi-Fi provisioning (app-less setup)
+  if (cmdPending()) processCommand();
   if (provPending) processProvision();
   // OTA check (menu row / BLE ota:start): deferred ~50 ms so the "checking"
   // overlay renders before the blocking manifest fetch.
-  if (otaCheckRequested && millis() - otaCheckAt >= 50) runOtaCheck();
+  if (otaResultPending) applyOtaResult();
+  if (otaCheckingNotify) { otaCheckingNotify = false; bleNotifyOta("checking"); }
 
   // Task-side Wi-Fi rejoin -> wifi:ok notify (queued by noteWifiLink; all
   // BLE work happens on the loop task).
@@ -2262,10 +2725,51 @@ void loop() {
     bleNotifyWifi(true, nullptr);
   }
 
+  // BLE (dis)connect edges from the BTC task: UI + pet work happens here.
+  if (authPushPending) {
+    authPushPending = false;
+    blePushState(pet.state());
+  }
+  if (linkUiPending) {
+    linkUiPending = false;
+    bool up = appConnected;
+    ui::setSyncWait(!up);
+    ui::setConnectStatus(up ? "connected - share Wi-Fi" : "waiting for app");
+    if (!up) pet.clearLook(nowSec);
+  }
+
+  // Boot/background join landed (GOT_IP event): start NTP right away (the
+  // blocking setupWiFiTime path is no longer the only one that does) and
+  // tell the app once.
+  if (wifiGotIpPending) {
+    wifiGotIpPending = false;
+    configTzTime(TZ_POSIX, "pool.ntp.org", "time.nist.gov");
+    if (!wifiWasUp) {
+      wifiWasUp = true;
+      wifiBootOffline = false;
+      bleNotifyWifi(true, nullptr);
+    }
+    Serial.printf("WiFi: got IP %s, NTP started\n", WiFi.localIP().toString().c_str());
+  }
+  if (ntpSyncedPending) {
+    ntpSyncedPending = false;
+    if (time(nullptr) > 1700000000) {
+      bool first = !timeSynced;
+      timeSynced = true;
+      if (first) {
+        Serial.println("Time synced (SNTP).");
+        updateStreakFromTime();
+      }
+    }
+  }
+
   // Wi-Fi icon updates (queued by noteWifiLink / the WiFi event hook).
   if (wifiOnlinePending) {
     wifiOnlinePending = false;
     ui::setWifiOnline(wifiOnlineState);
+    ui::setMenuWifi(wifiOnlineState ? "online" : (wifiSsid[0] ? "saved" : "not set"));
+    ui::setConnectStatus(wifiOnlineState ? "online"
+                         : (appConnected ? "connected - share Wi-Fi" : "offline"));
   }
 
   // Pairing passkey panel rides over everything while pairing is pending.
@@ -2275,11 +2779,13 @@ void loop() {
   static bool passkeyShown = false;
   static uint32_t passkeyShownCode = 0;
   if (passkeyPending && (!passkeyShown || pairingPasskey != passkeyShownCode)) {
+    ui::setConnectStatus("pairing - enter code");
     ui::showPasskey(pairingPasskey);
     passkeyShownCode = pairingPasskey;
     passkeyShown = true;
   } else if (!passkeyPending && passkeyShown) {
     ui::hidePasskey();
+    ui::setConnectStatus(appConnected ? "connected - share Wi-Fi" : "waiting for app");
     passkeyShown = false;
   }
 
@@ -2358,4 +2864,6 @@ void loop() {
     lastStreakCheck = nowMs;
     updateStreakFromTime();
   }
+
+  if (afkNow) delay(4);   // idle the loop while napping (BLE runs on its own task)
 }

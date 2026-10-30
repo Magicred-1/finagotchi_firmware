@@ -25,18 +25,40 @@ void uiFmtCountdown(uint32_t nextBuyEpoch, uint32_t nowEpoch, char* buf, size_t 
              static_cast<long>(rem % 3600 / 60));
 }
 
+// Token quantity without scientific notation: "0.0045", "12.5", "1234",
+// "12.3k", "1.2M" — at most ~6 glyphs so it fits the card's sub line.
+void uiFmtQty(double q, char* buf, size_t n) {
+  if (q < 0.0) q = 0.0;
+  if (q >= 1e6)       snprintf(buf, n, "%.1fM", q / 1e6);
+  else if (q >= 1e4)  snprintf(buf, n, "%.1fk", q / 1e3);
+  else if (q >= 100)  snprintf(buf, n, "%.0f", q);
+  else if (q >= 1)    snprintf(buf, n, "%.2f", q);
+  else if (q > 0)     snprintf(buf, n, "%.4f", q);
+  else                strlcpy(buf, "0", n);
+  // Trim trailing zeros of a fractional value ("12.50" -> "12.5").
+  if (strchr(buf, '.') && !strpbrk(buf, "kM")) {
+    size_t l = strlen(buf);
+    while (l > 1 && buf[l - 1] == '0') buf[--l] = 0;
+    if (l > 0 && buf[l - 1] == '.') buf[--l] = 0;
+  }
+}
+
 // Plan amounts are USDC-denominated (shown as $); the SOL mode divides by
 // the SOL/USD rate and falls back to USD while the rate is unknown.
 void uiFmtAmount(const DcaPlan& p, char* buf, size_t n) {
-  if (g_ui.amountInSol && g_ui.solUsd > 0.0f)
-    snprintf(buf, n, "%.4g SOL", static_cast<double>(p.amountSol / g_ui.solUsd));
-  else
+  if (g_ui.amountInSol && g_ui.solUsd > 0.0f) {
+    char q[12];
+    uiFmtQty(static_cast<double>(p.amountSol / g_ui.solUsd), q, sizeof(q));
+    snprintf(buf, n, "%s SOL", q);
+  } else {
     snprintf(buf, n, "$%.2f", static_cast<double>(p.amountSol));
+  }
 }
 
 // USD money text: "$12.3k" for five figures and up, "$123.45" below.
 void uiFmtUsd(double usd, char* buf, size_t n) {
-  if (usd >= 10000.0) snprintf(buf, n, "$%.1fk", usd / 1000.0);
+  if (usd >= 1e6) snprintf(buf, n, "$%.2fM", usd / 1e6);
+  else if (usd >= 10000.0) snprintf(buf, n, "$%.1fk", usd / 1000.0);
   else snprintf(buf, n, "$%.2f", usd);
 }
 

@@ -7,6 +7,10 @@
 
 #include "ui_internal.h"
 
+#ifndef AFK_TIMEOUT_MS
+#define AFK_TIMEOUT_MS 60000   // idle time before the pet naps
+#endif
+
 UiState g_ui;
 
 namespace {
@@ -20,17 +24,20 @@ lv_timer_t* overlayTimer;
 lv_obj_t* passkeyBox;
 lv_obj_t* passkeyNum;
 
+lv_obj_t* wifiSetupBox;   // join progress: spinner + caption
+
 void overlayHide(lv_timer_t*) {
   lv_obj_set_hidden(overlayBox, true);
 }
 
 void overlayInit() {
   overlayBox = lv_obj_create(lv_layer_top());
-  lv_obj_set_size(overlayBox, 180, 48);
+  lv_obj_set_size(overlayBox, 188, 64);
   lv_obj_align(overlayBox, LV_ALIGN_CENTER, 0, 0);
   uiThemeDialog(overlayBox);
   lv_obj_set_style_pad_all(overlayBox, 4, 0);
   overlayLabel = lv_label_create(overlayBox);
+  uiThemeTextBounds(overlayLabel, 172, 52, true);
   lv_obj_set_style_text_color(overlayLabel, UI_COL_TEXT, 0);
   lv_obj_set_style_text_align(overlayLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_center(overlayLabel);
@@ -63,12 +70,80 @@ void overlayInit() {
   lv_obj_align(sub, LV_ALIGN_BOTTOM_MID, 0, -6);
 
   lv_obj_set_hidden(passkeyBox, true);
+
+  // Wi-Fi join progress: built hidden, shown around the blocking join in
+  // main.cpp (processProvision). The join pumps lv_timer_handler so the
+  // spinner actually spins.
+  wifiSetupBox = lv_obj_create(lv_layer_top());
+  lv_obj_set_size(wifiSetupBox, 150, 116);
+  lv_obj_align(wifiSetupBox, LV_ALIGN_CENTER, 0, 0);
+  uiThemeDialog(wifiSetupBox);
+
+  lv_obj_t* spin = lv_spinner_create(wifiSetupBox);
+  lv_obj_set_size(spin, 44, 44);
+  lv_obj_align(spin, LV_ALIGN_TOP_MID, 0, 12);
+  lv_obj_set_style_arc_color(spin, UI_COL_PRIMARY, LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(spin, UI_COL_SURFACE, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(spin, 4, LV_PART_MAIN);
+  lv_obj_set_style_arc_width(spin, 4, LV_PART_INDICATOR);
+
+  lv_obj_t* setupCap = lv_label_create(wifiSetupBox);
+  lv_obj_set_style_text_font(setupCap, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_color(setupCap, UI_COL_MUTED, 0);
+  lv_label_set_text(setupCap, "joining Wi-Fi...");
+  lv_obj_align(setupCap, LV_ALIGN_BOTTOM_MID, 0, -12);
+
+  lv_obj_set_hidden(wifiSetupBox, true);
 }
 
 // 1 s tick: refresh the countdown labels on the visible screen(s).
 void secTick(lv_timer_t*) {
   uiScreenPetTick();
   uiScreenDcaTick();
+}
+
+// --- AFK sleep ----------------------------------------------------------------
+//
+// No screen switch: the current screen stays loaded (lock pad / OTA confirm /
+// menu all survive the nap) — the pet just goes sleepy behind floating "z"s on
+// lv_layer_top, and main.cpp dims the backlight + slows the scene on
+// ui::afkActive(). The waking input is consumed (see input.cpp) so a sleepy
+// prod never triggers an action.
+
+uint32_t   afkLastActivity = 0;
+bool       afkOn = false;
+PetMoodId  afkStashMood = PetMoodId::MOOD_CALM;
+lv_obj_t*  afkZzz = nullptr;
+lv_timer_t* afkZzzTimer = nullptr;
+uint8_t    afkZzzPhase = 0;
+
+void afkZzzTick(lv_timer_t*) {
+  static const char* phases[4] = { "", "z", "z z", "z z z" };
+  afkZzzPhase = (afkZzzPhase + 1) % 4;
+  lv_label_set_text(afkZzz, phases[afkZzzPhase]);
+}
+
+void afkEnter() {
+  afkOn = true;
+  afkStashMood = g_ui.pet->mood();
+  g_ui.pet->setMood(PetMoodId::MOOD_SLEEPY, millis() / 1000.0f);
+
+  afkZzz = lv_label_create(lv_layer_top());
+  lv_obj_set_style_text_font(afkZzz, &lv_font_montserrat_16, 0);
+  lv_obj_set_style_text_color(afkZzz, UI_COL_MUTED, 0);
+  lv_obj_align(afkZzz, LV_ALIGN_CENTER, 24, -64);   // drifting above the pet
+  lv_label_set_text(afkZzz, "");
+  afkZzzPhase = 0;
+  afkZzzTimer = lv_timer_create(afkZzzTick, 600, nullptr);
+  Serial.println("AFK: pet napping");
+}
+
+void afkExit() {
+  afkOn = false;
+  g_ui.pet->setMood(afkStashMood, millis() / 1000.0f);
+  if (afkZzzTimer) { lv_timer_delete(afkZzzTimer); afkZzzTimer = nullptr; }
+  if (afkZzz) { lv_obj_delete(afkZzz); afkZzz = nullptr; }
+  Serial.println("AFK: awake");
 }
 
 } // namespace
@@ -105,12 +180,19 @@ void ui::begin(TFT_eSPI* tft, FinagotchiPet* pet, const Actions& actions) {
 
   lv_screen_load(g_ui.petScreen);
   lv_timer_create(secTick, 1000, nullptr);
+  afkLastActivity = millis();
   g_ui.ready = true;
   Serial.println("UI: LVGL ready (pet canvas + chrome)");
 }
 
 void ui::update() {
   uiInputUpdate();
+  // Idle -> nap. Never while the pairing passkey panel is up: it must stay
+  // readable for the phone, and the backlight dimming would fight it.
+  if (!afkOn && millis() - afkLastActivity >= AFK_TIMEOUT_MS &&
+      lv_obj_is_hidden(passkeyBox)) {
+    afkEnter();
+  }
   lv_timer_handler();
 }
 
@@ -181,11 +263,13 @@ void ui::setSolUsd(float rate) {
 
 void ui::enqueueToast(const char* text) {
   if (!g_ui.ready) return;
+  if (afkOn) { afkLastActivity = millis(); afkExit(); }   // never hide a toast
   uiScreenPetToast(text, false);
 }
 
 void ui::enqueueRewardToast(const char* text) {
   if (!g_ui.ready) return;
+  if (afkOn) { afkLastActivity = millis(); afkExit(); }
   uiScreenPetToast(text, true);   // dca:hit: app amber, the "magic moment"
 }
 
@@ -207,6 +291,16 @@ void ui::setMenuBackdrop(const char* name) {
 void ui::setMenuLock(const char* name) {
   if (!g_ui.ready) return;
   uiScreenMenuSetLock(name);
+}
+
+void ui::setMenuWifi(const char* name) {
+  if (!g_ui.ready) return;
+  uiScreenMenuSetWifi(name);
+}
+
+void ui::setConnectStatus(const char* text) {
+  if (!g_ui.ready) return;
+  uiScreenConnectSetStatus(text);
 }
 
 void ui::showLock(int mode) {
@@ -231,10 +325,33 @@ void ui::showOverlay(const char* msg, uint32_t ms) {
   if (!g_ui.ready) return;
   lv_label_set_text(overlayLabel, msg);
   lv_obj_set_hidden(overlayBox, false);
+  uiThemePress(overlayBox);
   lv_timer_set_period(overlayTimer, ms);
   lv_timer_set_repeat_count(overlayTimer, 1);
   lv_timer_resume(overlayTimer);
   lv_timer_reset(overlayTimer);
+}
+
+void ui::hideOverlay() {
+  if (!g_ui.ready) return;
+  lv_timer_pause(overlayTimer);
+  lv_obj_set_hidden(overlayBox, true);
+}
+
+void ui::showWifiSetup(bool on) {
+  if (!g_ui.ready) return;
+  if (on) {
+    // Win the z-order on lv_layer_top() (toasts would cover it otherwise).
+    lv_obj_move_to_index(wifiSetupBox, -1);
+    lv_obj_set_hidden(wifiSetupBox, false);
+  } else {
+    lv_obj_set_hidden(wifiSetupBox, true);
+  }
+}
+
+void ui::pump() {
+  if (!g_ui.ready) return;
+  lv_timer_handler();   // animations/timers only — no input poll
 }
 
 void ui::showPasskey(uint32_t passkey) {
@@ -246,6 +363,7 @@ void ui::showPasskey(uint32_t passkey) {
   // otherwise render on top of the pairing panel.
   lv_obj_move_to_index(passkeyBox, -1);
   lv_obj_set_hidden(passkeyBox, false);
+  uiThemeFocusPop(passkeyBox);
 }
 
 void ui::hidePasskey() {
@@ -255,4 +373,15 @@ void ui::hidePasskey() {
 void ui::showOtaConfirm(const char* newVersion, uint32_t size) {
   if (!g_ui.ready) return;
   uiScreenOtaShow(newVersion, size);
+}
+
+bool ui::afkActive() {
+  return afkOn;
+}
+
+bool ui::afkInput() {
+  afkLastActivity = millis();
+  if (!afkOn) return false;
+  afkExit();
+  return true;   // this input only woke the device — swallow the action
 }

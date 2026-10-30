@@ -47,6 +47,11 @@ constexpr int32_t UI_SP4 = 24;
 // Safe margin inside the round display's inscribed circle.
 constexpr int32_t UI_SAFE = 20;
 
+// Control-hint band: bottom offset + max width that stays inside the circle
+// (glyphs land at y ~201..210, where the chord is >= 160 px wide).
+constexpr int32_t UI_HINT_BOTTOM = 26;
+constexpr int32_t UI_HINT_W = 156;
+
 // Re-init the default theme with the app palette (call after uiDisplayInit).
 void uiThemeInit();
 
@@ -63,3 +68,15 @@ void uiThemeCard(lv_obj_t* obj);
 void uiThemeDialog(lv_obj_t* obj);
 
 lv_obj_t* uiThemeLabel(lv_obj_t* parent, const lv_font_t* font, lv_color_t color);
+
+// Constrain dynamic text to its own layout region; wrap or ellipsize overflow.
+void uiThemeTextBounds(lv_obj_t* label, int32_t w, int32_t h, bool wrap = false);
+
+// Short board-specific controls, inside the round panel's bottom safe band.
+lv_obj_t* uiThemeControlHint(lv_obj_t* parent, const char* action);
+
+// Rounded actionable surface and short transform-only interaction feedback.
+void uiThemeButton(lv_obj_t* obj, bool primary = false);
+void uiThemePress(lv_obj_t* obj);
+void uiThemeFocusPop(lv_obj_t* obj);
+void uiThemeNudge(lv_obj_t* obj, int32_t distance);

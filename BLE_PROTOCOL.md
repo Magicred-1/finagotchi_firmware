@@ -16,9 +16,14 @@ generates and shows a 6-digit passkey on its screen
 (`ESP_GAP_BLE_PASSKEY_NOTIF`), and the app must perform **passkey entry**.
 After bonding, the link is encrypted. If the code is mistyped, the phone's
 retry generates a fresh passkey and the device updates the display.
+The device sets `ESP_BLE_SM_ONLY_ACCEPT_SPECIFIED_SEC_AUTH`, so a phone that
+offers only Just Works (or Numeric Comparison) is refused outright.
 
-BOTH characteristics enforce encryption (the state characteristic:
-encrypted read + write; provisioning: encrypted write), so the phone
+BOTH characteristics require an **authenticated (MITM) encrypted** link
+(`*_ENC_MITM` permissions — state: read + write; provisioning: write), so
+an unauthenticated encrypted link cannot read state or write commands/
+credentials. Up to 8 writes are queued, so `dca:count` + a burst of
+`dca:plan` writes are no longer dropped while the device is busy. The phone
 initiates pairing automatically on the first state read or subscribe — no
 provisioning write is needed to trigger the passkey. The CCCD (0x2902)
 descriptor keeps default permissions, so enabling notifications right after
@@ -27,12 +32,20 @@ pushes a fresh state snapshot.
 
 If pairing fails with a previously-paired phone (`BLE pairing FAILED` on
 the serial monitor), one side holds a stale bond: forget the device in the
-phone's Bluetooth settings, and/or erase the device-side bonds by holding
-**both buttons at boot** (the splash shows "BLE bonds erased").
+phone's Bluetooth settings, then erase the device-side bonds. On a breadboard,
+hold both buttons at boot. On PCB v1, hold only the crown push for 4 seconds
+while the splash is visible; SW1 isn't required.
 
 ## Wi-Fi provisioning (first-time setup)
 
-Write to the provisioning characteristic:
+Credentials are provisioned **from the app**; there is no on-device typing.
+The app's Wi-Fi form must let the user enter or confirm the SSID and password
+because phone operating systems don't always expose the saved password. The
+device's **Wi-Fi** row shows selectable camera-scannable download codes
+(`finagotchi.app/android` → latest build, `finagotchi.app/ios` → TestFlight),
+then reports pairing, joining, online, and failure states. The QR codes carry
+only public app links, never credentials. Write to the provisioning
+characteristic:
 
 ```
 <ssid>\n<passphrase>[\n<deviceToken>]
@@ -40,8 +53,10 @@ Write to the provisioning characteristic:
 
 UTF-8, newline separator (a newline appears in neither a WPA passphrase nor
 a sane SSID). Constraints: ssid 1–32 chars, passphrase 8–63 chars (empty
-passphrase = open network). The write is rejected by the stack unless the
-link is encrypted, so pair first.
+passphrase = open network). Spaces are ordinary credential characters,
+including spaces inside the SSID; neither field is trimmed or tokenized on
+whitespace. The write is rejected by the stack unless the link is encrypted,
+so pair first.
 
 The **optional third field** is the companion-API device token (1–128 chars),
 which enables standalone cloud state sync (see below). A legacy 2-field write
@@ -52,6 +67,9 @@ On receipt the device validates, persists the credentials (and token, if
 present) in NVS (they override the compile-time `config.h` defaults from
 then on), and immediately reconnects Wi-Fi. A status overlay on the screen
 reports success/failure, and `PROV:` lines appear on the serial monitor.
+BLE protects credentials in transit; NVS isn't encrypted by this firmware.
+Devices that must resist physical flash extraction need the ESP32 flash/NVS
+encryption provisioning process.
 
 **Auto-push on connect:** the app now writes the phone's current Wi-Fi
 credentials (2-field payload) on *every* BLE connect, not just first-time
@@ -67,6 +85,30 @@ everything and reconnect.
 > The 3-field payload can reach ~226 bytes — the firmware now requests MTU
 > 256; the app must still complete the MTU exchange (automatic on iOS,
 > `requestMTU(256)` on Android) or the write will truncate.
+
+### Serial provisioning (app-less fallback)
+
+Native USB and UART0 accept the same two-field payload through a two-line
+command. Open a 115200-baud monitor, enter `wifi:` followed by the complete
+SSID on the first line, then the password on the second line:
+
+```
+wifi:Full SSID With Spaces
+thePassword
+```
+
+Everything after `wifi:` is the SSID and the whole second line is the
+password, so spaces are preserved. Close the app or disable Bluetooth during
+a serial-only test so its automatic BLE provisioning cannot replace the
+manual attempt. Serial diagnostics report lengths, edge-space flags and
+non-printable-byte counts, never the password.
+
+Joins are serialized so a background poll cannot restart the WPA handshake
+during provisioning. After a failed normal join, the device scans using an
+exact SSID comparison and retries the strongest matching access point on its
+own BSSID/channel. Disconnect reasons 2 (`AUTH_EXPIRE`) and 204
+(`HANDSHAKE_TIMEOUT`) occur during router authentication; they are not SSID
+space-parsing errors.
 
 ## Device -> App (read / notify)
 
@@ -89,9 +131,9 @@ tolerate it absent; new apps must tolerate it absent (pre-OTA firmware).
 
 ### `sync:req` (manual sync request)
 
-When the user long-presses the right button (or short-presses the left,
-where wired) on the pet screen while the app
-is connected, the device notifies the literal string `sync:req` instead of a
+When the user long-presses either breadboard button (or short-pushes the
+PCB crown) on the pet screen while the app is connected, the device
+notifies the literal string `sync:req` instead of a
 state snapshot (it never starts with a stage name, so old apps parse it as
 garbage and ignore it). The app should respond by resending a full state
 snapshot plus `dca:count:` / `dca:plan:` writes — the same payload it sends
@@ -132,7 +174,7 @@ as the read value) while an OTA check/update is in flight. States:
 - `ota:status:current` — the firmware is up to date (manifest answered 204,
   or echoed the running version)
 - `ota:status:available:<version>` — an update exists; the on-device
-  confirm screen is up (push = update, cancel = abort)
+  confirm screen is up (confirm = update, back/cancel = abort)
 - `ota:status:scheduled:<version>` — the user confirmed; the device stores
   the manifest in NVS and **reboots into OTA mode** (BLE is down from this
   point — there are no download progress notifications)
@@ -154,16 +196,19 @@ not change on feed). The device plays a local jump reaction immediately so
 it feels alive even before the answer lands; with no app connected it only
 shows a "connect the app" toast.
 
-### `dca:req` (open DCA request, device → app)
+### `dca:req` (open DCA request, device → app) — legacy
 
-Sent when the user activates **Open DCA** on the device's menu screen while
-the app is connected. The app should open its DCA wizard/sheet. With no app
-connected the device only shows a "connect the app" toast.
+Older firmware sent this from an **Open DCA** menu row while the app was
+connected, asking the app to open its DCA wizard/sheet. Current firmware
+has no such row — plan creation lives on the device (portfolio →
+**+ New plan** wheel, `dca:new:`), one obvious way to do one thing. Apps
+may keep the handler for older firmwares; new firmware never sends it.
 
 ### `dca:pause:<i>` (pause/resume request, device → app)
 
-Sent when the user double-presses on a plan's **detail view** while the app
-is connected. `i` is the slot index in the last pushed table (0–7). The app
+Sent when the user confirms on a plan's **detail view** (breadboard long
+press or PCB crown short-push) while the app is connected. `i` is the slot
+index in the last pushed table (0–7). The app
 toggles that plan active ↔ paused and rewrites the whole table back
 (`dca:count:` + `dca:plan:` writes). The device applies an optimistic local
 toggle (paused visuals right away) and the app's rewrite reconciles. With
@@ -238,7 +283,7 @@ truncated away.
 | `dca:hit:<n>:<TICKER>` | A buy just executed: "+n TICKER" reward toast (app amber) + dance reaction + sparkle burst |
 | `solusd:<rate>` | SOL/USD rate (float) for the portfolio amount unit toggle (USD ⇄ SOL); persisted in NVS (`finagotchi`/`solUsd`) |
 | `epoch:<sec>` | Fallback wall-clock set (unix seconds). Only applied if NTP has never synced; ignored afterwards |
-| `ota:start` | Start the firmware-update flow: battery/Wi-Fi guard, manifest check against the API, then the on-device confirm screen (the user still confirms on the device — push = update, cancel = abort). Progress is reported as `ota:status:<state>` notifications (see above). The device reboots into OTA mode for the actual download |
+| `ota:start` | Start the firmware-update flow: battery/Wi-Fi guard, manifest check against the API, then the on-device confirm screen (the user still confirms on the device — confirm = update, back/cancel = abort). Progress is reported as `ota:status:<state>` notifications (see above). The device reboots into OTA mode for the actual download |
 
 Writes may use write-with-response or write-without-response — the
 characteristic exposes both properties. Writes with an unrecognized payload
@@ -261,80 +306,55 @@ synced, the countdown shows `--` instead of garbage. Paused plans
 (`en=0, epoch=0`) render muted with a "paused" label — never a countdown —
 and are never overdue.
 
-The device runs a **single-button scheme** (the left button is dead on some
-units): the **right button** carries the UI — **short press = navigate**,
-**long press = action** — and the left button, where alive, is a bonus
-action key. A **double-press of the right button is BACK/cancel
-everywhere**: it closes the plan detail view, leaves the current screen
-(the menu's cosmetics page steps back to the apps page first, the
-create-plan wheel steps back one drum), and cancels the parental code
-pad; on the pet screen it's a no-op (already home). No on-screen button
-hints, state captions only. A short press
-of the right button opens the full-screen **portfolio view**: a header
-with the total portfolio value (Σ holdings × price in USD, with a SOL
-equivalent under it when the `solusd:` rate is known), then one card per
-plan — the actual token logo (official xStocks icons embedded at build
-time — see `tools/convert_token_logos.py`; unknown tickers get a
-procedural monogram chip), ticker, position value, next-buy countdown and
-holdings/buy info. Short presses walk the card focus (light-blue ring) through
-the plans and a trailing **+ New plan** card; after it they move on to the
-**menu screen**, and from there back to the pet screen
-(pet → portfolio → menu → pet). A long press opens a per-token **detail
-view** and closes it again; with a live left button, a double-press
-toggles amounts between USD and SOL (needs the `solusd:` rate). Overdue
-cards are amber. On the detail view, a **double-press of either button
-toggles pause/resume** (`dca:pause:<i>`, optimistic local toggle — a
-single press still closes, deferred by the double window).
-While offline, the device fetches prices itself over HTTPS (Jupiter Price
-API + xStocks `price-data`, SOL/USD included) on the poll cadence, except
-slots the app priced itself. This view is local UI only — it never leaves
-the device.
+The breadboard uses two buttons: **left short = next**, **right short =
+back**, and **either long = confirm/action**. Right short on the pet screen
+opens the menu directly. On PCB v1, **crown rotation = previous/next**,
+**short-push = immediate confirm**, and **long-push = back**. SW1/GPIO7 is
+only an optional back alias. No flow requires a double-press.
 
-Activating **+ New plan** opens the **create wheel**: three paged drums —
-Token (the xStocks the device ships mints/logos for), Amount
-(0.01 / 0.05 / 0.1 / 0.25 SOL), Frequency (daily / weekly / monthly) —
-then a summary view. A short press scrolls to the next option (wrapping),
-a long press confirms the drum and advances; on the summary, a long press
-on **CREATE →** sends `dca:new:`. Browsing and composing the plan works
-fully standalone — the app is only needed for the final send. The token
-drum is entered on a back-arrow affordance (activate = back to the
-portfolio view); the right zone shows the values picked so far.
+A left short on the pet screen opens the full-screen **portfolio view**: a
+header with total value (Σ holdings × price in USD, plus a SOL equivalent
+when the `solusd:` rate is known), then one card per plan. Cards show the
+actual token logo (or a procedural monogram), ticker, position value,
+next-buy countdown and holdings/buy info. Navigation moves the light-blue
+focus ring through the plans and **+ New plan**, automatically scrolling
+the focused card into view. Confirm opens a plan's detail; next/back closes
+it. Confirm on the detail toggles pause/resume (`dca:pause:<i>`, optimistic
+local toggle). The menu's **Units** row explicitly switches USD ↔ SOL when
+a SOL rate is available. Overdue cards are amber. While offline, the device
+fetches prices itself over HTTPS (Jupiter Price API + xStocks `price-data`,
+SOL/USD included) on the poll cadence, except slots the app priced itself.
 
-The **menu screen** is a vertical, scrollable launcher with two pages.
-The apps page holds **Feed pet** (primary, `feed:req`), **Portfolio**
-(jumps straight to the portfolio screen — the on-device DCA selection),
-**Cosmetics** (opens the second page), **Open DCA** (`dca:req`) and
-**Update** (OTA firmware check — see `ota:status:`; its info word is the
-current firmware version). The
-cosmetics page holds **Accessory** (cycles the collectible locally,
-mirrored in the notify snapshot), **Mood** (cycles the emotion locally,
-mirrored likewise), **Backdrop** (cycles the PetCanvas scene theme
-locally — the `bg:` themes; cosmetic only, the app can override on
-connect) and **Parental** (optional code lock — see below). Rows show a
-circular icon chip and the app name, with a slim light-blue scrollbar on
-the right edge. Entering a page focuses a back-arrow affordance in the
-reserved right zone (on the apps page it returns to the pet screen, on
-the cosmetics page it steps back to the apps page); walking into the list
-replaces it with a short info word for the focused app (the current
-accessory/mood/backdrop name, or the lock state). Short presses walk the
-focus down the rows (auto-scrolled into view), a long press runs the
-focused app.
+Activating **+ New plan** opens three paged drums — Token, Amount
+(0.01 / 0.05 / 0.1 / 0.25 SOL), Frequency (daily / weekly / monthly) — then
+a summary. Next/rotation changes the option, confirm advances, and back
+returns to the previous drum with its selected option still focused.
+Confirm on **CREATE →** sends `dca:new:`. Browsing and composing work fully
+standalone; only the final send needs the app.
 
-**Parental lock (optional).** The Parental row opens a 4-digit code pad:
+The **menu screen** is one scrollable list of ten rows: **Feed pet**
+(`feed:req`), **Play** (pet reaction), **Portfolio**, **Units**, **Accessory**,
+**Mood**, **Backdrop**, **Wi-Fi** (Android/iOS app-download QR prompt),
+**Update**, and **Code lock**. Each row keeps its name and current state in
+separate bounded labels. Focused rows scroll into view and use a short
+spring animation; a footer shows the active board's controls. Confirm runs
+the focused row and back returns to the pet screen.
+
+**Parental lock (optional).** The Code lock row opens a 4-digit code pad:
 with no code stored it sets one (entered twice), with a code stored it
 removes it after a matching entry. While a code is set the device boots
 **locked**: the pet, feeding and every cosmetic screen stay free, but
 the financial scope — the portfolio screen (plan detail and pause/resume
-included), the create-plan wheel, and the Portfolio / Open DCA menu
-rows — requires the code (short press cycles the digit, long press
-confirms, double-press cancels the pad; wrong entries reset with a
+included), the create-plan wheel, and the Portfolio menu
+row — requires the code (short press cycles the digit, long press
+confirms, the back/cancel button abandons the pad; wrong entries reset with a
 "wrong code" toast). While locked the screen cycle skips the portfolio
 entirely (pet → menu → pet), so cosmetics stay reachable. One good code
 unlocks the session until reboot. The code lives in NVS
 (`fina`/`pinset`+`pin`) and never leaves the device — there is no BLE
-command for it and the app is unaffected. Forgotten code: the boot
-recovery chord (hold BOTH buttons while powering on) clears it along
-with the BLE bonds.
+command for it and the app is unaffected. Forgotten code: use the same boot
+recovery as stale-bond reset (both breadboard buttons, or a 4-second crown
+hold on PCB v1).
 
 The notify/read snapshot gains an **optional 7th field** — the number of
 active plan slots — an **optional 8th field** — the 12-stage

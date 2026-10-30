@@ -10,20 +10,18 @@
   Each drum is a vertical scrollable list of option rows (clip top/bottom,
   slim light-blue scrollbar on the right edge, focused row = light-blue ring,
   focused row auto-scrolls into view). A step label on top names the drum
-  ("TOKEN 1/3" ...); the right zone carries the menu's reserved-space
-  pattern: on the TOKEN drum it holds the back-arrow affordance (activate =
-  back to the portfolio), on later drums a muted info word with the values
-  picked so far ("SPYX", "SPYX  0.05 SOL").
+  ("TOKEN 1/3" ...); the right zone carries a muted info word with the
+  values picked so far ("SPYX", "SPYX  0.05 SOL").
 
-  Interaction (redundant two-button scheme — short = navigate, long = act):
-    short = scroll to the next option (wraps at the end back to the first)
-    long  = confirm this drum and advance to the next page
+  Interaction (breadboard buttons / crown — same semantics):
+    short / CW   = scroll to the next option (wraps at the end back to the
+                   first — the wheel spins both ways)
+    long / push  = confirm this drum and advance to the next page
     summary view: short = back to edit (token drum), long = CREATE ->
                   Actions.createPlan (offline: toast + stay; connected:
                   dca:new: notify + toast + back to the portfolio)
-  Back-out rule: the TOKEN drum is entered with the back arrow focused, so
-  backing out is always one long-press away on page 1; deeper pages return
-  to the token drum via the summary view's short press.
+  Back-out rule: right-button short on the breadboard or crown long-push on
+  the PCB steps back one drum and exits from the token drum.
 */
 
 #include "ui_internal.h"
@@ -52,7 +50,6 @@ uint8_t tickerCount = 3;
 lv_obj_t* createScr;
 lv_obj_t* stepLabel;
 lv_obj_t* infoLabel;      // right zone: picked values so far
-lv_obj_t* backArrow;      // right zone, TOKEN drum only
 lv_obj_t* list;           // drum list
 lv_obj_t* opt[MAX_OPTIONS];
 lv_obj_t* optLogo[MAX_OPTIONS];    // lv_image (tokens with a logo)
@@ -70,18 +67,19 @@ uint8_t tokenIdx = 0, amountIdx = 1, freqIdx = 0;
 lv_obj_t* focused() { return lv_group_get_focused(g_ui.group); }
 
 void rowFocused(lv_event_t* e) {
-  lv_obj_t* f = lv_event_get_target_obj(e);
-  if (f != backArrow) lv_obj_scroll_to_view(f, LV_ANIM_ON);
+  lv_obj_t* target = lv_event_get_target_obj(e);
+  lv_obj_scroll_to_view(target, LV_ANIM_ON);
+  uiThemeFocusPop(target);
 }
 
 // --- drums ---------------------------------------------------------------------
 
 void infoFill() {
-  char buf[28] = "";
+  char buf[32] = "";
   if (page == PAGE_AMOUNT) {
     strlcpy(buf, tickers[tokenIdx], sizeof(buf));
   } else if (page >= PAGE_FREQ) {
-    snprintf(buf, sizeof(buf), "%s\n%.4g SOL", tickers[tokenIdx],
+    snprintf(buf, sizeof(buf), "%s " LV_SYMBOL_BULLET " %.4g SOL", tickers[tokenIdx],
              static_cast<double>(AMOUNTS[amountIdx]));
   }
   lv_label_set_text(infoLabel, buf);
@@ -121,11 +119,8 @@ void showPage(uint8_t p);   // defined below (used by confirm/summary)
 void confirmFocused() {
   lv_obj_t* f = focused();
   if (!f) return;
-  if (f == backArrow) {          // TOKEN drum back affordance
-    uiScreenDcaShow();
-    return;
-  }
   if (f == createRow) {          // SUMMARY: CREATE ->
+    uiThemePress(createRow);
     if (g_ui.actions.createPlan &&
         g_ui.actions.createPlan(tickers[tokenIdx], AMOUNTS[amountIdx],
                                 FREQS[freqIdx].sec)) {
@@ -134,6 +129,7 @@ void confirmFocused() {
     return;
   }
   // Drum option: record the pick and advance to the next page.
+  uiThemePress(f);
   uint8_t idx = static_cast<uint8_t>(
       reinterpret_cast<intptr_t>(lv_obj_get_user_data(f)));
   if (page == PAGE_TOKEN) tokenIdx = idx;
@@ -171,18 +167,11 @@ void buildDrum() {
     }
   }
 
-  // Focus group: exactly the visible rows (+ the back arrow on page 1).
-  if (page == PAGE_TOKEN) {
-    lv_obj_t* visible[MAX_OPTIONS + 1];
-    visible[0] = backArrow;
-    for (uint8_t i = 0; i < optCount; i++) visible[i + 1] = opt[i];
-    lv_obj_set_hidden(backArrow, false);
-    uiGroupSet(visible, optCount + 1, false);   // focuses the arrow
-  } else {
-    lv_obj_set_hidden(backArrow, true);
-    uiGroupSet(opt, optCount, false);           // focuses the first option
-  }
-  lv_obj_scroll_to_y(list, 0, LV_ANIM_OFF);
+  uiGroupSet(opt, optCount, false);
+  uint8_t selected = page == PAGE_TOKEN ? tokenIdx
+                   : page == PAGE_AMOUNT ? amountIdx : freqIdx;
+  lv_group_focus_obj(opt[selected]);
+  lv_obj_scroll_to_view(opt[selected], LV_ANIM_OFF);
 }
 
 void showPage(uint8_t p) {
@@ -197,12 +186,12 @@ void showPage(uint8_t p) {
   lv_label_set_text(stepLabel, STEPS[page]);
 
   if (summary) {
-    char buf[20];
+    char buf[32];
     snprintf(buf, sizeof(buf), "%.4g SOL", static_cast<double>(AMOUNTS[amountIdx]));
     lv_label_set_text(sumAmount, buf);
-    snprintf(buf, sizeof(buf), "%s  %s", tickers[tokenIdx], FREQS[freqIdx].name);
+    snprintf(buf, sizeof(buf), "%s " LV_SYMBOL_BULLET " %s", tickers[tokenIdx],
+             FREQS[freqIdx].name);
     lv_label_set_text(sumPlan, buf);
-    lv_obj_set_hidden(backArrow, true);
     lv_obj_set_hidden(infoLabel, true);
     lv_obj_t* one[1] = { createRow };
     uiGroupSet(one, 1, false);
@@ -226,18 +215,27 @@ lv_obj_t* buildCreateScreen() {
   uiThemeScreen(createScr);
 
   stepLabel = uiThemeLabel(createScr, &lv_font_montserrat_12, UI_COL_EYEBROW);
-  lv_obj_align(stepLabel, LV_ALIGN_TOP_MID, 0, 16);
+  lv_obj_set_style_text_letter_space(stepLabel, 1, 0);
+  lv_obj_align(stepLabel, LV_ALIGN_TOP_MID, 0, 14);
+
+  // Picked-so-far line under the step title ("SPYX • 0.05 SOL"): centered,
+  // where the old right-edge column (40 px) truncated every ticker.
+  infoLabel = uiThemeLabel(createScr, &lv_font_montserrat_12, UI_COL_MUTED);
+  uiThemeTextBounds(infoLabel, 160, 16);
+  lv_obj_set_style_text_align(infoLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(infoLabel, LV_ALIGN_TOP_MID, 0, 30);
+  lv_obj_set_hidden(infoLabel, true);
 
   // --- drum list (launcher idiom: clip edges, slim accent scrollbar) ---
-  // Inset from the top-left corner (the round panel clips it) and shorter
-  // at the bottom; rows still scroll through the remaining edge zones.
+  // Centered on the round panel; at its top/bottom edges (y 50 / 196) the
+  // visible chord is >= 188 px, wider than the 164 px rows.
   list = lv_obj_create(createScr);
-  lv_obj_set_size(list, 156, 176);
-  lv_obj_align(list, LV_ALIGN_TOP_LEFT, 24, 40);
+  lv_obj_set_size(list, 180, 146);
+  lv_obj_align(list, LV_ALIGN_TOP_MID, 0, 50);
   lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(list, 0, 0);
   lv_obj_set_style_pad_all(list, 2, 0);
-  lv_obj_set_style_pad_row(list, 10, 0);
+  lv_obj_set_style_pad_row(list, 8, 0);
   lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
   lv_obj_set_scroll_dir(list, LV_DIR_VER);
@@ -250,7 +248,7 @@ lv_obj_t* buildCreateScreen() {
 
   for (uint8_t i = 0; i < MAX_OPTIONS; i++) {
     opt[i] = lv_obj_create(list);
-    lv_obj_set_size(opt[i], 140, 40);
+    lv_obj_set_size(opt[i], 164, 40);
     uiThemeGlass(opt[i], true);
     lv_obj_set_style_radius(opt[i], UI_RADIUS_SMALL, 0);
     lv_obj_set_style_bg_color(opt[i], UI_COL_SURFACE, LV_STATE_FOCUSED);
@@ -283,44 +281,24 @@ lv_obj_t* buildCreateScreen() {
     lv_obj_set_style_pad_top(optMono[i], 7, 0);
 
     optText[i] = uiThemeLabel(opt[i], &lv_font_montserrat_14, UI_COL_TEXT);
+    uiThemeTextBounds(optText[i], 112, 18);
     lv_obj_align(optText[i], LV_ALIGN_LEFT_MID, 42, 0);
   }
 
-  // --- right zone: back arrow (TOKEN drum) + picked-values info ---
-  // Moved down/in from the old corner position — the round panel clipped
-  // the chip's top-right edge there.
-  backArrow = lv_obj_create(createScr);
-  lv_obj_set_size(backArrow, 40, 40);
-  lv_obj_align(backArrow, LV_ALIGN_TOP_RIGHT, -20, 60);
-  uiThemeGlass(backArrow, true);
-  lv_obj_set_style_radius(backArrow, LV_RADIUS_CIRCLE, 0);
-  lv_obj_set_style_border_width(backArrow, 3, LV_STATE_FOCUSED);
-  lv_obj_set_style_border_color(backArrow, UI_COL_PRIMARY, LV_STATE_FOCUSED);
-  lv_obj_set_style_border_opa(backArrow, LV_OPA_COVER, LV_STATE_FOCUSED);
-  lv_obj_set_clickable(backArrow, true);
-  lv_obj_add_event_cb(backArrow, rowFocused, LV_EVENT_FOCUSED, nullptr);
-  lv_obj_t* arrowGlyph = uiThemeLabel(backArrow, &lv_font_montserrat_20, UI_COL_PRIMARY);
-  lv_label_set_text(arrowGlyph, LV_SYMBOL_RIGHT);
-  lv_obj_center(arrowGlyph);
-
-  infoLabel = uiThemeLabel(createScr, &lv_font_montserrat_12, UI_COL_MUTED);
-  lv_obj_set_style_text_align(infoLabel, LV_TEXT_ALIGN_RIGHT, 0);
-  lv_obj_align(infoLabel, LV_ALIGN_TOP_RIGHT, -20, 108);
-  lv_obj_set_hidden(infoLabel, true);
-
   // --- summary view ---
   sumAmount = uiThemeLabel(createScr, &lv_font_montserrat_28, UI_COL_TEXT);
-  lv_obj_align(sumAmount, LV_ALIGN_CENTER, 0, -40);
+  lv_obj_align(sumAmount, LV_ALIGN_CENTER, 0, -36);
   sumPlan = uiThemeLabel(createScr, &lv_font_montserrat_16, UI_COL_MUTED);
-  lv_obj_align(sumPlan, LV_ALIGN_CENTER, 0, -4);
+  uiThemeTextBounds(sumPlan, 184, 20);
+  lv_obj_set_style_text_align(sumPlan, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(sumPlan, LV_ALIGN_CENTER, 0, -2);
 
   createRow = lv_obj_create(createScr);
   lv_obj_set_size(createRow, 150, 40);
-  lv_obj_align(createRow, LV_ALIGN_CENTER, 0, 60);
-  lv_obj_set_style_bg_color(createRow, UI_COL_PRIMARY, 0);
+  lv_obj_align(createRow, LV_ALIGN_CENTER, 0, 44);
+  uiThemeButton(createRow, true);
   lv_obj_set_style_bg_color(createRow, UI_COL_PRIMARY_PRESSED, LV_STATE_FOCUSED);
   lv_obj_set_style_bg_opa(createRow, LV_OPA_COVER, 0);
-  lv_obj_set_style_radius(createRow, UI_RADIUS_PILL, 0);
   lv_obj_set_style_border_width(createRow, 3, LV_STATE_FOCUSED);
   lv_obj_set_style_border_color(createRow, UI_COL_TEXT, LV_STATE_FOCUSED);
   lv_obj_set_style_pad_all(createRow, 0, 0);
@@ -330,6 +308,8 @@ lv_obj_t* buildCreateScreen() {
   lv_obj_t* crLabel = uiThemeLabel(createRow, &lv_font_montserrat_16, UI_COL_ON_PRIMARY);
   lv_label_set_text(crLabel, "CREATE " LV_SYMBOL_RIGHT);
   lv_obj_center(crLabel);
+
+  uiThemeControlHint(createScr, "next");
 
   return createScr;
 }
@@ -346,9 +326,9 @@ void uiScreenCreateSetTickers(const char* const* list, uint8_t n) {
 void uiScreenCreateShow() {
   Serial.printf("Create: heap free before build %u\n", ESP.getFreeHeap());
   uiScreenDcaReleaseDetail();
-  // Free the portfolio's card column BEFORE building the drum: the device
-  // boots with ~19 KB free and two full screens never coexist (the shell
-  // stays up for the exit animation, then auto_del takes it).
+  // Free the portfolio's card column BEFORE building the drum: two full
+  // screens never coexist (the shell stays up for the exit animation, then
+  // auto_del takes it).
   bool freeDca = uiScreenDcaOnList();
   if (freeDca) uiScreenDcaShrinkList();
   if (!createScr) g_ui.createScreen = buildCreateScreen();   // lazy build
@@ -369,20 +349,21 @@ void uiScreenCreateShrink() {
   // Free the drum/summary widgets but keep the screen shell: the portfolio
   // rebuilds its card list underneath BEFORE this shell is auto-deleted by
   // the return transition — the two full screens never coexist (heap peak
-  // discipline; the drum build alone leaves only ~3 KB free).
+  // discipline).
   if (!createScr) return;
+  lv_anim_delete(createRow, nullptr);
   lv_obj_delete(list);          // drum incl. all option rows
   lv_obj_delete(sumAmount);
   lv_obj_delete(sumPlan);
   lv_obj_delete(createRow);
   lv_obj_delete(infoLabel);
-  lv_obj_delete(backArrow);
   lv_obj_delete(stepLabel);
   list = nullptr;
+  infoLabel = stepLabel = sumAmount = sumPlan = createRow = nullptr;
   uiGroupSet(nullptr, 0, false);   // no dangling focused objects
 }
 
-// Short press (either button) = navigate.
+// Short press / crown CW = navigate.
 void uiScreenCreateFocusAdvance() {
   if (!createScr) return;
   if (page == PAGE_SUMMARY) {
@@ -390,9 +371,7 @@ void uiScreenCreateFocusAdvance() {
     return;
   }
   lv_obj_t* f = focused();
-  if (!f || f == backArrow) {
-    // Walk into the drum: the back arrow leaves the focus group.
-    if (f == backArrow) lv_obj_set_hidden(backArrow, true);
+  if (!f) {
     uiGroupSet(opt, optCount, false);   // focuses the first option
     lv_obj_scroll_to_view(opt[0], LV_ANIM_ON);
     return;
@@ -412,9 +391,7 @@ void uiScreenCreateFocusPrev() {
     return;
   }
   lv_obj_t* f = focused();
-  if (!f || f == backArrow) {
-    // Walk into the drum from the bottom: the back arrow leaves the group.
-    if (f == backArrow) lv_obj_set_hidden(backArrow, true);
+  if (!f) {
     uiGroupSet(opt, optCount, false);
     lv_group_focus_obj(opt[optCount - 1]);
     lv_obj_scroll_to_view(opt[optCount - 1], LV_ANIM_ON);
@@ -424,16 +401,16 @@ void uiScreenCreateFocusPrev() {
   else lv_group_focus_prev(g_ui.group);
 }
 
-// Long press (either button) = confirm drum / CREATE.
+// Long press / crown push = confirm drum / CREATE.
 void uiScreenCreateActivate(float nowSec) {
   if (!createScr) return;
   (void)nowSec;
   confirmFocused();
 }
 
-// BTN2 double-press = back one step: summary -> frequency -> amount ->
-// token; on the token drum it leaves the wheel back to the portfolio (the
-// same path the back-arrow affordance takes).
+// Back (right button short / cancel) = back one step: summary -> frequency
+// -> amount -> token; on the token drum it leaves the wheel back to the
+// portfolio.
 void uiScreenCreateBack() {
   if (!createScr) return;
   if (page > PAGE_TOKEN) showPage(page - 1);

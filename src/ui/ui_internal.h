@@ -23,6 +23,7 @@ struct UiState {
   lv_obj_t*   createScreen = nullptr;
   lv_obj_t*   lockScreen = nullptr;
   lv_obj_t*   otaScreen = nullptr;
+  lv_obj_t*   connectScreen = nullptr;
   lv_group_t* group = nullptr;
   bool        locked = false;      // parental gate: pet screen only until unlocked
 
@@ -33,7 +34,7 @@ struct UiState {
 
   uint32_t epoch = 0;          // wall clock; 0 = never synced
   float    solUsd = 0.0f;      // SOL/USD; <= 0 = unknown
-  bool     amountInSol = false; // BTN1 double on the portfolio screen toggles
+  bool     amountInSol = false; // menu "Units" row toggles USD/SOL
 };
 extern UiState g_ui;
 
@@ -42,6 +43,7 @@ void uiFmtVal(uint32_t v, char* buf, size_t n);
 void uiFmtCountdown(uint32_t nextBuyEpoch, uint32_t nowEpoch, char* buf, size_t n);
 void uiFmtAmount(const DcaPlan& p, char* buf, size_t n);   // honors amountInSol
 void uiFmtUsd(double usd, char* buf, size_t n);            // "$1,234.56" / "$12.3k"
+void uiFmtQty(double q, char* buf, size_t n);             // "0.0045" / "12.5" / "12.3k"
 const char* uiStageName(uint8_t subStage);
 bool uiPlanOverdue(uint8_t slot);   // flagged, or epoch simply passed
 bool uiPlanPaused(const DcaPlan& p);  // disabled or epoch 0 -> PAUSED state
@@ -70,7 +72,6 @@ void uiScreenPetSetBattery(int pct);     // <0 hides (USB power)
 void uiScreenPetSetWifiOnline(bool online);  // Wi-Fi glyph, top-right
 void uiScreenPetToast(const char* text, bool reward); // toasts ride lv_layer_top()
 void uiScreenPetPlansChanged();          // next-buy chip refresh
-void uiScreenPetChipAdvance();           // BTN2 double: manual rotate
 void uiScreenPetTick();                  // 1 s countdown refresh
 
 // screen_dca.cpp (portfolio / positions)
@@ -89,7 +90,7 @@ void uiScreenDcaCloseDetail();
 void uiScreenDcaToggleAmountUnit();
 bool uiScreenDcaFocusAdvance();          // false: no more cards -> next screen
 bool uiScreenDcaFocusPrev();             // crown CCW; false: first card -> back out
-void uiScreenDcaTogglePause();           // detail double-press: pause/resume
+void uiScreenDcaTogglePause();           // detail confirm: pause/resume
 void uiScreenDcaSetWifiOnline(bool online);  // Wi-Fi glyph, portfolio header
 
 // screen_create.cpp ("+ New plan" wheel: token -> amount -> frequency drums)
@@ -98,7 +99,7 @@ void uiScreenDcaSetWifiOnline(bool online);  // Wi-Fi glyph, portfolio header
 void uiScreenCreateShow();               // from the "+ New plan" card
 void uiScreenCreateFreed();              // screen object deleted (auto_del)
 void uiScreenCreateShrink();             // free drum/summary widgets pre-return
-void uiScreenCreateBack();               // BTN2 double: back one drum / exit
+void uiScreenCreateBack();               // back input: previous drum / exit
 void uiScreenCreateFocusAdvance();       // short: next option (wraps) / edit
 void uiScreenCreateFocusPrev();          // crown CCW: previous option (wraps)
 void uiScreenCreateActivate(float nowSec); // long: confirm drum / CREATE
@@ -109,6 +110,7 @@ const lv_image_dsc_t* uiTokenLogoDsc(const char* ticker);
 
 // screen_menu.cpp (launcher app list) — lazy build + free, same pattern
 void uiScreenMenuShow();                 // after the last portfolio card
+void uiScreenMenuShrink();               // free rows before building a child screen
 void uiScreenMenuFreed();                // screen object deleted (auto_del)
 void uiScreenMenuActivate(float nowSec); // long press: run the focused row
 bool uiScreenMenuFocusAdvance();         // false: no more rows -> pet screen
@@ -117,9 +119,10 @@ void uiScreenMenuSetAccessory(const char* name);
 void uiScreenMenuSetMood(const char* name);
 void uiScreenMenuSetBackdrop(const char* name);
 void uiScreenMenuSetLock(const char* name);
+void uiScreenMenuSetWifi(const char* name);
 
-// BTN2 double-press = back: cosmetics page steps back to the apps page,
-// apps page exits to the pet screen.
+// Back/cancel from the menu: the list is flat (no pages), so it always
+// exits to the pet screen.
 void uiScreenMenuBack();
 
 // screen_lock.cpp (parental code pad) — lazy build + free, same pattern.
@@ -139,3 +142,15 @@ void uiScreenOtaFreed();                 // screen object deleted (auto_del)
 bool uiScreenOtaActive();                // OTA screen is the active screen
 void uiScreenOtaConfirm();               // push / long press
 void uiScreenOtaCancel();                // back / cancel
+
+// screen_connect.cpp ("get the app" QR prompt, menu "Wi-Fi" row) — lazy
+// build + free, same pattern. Wi-Fi provisioning itself is app-only (BLE
+// "ssid\npass[\ndeviceToken]" write, main.cpp processProvision): typing
+// credentials on a two-button carousel was the worst UX on the device, so
+// the row instead shows the per-platform app-download QR codes and the
+// phone does the pairing.
+void uiScreenConnectShow();              // menu "Wi-Fi" row
+void uiScreenConnectFreed();             // screen object deleted (auto_del)
+bool uiScreenConnectActive();            // connect screen is the active screen
+void uiScreenConnectToggle();            // switch the iOS/Android tab
+void uiScreenConnectSetStatus(const char* text);  // cached provisioning state

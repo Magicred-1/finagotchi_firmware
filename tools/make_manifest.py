@@ -5,10 +5,14 @@
 #
 #   python3 tools/make_manifest.py <version> <repo> <tag> <bin-dir> <out.json>
 #
-# The snippet's url points at the GitHub release asset; devices pin the
-# ISRG Root X1 CA, so before publishing the binaries must be rehosted on a
-# Let's Encrypt-issued host (see OTA.md §3). The sim env never OTA-updates
-# and gets no manifest entry.
+# The snippet's url points at the API's own /firmware/files/ route (served
+# from data/firmware/<env>/<version>/ on the API host): devices pin the
+# ISRG Root X1 CA, so the binaries must be fetched from a Let's
+# Encrypt-issued host — a raw GitHub release asset URL fails validation
+# (OTA.md §3). Publishing = upload the .bin files next to the API's
+# data/firmware.json + paste this snippet in. The `repo` arg is kept for
+# CLI stability with the workflow; it no longer feeds the URL. The sim env
+# never OTA-updates and gets no manifest entry.
 
 import hashlib
 import json
@@ -16,10 +20,11 @@ import os
 import sys
 
 ENVS = ("esp32-s3", "pcb-v1")
+FILES_BASE_URL = "https://api.finagotchi.app/firmware/files"
 
 
 def main():
-    version, repo, tag, bin_dir, out = sys.argv[1:6]
+    version, _repo, tag, bin_dir, out = sys.argv[1:6]
     snippet = {}
     for env in ENVS:
         name = f"finagotchi-{env}-{version}.bin"
@@ -27,7 +32,7 @@ def main():
             data = f.read()
         snippet[env] = {
             "version": version,
-            "url": f"https://github.com/{repo}/releases/download/{tag}/{name}",
+            "url": f"{FILES_BASE_URL}/{env}/{version}/{name}",
             "sha256": hashlib.sha256(data).hexdigest(),
             "size": len(data),
             "notes": f"Firmware {version} ({tag})",

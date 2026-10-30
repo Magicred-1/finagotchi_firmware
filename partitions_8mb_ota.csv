@@ -1,10 +1,17 @@
 # Finagotchi dual-slot OTA layout for the 8 MB flash (ESP32-S3 N8 / N8R2).
 # Replaces huge_app.csv on hardware builds — see OTA.md §2.
-# NVS offsets stay standard so pet state/provisioning survive the switch.
-# firmware.bin is ~1.6 MB with LVGL+BLE; 3.5 MB per slot is headroom.
+#
+# otadata MUST sit at 0xe000: the Arduino/PlatformIO upload always writes
+# boot_app0.bin (the "boot ota_0" otadata image) to 0xe000. The previous
+# table had nvs spanning 0x9000-0xF000 and otadata at 0x710000, so every
+# USB flash overwrote the last two NVS pages (lost Wi-Fi creds / bonds /
+# parental code) and never reset otadata (after an OTA, a USB flash kept
+# booting the old ota_1 slot). This is the stock Arduino 8 MB OTA shape.
+# The NVS offset is unchanged, so pet state survives the switch.
+# firmware.bin is ~2.2 MB with LVGL+BLE; 3.5 MB per slot is headroom.
 # Name,   Type, SubType, Offset,  Size,     Flags
-nvs,      data, nvs,     0x9000,   0x6000,
-phy_init, data, phy,     0xf000,   0x1000,
+nvs,      data, nvs,     0x9000,   0x5000,
+otadata,  data, ota,     0xe000,   0x2000,
 ota_0,    app,  ota_0,   0x10000,  0x380000,
 ota_1,    app,  ota_1,   0x390000, 0x380000,
-otadata,  data, ota,     0x710000, 0x2000,
+coredump, data, coredump,0x710000, 0x10000,

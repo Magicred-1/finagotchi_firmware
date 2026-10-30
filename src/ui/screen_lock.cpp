@@ -3,18 +3,18 @@
 
   When main.cpp has a code stored (NVS), the device boots LOCKED: the pet
   and every cosmetic screen stay free, but the FINANCIAL scope — the
-  portfolio, the create-plan wheel behind it, and the Portfolio /
-  Open DCA menu rows — lands here first. While locked the screen cycle
+  portfolio screen, the create-plan wheel behind it, and the Portfolio
+  menu row — lands here first. While locked the screen cycle
   skips the portfolio entirely (pet -> menu -> pet). One good code
-  unlocks the session (until reboot); a double-press cancels the pad.
-  From the menu's "Parental" row: no code set -> set one (enter twice);
-  code set -> enter it to remove. Forgotten code? The boot recovery chord
-  (hold BOTH buttons while powering on) clears it along with the BLE bonds.
+  unlocks the session (until reboot); back / crown long-push cancels the pad.
+  From the menu's "Code lock" row: no code set -> set one (enter twice);
+  code set -> enter it to remove. Boot recovery clears a forgotten code too.
 
-  Input rides the same two buttons as everything else (the focus group is
+  Input rides the same buttons/crown as everything else (the focus group is
   left untouched — digits are driven directly):
-    short = increment the current digit (0-9, wraps)
-    long  = confirm digit, move on; after the 4th, validate
+    short / CW  = increment the current digit (0-9, wraps)
+    CCW         = decrement (PCB v1)
+    long / push = confirm digit, move on; after the 4th, validate
 
   Lazy build + free on exit (auto_del), same heap discipline as the menu
   and create screens. PIN check/store/clear live in main.cpp
@@ -32,6 +32,8 @@ constexpr uint8_t MODE_REMOVE = 3;
 
 lv_obj_t* lockScr;
 lv_obj_t* titleLabel;
+lv_obj_t* waitLabel;     // "try again in 30s" during a wrong-code lockout
+lv_timer_t* waitTimer;
 lv_obj_t* digit[4];
 uint8_t   mode = MODE_UNLOCK;
 uint8_t   digits[4] = { 0, 0, 0, 0 };
@@ -66,9 +68,35 @@ void showMode(uint8_t m, const char* title) {
   digitsDraw();
 }
 
+// Wrong-code lockout (main.cpp owns the counter + NVS): only the modes that
+// VALIDATE a stored code are throttled; setting a new code is not.
+uint32_t lockoutMs() {
+  if (mode != MODE_UNLOCK && mode != MODE_REMOVE) return 0;
+  return g_ui.actions.pinLockoutMs ? g_ui.actions.pinLockoutMs() : 0;
+}
+
+void waitRefresh(lv_timer_t* = nullptr) {
+  if (!waitLabel) return;
+  uint32_t ms = lockoutMs();
+  if (ms == 0) {
+    lv_obj_set_hidden(waitLabel, true);
+    for (uint8_t i = 0; i < 4; i++) lv_obj_set_style_opa(digit[i], LV_OPA_COVER, 0);
+    return;
+  }
+  char buf[28];
+  uint32_t s = (ms + 999) / 1000;
+  if (s >= 60) snprintf(buf, sizeof(buf), "try again in %lum %02lus",
+                        static_cast<unsigned long>(s / 60), static_cast<unsigned long>(s % 60));
+  else snprintf(buf, sizeof(buf), "try again in %lus", static_cast<unsigned long>(s));
+  lv_label_set_text(waitLabel, buf);
+  lv_obj_set_hidden(waitLabel, false);
+  for (uint8_t i = 0; i < 4; i++) lv_obj_set_style_opa(digit[i], LV_OPA_40, 0);
+}
+
 void wrongCode() {
   uiScreenPetToast("wrong code", false);
   showMode(mode, mode == MODE_REMOVE ? "remove code" : "enter code");
+  waitRefresh();
 }
 
 // 4th digit confirmed: validate / advance the mode machine.
@@ -114,8 +142,12 @@ lv_obj_t* buildLockScreen() {
   lockScr = lv_obj_create(nullptr);
   uiThemeScreen(lockScr);
 
+  lv_obj_t* glyph = uiThemeLabel(lockScr, &lv_font_montserrat_20, UI_COL_PRIMARY);
+  lv_label_set_text(glyph, LV_SYMBOL_EYE_CLOSE);
+  lv_obj_align(glyph, LV_ALIGN_CENTER, 0, -86);
+
   titleLabel = uiThemeLabel(lockScr, &lv_font_montserrat_16, UI_COL_TEXT);
-  lv_obj_align(titleLabel, LV_ALIGN_CENTER, 0, -64);
+  lv_obj_align(titleLabel, LV_ALIGN_CENTER, 0, -56);
 
   for (uint8_t i = 0; i < 4; i++) {
     digit[i] = uiThemeLabel(lockScr, &lv_font_montserrat_28, UI_COL_TEXT);
@@ -129,6 +161,15 @@ lv_obj_t* buildLockScreen() {
     lv_obj_set_style_border_width(digit[i], 2, 0);
   }
 
+  waitLabel = uiThemeLabel(lockScr, &lv_font_montserrat_12, UI_COL_WARNING);
+  uiThemeTextBounds(waitLabel, 180, 16);
+  lv_obj_set_style_text_align(waitLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_align(waitLabel, LV_ALIGN_CENTER, 0, 46);
+  lv_obj_set_hidden(waitLabel, true);
+  waitTimer = lv_timer_create(waitRefresh, 1000, nullptr);
+
+  uiThemeControlHint(lockScr, "next");
+
   return lockScr;
 }
 
@@ -138,12 +179,14 @@ void uiScreenLockShow(int m) {
   if (!lockScr) g_ui.lockScreen = buildLockScreen();   // lazy build
   const char* title = m == 1 ? "set code" : m == 3 ? "remove code" : "enter code";
   showMode(static_cast<uint8_t>(m == 1 || m == 3 || m == 0 ? m : 0), title);
-  lv_screen_load_anim(lockScr, LV_SCR_LOAD_ANIM_FADE_IN, 200, 0, false);
+  waitRefresh();
+  lv_screen_load_anim(lockScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 200, 0, false);
 }
 
 void uiScreenLockFreed() {
-  // The screen object was deleted via the exit transition's auto_del; only
-  // the pointers need clearing.
+  for (uint8_t i = 0; i < 4; i++) lv_anim_delete(digit[i], nullptr);
+  if (waitTimer) { lv_timer_delete(waitTimer); waitTimer = nullptr; }
+  waitLabel = nullptr;
   lockScr = nullptr;
   g_ui.lockScreen = nullptr;
 }
@@ -153,20 +196,27 @@ bool uiScreenLockActive() {
 }
 
 void uiScreenLockNext() {
-  if (!lockScr) return;
+  if (!lockScr || lockoutMs() > 0) return;
   digits[pos] = (digits[pos] + 1) % 10;
   digitsDraw();
+  uiThemeNudge(digit[pos], -5);
 }
 
 // Crown CCW (PCB v1): step the current digit down, wrapping 0 -> 9.
 void uiScreenLockPrev() {
-  if (!lockScr) return;
+  if (!lockScr || lockoutMs() > 0) return;
   digits[pos] = (digits[pos] + 9) % 10;
   digitsDraw();
+  uiThemeNudge(digit[pos], 5);
 }
 
 void uiScreenLockConfirm() {
   if (!lockScr) return;
+  if (lockoutMs() > 0) { waitRefresh(); uiThemeNudge(waitLabel, -3); return; }
+  uint8_t confirmed = pos;
   if (++pos >= 4) complete();
-  else digitsDraw();
+  else {
+    digitsDraw();
+    uiThemeFocusPop(digit[confirmed]);
+  }
 }

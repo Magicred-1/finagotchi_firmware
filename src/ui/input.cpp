@@ -1,52 +1,24 @@
 /*
   input.cpp — hardware buttons -> LVGL keypad indev + semantic actions.
 
-  Debounce/short/double/long detection is the proven logic from the old
-  main.cpp (30 ms debounce, 1000 ms long, 500 ms double window).
+  Buttons use 30 ms debounce and a 1000 ms long-press threshold. Confirm is
+  immediate: no double-press window delays an action or steals navigation.
 
-  FULLY REDUNDANT TWO-BUTTON SCHEME. Serial captures on this hardware
-  have shown EACH button electrically silent at different times (first
-  GPIO4 dead / GPIO37 alive, later the reverse) — flaky unit. So both
-  buttons carry the SAME mapping and the UI works with either one:
+  TWO-BUTTON SCHEME (breadboard):
+    LEFT short = next; RIGHT short = back; either long = confirm/action.
+    RIGHT short on the pet screen opens the menu directly.
 
-    ANY button, any screen:
-      short = navigate forward (pet -> portfolio -> menu -> pet;
-              walks card/row focus within portfolio/menu first;
-              on the create screen: next field; on a detail view: close,
-              deferred by the double window — see onDetailShort)
-      long  = action for the current screen:
-              pet = sync now, portfolio = open the focused card,
-              detail = pause/resume the plan, menu = run focused action,
-              create = cycle the focused field's value / send,
-              ota confirm = schedule the update and reboot into OTA mode
+  PCB v1 needs only the crown; GPIO7 is an optional back alias:
+    crown CW/CCW = next/previous, short = confirm, long = back.
 
-  Bonus (left button only, when alive): double-press on the pet screen
-  cycles the pet reaction, on the portfolio toggles SOL <-> USD amounts,
-  on a detail view double-press also toggles pause (either button).
-
-  BACK/CANCEL (right button double-press, universal): cancels the code
-  pad, closes the detail view, leaves the current screen — the menu's
-  cosmetics page steps back to the apps page first, the create wheel
-  steps back one drum. No-op on the pet screen (already home).
-
-  PCB v1 (FINAGOTCHI_PCB_V1) replaces the two buttons with a crown
-  encoder + a dedicated cancel button:
-
-    crown rotate CW  = navigate forward (same as short press)
-    crown rotate CCW = navigate backward: previous card/row/option,
-                       past the top of a list backs out of the screen
-    crown push       = confirm / trigger the focused action (same as
-                       long press); double-push keeps the bonus extras
-                       (pet reaction / USD <-> SOL / code-pad cancel)
-    cancel (GPIO7)   = BACK, single press, no double needed
-
-  The focus group only ever holds the visible objects of the ACTIVE screen
-  (see uiGroupSet) — hidden cards never swallow key presses. Card/row
-  activation goes through LV_KEY_ENTER on the keypad indev so focus visuals
-  come from the framework.
+  The menu exposes Play and Units explicitly, so extras never depend on a
+  hidden double-press gesture. The focus group only holds visible objects of
+  the active screen (see uiGroupSet), and activation uses LV_KEY_ENTER so
+  focus visuals come from LVGL.
 */
 
 #include "ui_internal.h"
+#include "feedback.h"
 
 namespace {
 
@@ -58,16 +30,12 @@ constexpr uint8_t CROWN_B_PIN    = 16;
 constexpr uint8_t CROWN_PUSH_PIN = 4;    // same pin/polarity as breadboard BTN1
 constexpr uint8_t CANCEL_PIN     = 7;
 #else
-// Hardware reality: captures have shown each button electrically dead at
-// different times (flaky unit), so BOTH buttons carry the same mapping —
-// short = navigate, long = action — and the UI works with either one.
 constexpr uint8_t BUTTON_1_PIN = 4;    // left button
 constexpr uint8_t BUTTON_2_PIN = 37;   // right button
 #endif
 
 constexpr uint32_t DEBOUNCE_MS    = 30;
 constexpr uint32_t LONG_PRESS_MS  = 1000;
-constexpr uint32_t DOUBLE_PRESS_MS = 500;
 
 struct Button {
   uint8_t  pin;
@@ -151,31 +119,14 @@ void keypadRead(lv_indev_t*, lv_indev_data_t* data) {
 
 // --- semantic actions --------------------------------------------------------
 
-// Detail-screen double-press: toggles pause/resume on either button. A
-// plain short press still closes the detail, but only after the double
-// window proves it wasn't a toggle — the close is deferred by up to
-// DOUBLE_PRESS_MS (the detail view is the one screen where a press that
-// would navigate away also has a double action, so it can't fire the
-// short immediately like the pet/portfolio doubles do).
-uint32_t detailShortAt = 0;   // pending close; 0 = none
-
-void onDetailShort() {
-  if (detailShortAt && millis() - detailShortAt < DOUBLE_PRESS_MS) {
-    detailShortAt = 0;
-    uiScreenDcaTogglePause();
-    Serial.println("detail double: pause toggle");
-  } else {
-    detailShortAt = millis();
-  }
-}
-
-// Short press (either button) = navigate forward. Screens cycle, so the
-// pet screen is always a few presses away.
+// Next moves through the visible focusables, then through the screen cycle.
 void onNavShort() {
   if (uiScreenLockActive()) { uiScreenLockNext(); return; }
+  // connect QR prompt: navigate switches the iOS/Android tab
+  if (uiScreenConnectActive()) { uiScreenConnectToggle(); return; }
   lv_obj_t* act = lv_screen_active();
   if (uiScreenDcaDetailOpen()) {
-    onDetailShort();
+    uiScreenDcaCloseDetail();
   } else if (act == g_ui.petScreen) {
     if (g_ui.locked) {
       // Parental gate: the portfolio (financial) is SKIPPED while locked —
@@ -207,14 +158,16 @@ void onNavShort() {
   }
 }
 
-// Long press (either button) = the action of the current screen.
-void onActionLong(float nowSec) {
+// Breadboard long press / PCB short push = the current screen's action.
+void onConfirm(float nowSec) {
   if (uiScreenLockActive()) { uiScreenLockConfirm(); return; }
   // OTA confirm screen: push/long = schedule the update + reboot into OTA
   // mode (nothing else on that screen to act on).
   if (uiScreenOtaActive()) { uiScreenOtaConfirm(); return; }
+  // Connect QR prompt is static: no action while it's up (only back).
+  if (uiScreenConnectActive()) return;
   lv_obj_t* act = lv_screen_active();
-  Serial.println("ACTION (long)");
+  Serial.println("ACTION confirm");
   if (uiScreenDcaDetailOpen()) {
     uiScreenDcaTogglePause();
   } else if (act == g_ui.createScreen) {
@@ -228,11 +181,14 @@ void onActionLong(float nowSec) {
   }
 }
 
-// BTN2 double-press = BACK, universal: cancel the code pad, close the
-// detail, leave the current screen (menu cosmetics page steps back to the
-// apps page, create wheel steps back a drum). Pet screen = home, so back
-// is a no-op there.
+// Back cancels the code pad, closes detail, or leaves the current screen.
+// The breadboard's pet-screen menu shortcut is handled in uiInputUpdate.
 void onBack() {
+  if (uiScreenConnectActive()) {
+    uiScreenMenuShow();   // QR prompt: back returns to the menu
+    Serial.println("BACK: menu (connect QR)");
+    return;
+  }
   if (uiScreenLockActive()) {
     uiScreenPetShow();
     Serial.println("BACK: pet (code pad cancel)");
@@ -263,10 +219,12 @@ void onBack() {
 
 #ifdef FINAGOTCHI_PCB_V1
 // Crown CCW = navigate backward: previous card/row/option; rotating past
-// the top of a list backs out of the screen (menu: apps page -> pet,
-// cosmetics -> apps; portfolio -> pet; create summary -> previous drum).
+// the top of a list backs out of the screen (menu -> pet, portfolio ->
+// pet, create summary -> previous drum).
 void onNavPrev() {
   if (uiScreenLockActive()) { uiScreenLockPrev(); return; }
+  // connect QR prompt: either direction toggles the iOS/Android tab
+  if (uiScreenConnectActive()) { uiScreenConnectToggle(); return; }
   if (uiScreenDcaDetailOpen()) {
     uiScreenDcaCloseDetail();
     Serial.println("NAV back: close detail");
@@ -308,7 +266,9 @@ constexpr bool   CROWN_INVERT = false;
 const int8_t kQem[16] = { 0,-1,1,0, 1,0,0,-1, -1,0,0,1, 0,1,-1,0 };
 
 void crownStep(int8_t dir) {
+  if (ui::afkInput()) return;   // first detent after a nap only wakes
   if (CROWN_INVERT) dir = -dir;
+  feedback::click();          // detent tick: beep + motor tap
   if (dir > 0) onNavShort();
   else onNavPrev();
 }
@@ -328,46 +288,23 @@ void pollCrown() {
 }
 #endif // FINAGOTCHI_PCB_V1
 
-// Bonus: left-button double-press extras (when the left button is alive).
-void onBtn1Double(float nowSec) {
-  lv_obj_t* act = lv_screen_active();
-  if (uiScreenLockActive()) {   // code pad escape hatch: double = cancel
-    uiScreenPetShow();
-    Serial.println("lock: cancel");
-    return;
-  }
-  if (act == g_ui.dcaScreen && !uiScreenDcaDetailOpen()) {
-    uiScreenDcaToggleAmountUnit();
-    Serial.printf("BTN1 double: amounts in %s\n", g_ui.amountInSol ? "SOL" : "USD");
-  } else if (act == g_ui.petScreen && g_ui.actions.cycleReaction) {
-    g_ui.actions.cycleReaction(nowSec);
-  }
-}
-
-// Double-press only eats the second press where a double action actually
-// exists on the current screen — everywhere else every press is a short,
-// so fast tapping never swallows navigation.
-bool btn1HasDoubleHere() {
-  if (uiScreenLockActive()) return true;                        // cancel
-  lv_obj_t* act = lv_screen_active();
-  if (act == g_ui.petScreen) return true;                       // reaction
-  if (act == g_ui.dcaScreen && !uiScreenDcaDetailOpen()) return true;  // USD/SOL
-  return false;
-}
-
 } // namespace
 
 namespace ui {
 
-// Boot-time recovery chord query (called from setup() before ui::begin):
-// true while BOTH inputs are held. Used to erase stale BLE bonds and the
-// parental code. Breadboard: the two buttons. PCB v1: crown push + cancel.
-bool bothButtonsHeld() {
+// Boot recovery: both breadboard buttons, or a deliberate crown-only hold
+// on PCB v1 so a damaged/disconnected cancel switch cannot lock recovery out.
+bool recoveryRequested() {
 #ifdef FINAGOTCHI_PCB_V1
   pinMode(CROWN_PUSH_PIN, INPUT_PULLUP);
-  pinMode(CANCEL_PIN, INPUT_PULLDOWN);
-  delay(5);   // let the pulls settle
-  return digitalRead(CROWN_PUSH_PIN) == LOW && digitalRead(CANCEL_PIN) == HIGH;
+  delay(5);
+  if (digitalRead(CROWN_PUSH_PIN) != LOW) return false;
+  uint32_t start = millis();
+  while (millis() - start < 4000) {
+    if (digitalRead(CROWN_PUSH_PIN) != LOW) return false;
+    delay(20);
+  }
+  return true;
 #else
   pinMode(BUTTON_1_PIN, INPUT_PULLUP);
   pinMode(BUTTON_2_PIN, INPUT_PULLUP);
@@ -396,27 +333,17 @@ void uiInputInit() {
   lv_indev_set_group(indev, g_ui.group);
 
 #ifdef FINAGOTCHI_PCB_V1
-  Serial.printf("Input: crown A/B/push GPIO%d/%d/%d + cancel GPIO%d "
-                "(rotate = navigate, push = action, cancel = back)\n",
+  Serial.printf("Input: crown A/B/push GPIO%d/%d/%d + optional cancel GPIO%d "
+                "(rotate = navigate, short = action, long = back)\n",
                 CROWN_A_PIN, CROWN_B_PIN, CROWN_PUSH_PIN, CANCEL_PIN);
 #else
-  Serial.printf("Buttons: GPIO%d + GPIO%d (short = navigate, long = action)\n",
-                btn1.pin, btn2.pin);
+  Serial.printf("Buttons: GPIO%d (left: next, long: confirm) + GPIO%d "
+                "(right: back/menu, long: confirm)\n", btn1.pin, btn2.pin);
 #endif
 }
 
 void uiInputUpdate() {
   float nowSec = millis() / 1000.0f;
-
-  // Deferred detail close: the double window expired without a second
-  // press, so it was a plain short — close the detail (if still open).
-  if (detailShortAt && millis() - detailShortAt >= DOUBLE_PRESS_MS) {
-    detailShortAt = 0;
-    if (uiScreenDcaDetailOpen()) {
-      uiScreenDcaCloseDetail();
-      Serial.println("detail: close");
-    }
-  }
 
 #ifdef FINAGOTCHI_PCB_V1
   pollCrown();   // CW detent = navigate forward, CCW = backward
@@ -425,58 +352,26 @@ void uiInputUpdate() {
   bool pushShort   = handleButton(btnPush, pushLong);
   bool cancelShort = handleButton(btnCancel, cancelLong);
 
-  if (cancelShort) onBack();   // dedicated back/cancel: single press
-
-  // Crown push = confirm / trigger the focused action (the long-press
-  // semantics on the breadboard). Double-push keeps the bonus extras
-  // (pet reaction / USD <-> SOL / code-pad cancel) where they exist.
-  static uint32_t lastPushShort = 0;
-  if (pushShort) {
-    if (btn1HasDoubleHere() && millis() - lastPushShort < DOUBLE_PRESS_MS) {
-      lastPushShort = 0;
-      onBtn1Double(nowSec);
-    } else {
-      lastPushShort = millis();
-      onActionLong(nowSec);
-    }
+  if (cancelShort && !ui::afkInput()) { feedback::back(); onBack(); }
+  if (pushShort && !ui::afkInput()) {
+    feedback::confirm();
+    onConfirm(nowSec);
   }
-
-  if (pushLong) onActionLong(nowSec);
+  if (pushLong && !ui::afkInput()) {
+    feedback::back();
+    onBack();
+  }
   (void)cancelLong;
 #else
   bool long1, long2;
   bool short1 = handleButton(btn1, long1);
   bool short2 = handleButton(btn2, long2);
 
-  // BTN1 double extras: the 500 ms double window only applies where the
-  // screen has a double action (btn1HasDoubleHere) — otherwise every press
-  // is a short, so mashing never eats presses.
-  static uint32_t lastShort1 = 0;
-  if (short1) {
-    if (btn1HasDoubleHere() && millis() - lastShort1 < DOUBLE_PRESS_MS) {
-      lastShort1 = 0;
-      onBtn1Double(nowSec);
-    } else {
-      lastShort1 = millis();
-      onNavShort();
-    }
+  if (short1 && !ui::afkInput()) onNavShort();
+  if (short2 && !ui::afkInput()) {
+    if (lv_screen_active() == g_ui.petScreen) uiScreenMenuShow();
+    else onBack();
   }
-
-  // BTN2 double = BACK (universal): cancel the code pad / close detail /
-  // leave the screen. Singles keep navigating — fully redundant with BTN1.
-  static uint32_t lastShort2 = 0;
-  if (short2) {
-    if (millis() - lastShort2 < DOUBLE_PRESS_MS) {
-      lastShort2 = 0;
-      onBack();
-    } else {
-      lastShort2 = millis();
-      onNavShort();
-    }
-  }
-
-  if (long1) onActionLong(nowSec);
-
-  if (long2) onActionLong(nowSec);
+  if ((long1 || long2) && !ui::afkInput()) onConfirm(nowSec);
 #endif
 }

@@ -3,26 +3,19 @@
   - header: total portfolio value = sum(holdings x price_usd) across plans,
     big USD number with a SOL equivalent under it when the SOL/USD rate is
     known (BLE solusd: / NVS / standalone price feed)
-  - scrollable column of up to kDcaMaxPlans position cards: token logo
-    (lv_image from the PROGMEM RGB565 arrays in token_logos.h, or a
-    monogram-chip fallback), ticker, position value (USD, or SOL after the
-    BTN1-double unit toggle), next-buy countdown, holdings/buy line
+  - scrollable position cards with logo/monogram, bounded values, countdown
+    and holdings/buy line; the menu's Units row selects USD or SOL
   - overdue plans get the warning-amber treatment
-  - focus group driven by the keypad indev: BTN2 short focuses the next
-    card (light-blue framework focus ring), BTN1 short opens/closes the detail
-  - detail view: price, stats grid, countdown + progress bar
-  - empty state with a hint when no plans are mirrored
+  - focused cards scroll into view and use the shared spring feedback
+  - confirm opens/closes detail; detail confirm toggles pause/resume
+  - empty state and board-specific control hints stay in reserved regions
 
-  Heap discipline (the device boots with only ~19 KB free): the list screen
-  is built LAZILY on first show and freed on exit (auto_del), like the menu
-  and create screens. Transitions never hold two screens' widgets at once:
-  entering the create wheel first frees the card column
-  (uiScreenDcaShrinkList), and returning from it frees the drum before this
-  list rebuilds (uiScreenCreateShrink). Every widget-touching entry point
-  guards on listScr being non-null.
-
-  No button-hint text anywhere (left = move, right = select — the UI is
-  instruction-free).
+  Heap discipline: the list screen is built LAZILY on first show and freed
+  on exit (auto_del), like the menu and create screens. Transitions never
+  hold two screens' widgets at once: entering the create wheel first frees
+  the card column (uiScreenDcaShrinkList), and returning from it frees the
+  drum before this list rebuilds (uiScreenCreateShrink). Every
+  widget-touching entry point guards on listScr being non-null.
 */
 
 #include "ui_internal.h"
@@ -193,10 +186,13 @@ void fillChip(lv_obj_t* chip, const char* ticker) {
 void fmtValue(const DcaPlan& p, char* buf, size_t n) {
   double usd = uiPlanValueUsd(p);
   if (usd <= 0.0) { strlcpy(buf, "--", n); return; }
-  if (g_ui.amountInSol && g_ui.solUsd > 0.0f)
-    snprintf(buf, n, "%.4g SOL", usd / static_cast<double>(g_ui.solUsd));
-  else
+  if (g_ui.amountInSol && g_ui.solUsd > 0.0f) {
+    char q[12];
+    uiFmtQty(usd / static_cast<double>(g_ui.solUsd), q, sizeof(q));
+    snprintf(buf, n, "%s SOL", q);
+  } else {
     uiFmtUsd(usd, buf, n);
+  }
 }
 
 // --- header: total portfolio value + SOL equivalent ----------------------------
@@ -262,20 +258,30 @@ void cardFill(uint8_t slot) {
 
   char amt[16];
   uiFmtAmount(p, amt, sizeof(amt));
-  snprintf(buf, sizeof(buf), "%.4g held  %s/buy",
-           static_cast<double>(p.holdingsHeld), amt);
+  char qty[12];
+  uiFmtQty(static_cast<double>(p.holdingsHeld), qty, sizeof(qty));
+  snprintf(buf, sizeof(buf), "%s held " LV_SYMBOL_BULLET " %s", qty, amt);
   lv_label_set_text(cardSub[slot], buf);
 
   lv_obj_set_style_border_color(card[slot], od ? UI_COL_WARNING : UI_COL_BORDER, 0);
 }
 
+void cardFocused(lv_event_t* e) {
+  lv_obj_t* target = lv_event_get_target_obj(e);
+  lv_obj_scroll_to_view(target, LV_ANIM_ON);
+  uiThemeFocusPop(target);
+}
+
 void cardClicked(lv_event_t* e) {
+  lv_obj_t* target = lv_event_get_target_obj(e);
+  uiThemePress(target);
   uint8_t slot = static_cast<uint8_t>(
-      reinterpret_cast<intptr_t>(lv_obj_get_user_data(lv_event_get_target_obj(e))));
+      reinterpret_cast<intptr_t>(lv_obj_get_user_data(target)));
   openDetail(slot);
 }
 
-void newCardClicked(lv_event_t*) {
+void newCardClicked(lv_event_t* e) {
+  uiThemePress(lv_event_get_target_obj(e));
   uiScreenCreateShow();
 }
 
@@ -315,7 +321,7 @@ void detailFill() {
   lv_label_set_text(dStatVal[0], buf);
   snprintf(buf, sizeof(buf), "%lu", static_cast<unsigned long>(p.buys));
   lv_label_set_text(dStatVal[1], buf);
-  snprintf(buf, sizeof(buf), "%.4g", static_cast<double>(p.holdingsHeld));
+  uiFmtQty(static_cast<double>(p.holdingsHeld), buf, sizeof(buf));
   lv_label_set_text(dStatVal[2], buf);
   fmtValue(p, buf, sizeof(buf));
   lv_label_set_text(dStatVal[3], buf);
@@ -362,51 +368,61 @@ lv_obj_t* buildDetailScreen() {
   detailScr = lv_obj_create(nullptr);
   uiThemeScreen(detailScr);
 
+  // Circular panel: on the round display a rounded rectangle's corners were
+  // cut off by the bezel; a ring reads as deliberate. Every text row below
+  // is placed inside the circle's chord at its height.
   lv_obj_t* detailPanel = lv_obj_create(detailScr);
-  lv_obj_set_size(detailPanel, 220, 220);
+  lv_obj_set_size(detailPanel, 232, 232);
   lv_obj_center(detailPanel);
   uiThemeCard(detailPanel);
+  lv_obj_set_style_radius(detailPanel, LV_RADIUS_CIRCLE, 0);
 
   dLogo = lv_image_create(detailScr);
-  lv_obj_align(dLogo, LV_ALIGN_TOP_LEFT, 32, 40);
+  lv_obj_align(dLogo, LV_ALIGN_TOP_LEFT, 38, 44);
 
   dChip = uiThemeLabel(detailScr, &lv_font_montserrat_20, lv_color_white());
   lv_obj_set_size(dChip, 48, 48);
-  lv_obj_align(dChip, LV_ALIGN_TOP_LEFT, 32, 40);
+  lv_obj_align(dChip, LV_ALIGN_TOP_LEFT, 38, 44);
   lv_obj_set_style_bg_opa(dChip, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(dChip, LV_RADIUS_CIRCLE, 0);
   lv_obj_set_style_text_align(dChip, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_set_style_pad_top(dChip, 12, 0);
 
   dTicker = uiThemeLabel(detailScr, &lv_font_montserrat_20, UI_COL_TEXT);
-  lv_obj_align(dTicker, LV_ALIGN_TOP_LEFT, 92, 42);
+  uiThemeTextBounds(dTicker, 110, 24);
+  lv_obj_align(dTicker, LV_ALIGN_TOP_LEFT, 96, 44);
 
-  dPrice = uiThemeLabel(detailScr, &lv_font_montserrat_28, UI_COL_TEXT);
-  lv_obj_align(dPrice, LV_ALIGN_TOP_LEFT, 92, 66);
+  // 20 pt (not 28): "$1234.56" must fit the 110 px zone without ellipsis.
+  dPrice = uiThemeLabel(detailScr, &lv_font_montserrat_20, UI_COL_TEXT);
+  uiThemeTextBounds(dPrice, 110, 24);
+  lv_obj_align(dPrice, LV_ALIGN_TOP_LEFT, 96, 68);
 
   static const char* STAT_CAPTIONS[4] = { "BUY", "BUYS", "HELD", "VALUE" };
-  const int statX[4] = { 24, 128, 24, 128 };
-  const int statY[4] = { 104, 104, 148, 148 };
+  const int statX[4] = { 26, 124, 26, 124 };
+  const int statY[4] = { 100, 100, 136, 136 };
   for (int i = 0; i < 4; i++) {
     lv_obj_t* cap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
     lv_label_set_text(cap, STAT_CAPTIONS[i]);
     lv_obj_align(cap, LV_ALIGN_TOP_LEFT, statX[i], statY[i]);
     dStatVal[i] = uiThemeLabel(detailScr, &lv_font_montserrat_14, UI_COL_TEXT);
+    uiThemeTextBounds(dStatVal[i], 94, 18);
     lv_obj_align(dStatVal[i], LV_ALIGN_TOP_LEFT, statX[i], statY[i] + 15);
   }
 
+  // Next-buy row + bar sit higher and narrower than the square layout: at
+  // y ~190 the visible chord is only ~190 px.
   nbCap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(nbCap, "NEXT BUY");
-  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 28, 188);
+  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 40, 176);
 
-  dCountdown = uiThemeLabel(detailScr, &lv_font_montserrat_16, UI_COL_TEXT);
-  lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -24, 186);
+  dCountdown = uiThemeLabel(detailScr, &lv_font_montserrat_14, UI_COL_TEXT);
+  uiThemeTextBounds(dCountdown, 96, 18);
+  lv_obj_set_style_text_align(dCountdown, LV_TEXT_ALIGN_RIGHT, 0);
+  lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -40, 174);
 
-  // Progress bar: shorter and higher than the square layout — at the old
-  // width/height the round panel clipped both ends.
   dBar = lv_bar_create(detailScr);
-  lv_obj_set_size(dBar, 168, 6);
-  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 202);
+  lv_obj_set_size(dBar, 140, 6);
+  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 198);
   lv_bar_set_range(dBar, 0, 100);
   lv_obj_set_style_bg_color(dBar, UI_COL_BORDER, 0);
 
@@ -420,33 +436,34 @@ lv_obj_t* buildListScreen() {
   uiThemeScreen(listScr);
 
   lv_obj_t* title = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_EYEBROW);
+  lv_obj_set_style_text_letter_space(title, 1, 0);
   lv_label_set_text(title, "PORTFOLIO");
-  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
+  lv_obj_align(title, LV_ALIGN_TOP_MID, -8, 14);
 
   // Wi-Fi glyph right of the title (the round panel clips the top-right
-  // corner, so it rides the title row instead of the corner).
+  // corner, so it rides the title row; x <= 172 stays inside the chord).
   wifiLabel = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(wifiLabel, LV_SYMBOL_WIFI);
-  lv_obj_align(wifiLabel, LV_ALIGN_TOP_MID, 40, 14);
+  lv_obj_align(wifiLabel, LV_ALIGN_TOP_MID, 44, 14);
 
   totalVal = uiThemeLabel(listScr, &lv_font_montserrat_28, UI_COL_TEXT);
   lv_label_set_text(totalVal, "$0.00");
-  lv_obj_align(totalVal, LV_ALIGN_TOP_MID, 0, 28);
+  lv_obj_align(totalVal, LV_ALIGN_TOP_MID, 0, 26);
 
   totalSol = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_MUTED);
-  lv_obj_align(totalSol, LV_ALIGN_TOP_MID, 0, 60);
+  lv_obj_align(totalSol, LV_ALIGN_TOP_MID, 0, 56);
   lv_obj_set_hidden(totalSol, true);
 
-  // Scrollable card column (extends to the bottom safe zone — no hint bar).
-  // With up to kDcaMaxPlans(8) cards + the "+ New plan" card this always
-  // overflows: vertical scroll, slim light-blue scrollbar like the menu list.
+  // The focused card scrolls into view above the reserved control-hint row.
+  // 200 px wide: at the column's bottom edge (y 194) the chord is ~189 px,
+  // so wider cards had their corners shaved off by the bezel.
   col = lv_obj_create(listScr);
-  lv_obj_set_size(col, 224, 150);   // < 240: keeps the scrollbar off the circle edge
-  lv_obj_align(col, LV_ALIGN_TOP_MID, 0, 80);
+  lv_obj_set_size(col, 200, 118);
+  lv_obj_align(col, LV_ALIGN_TOP_MID, 0, 76);
   lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(col, 0, 0);
-  lv_obj_set_style_pad_all(col, 2, 0);
-  lv_obj_set_style_pad_row(col, 6, 0);
+  lv_obj_set_style_pad_all(col, 1, 0);
+  lv_obj_set_style_pad_row(col, 4, 0);
   lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
   lv_obj_set_scroll_dir(col, LV_DIR_VER);
@@ -458,55 +475,69 @@ lv_obj_t* buildListScreen() {
 
   for (size_t i = 0; i < kDcaMaxPlans; i++) {
     card[i] = lv_obj_create(col);
-    lv_obj_set_size(card[i], 208, 62);
+    lv_obj_set_size(card[i], 192, 56);
     uiThemeCard(card[i]);
     lv_obj_set_clickable(card[i], true);
     lv_obj_set_user_data(card[i], reinterpret_cast<void*>(static_cast<intptr_t>(i)));
     lv_obj_add_event_cb(card[i], cardClicked, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(card[i], cardFocused, LV_EVENT_FOCUSED, nullptr);
     // NOT added to the focus group here — groupSetCards() tracks visibility.
 
+    // Card zones (192 px): logo 6..44 | ticker 52..118 | countdown 120..184,
+    // value + sub line 52..184. Sized for "GOOGLX" / "in 23h 59m".
     cardLogo[i] = lv_image_create(card[i]);
-    lv_obj_align(cardLogo[i], LV_ALIGN_LEFT_MID, 7, 0);
+    lv_obj_align(cardLogo[i], LV_ALIGN_LEFT_MID, 0, 0);
+    lv_image_set_scale(cardLogo[i], 204);   // 48 -> 38 px inside the compact card
 
-    cardChip[i] = uiThemeLabel(card[i], &lv_font_montserrat_16, lv_color_white());
-    lv_obj_set_size(cardChip[i], 48, 48);
-    lv_obj_align(cardChip[i], LV_ALIGN_LEFT_MID, 7, 0);
+    cardChip[i] = uiThemeLabel(card[i], &lv_font_montserrat_14, lv_color_white());
+    lv_obj_set_size(cardChip[i], 38, 38);
+    lv_obj_align(cardChip[i], LV_ALIGN_LEFT_MID, 6, 0);
     lv_obj_set_style_bg_opa(cardChip[i], LV_OPA_COVER, 0);
     lv_obj_set_style_radius(cardChip[i], LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_text_align(cardChip[i], LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(cardChip[i], 14, 0);
+    lv_obj_set_style_pad_top(cardChip[i], 10, 0);
 
-    cardTicker[i] = uiThemeLabel(card[i], &lv_font_montserrat_16, UI_COL_TEXT);
-    lv_obj_align(cardTicker[i], LV_ALIGN_TOP_LEFT, 62, 7);
+    cardTicker[i] = uiThemeLabel(card[i], &lv_font_montserrat_14, UI_COL_TEXT);
+    uiThemeTextBounds(cardTicker[i], 66, 18);
+    lv_obj_align(cardTicker[i], LV_ALIGN_TOP_LEFT, 52, 4);
 
     cardValue[i] = uiThemeLabel(card[i], &lv_font_montserrat_16, UI_COL_TEXT);
-    lv_obj_align(cardValue[i], LV_ALIGN_TOP_LEFT, 62, 27);
+    uiThemeTextBounds(cardValue[i], 132, 18);
+    lv_obj_align(cardValue[i], LV_ALIGN_TOP_LEFT, 52, 21);
 
     cardSub[i] = uiThemeLabel(card[i], &lv_font_montserrat_12, UI_COL_MUTED);
-    lv_obj_align(cardSub[i], LV_ALIGN_TOP_LEFT, 62, 45);
+    uiThemeTextBounds(cardSub[i], 132, 15);
+    lv_obj_align(cardSub[i], LV_ALIGN_TOP_LEFT, 52, 39);
 
     cardCountdown[i] = uiThemeLabel(card[i], &lv_font_montserrat_12, UI_COL_MUTED);
-    lv_obj_align(cardCountdown[i], LV_ALIGN_TOP_RIGHT, -8, 10);
+    uiThemeTextBounds(cardCountdown[i], 66, 15);
+    lv_obj_set_style_text_align(cardCountdown[i], LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_align(cardCountdown[i], LV_ALIGN_TOP_RIGHT, -8, 6);
 
     lv_obj_set_hidden(card[i], true);
   }
 
   // Trailing "+ New plan" card: always visible, sits after the last plan.
   newCard = lv_obj_create(col);
-  lv_obj_set_size(newCard, 208, 44);
+  lv_obj_set_size(newCard, 192, 44);
   uiThemeCard(newCard);
   lv_obj_set_clickable(newCard, true);
   lv_obj_add_event_cb(newCard, newCardClicked, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(newCard, cardFocused, LV_EVENT_FOCUSED, nullptr);
   lv_obj_t* plus = uiThemeLabel(newCard, &lv_font_montserrat_14, UI_COL_PRIMARY);
   lv_label_set_text(plus, LV_SYMBOL_PLUS "  New plan");
   lv_obj_center(plus);
 
   emptyLabel = uiThemeLabel(listScr, &lv_font_montserrat_14, UI_COL_MUTED);
   lv_label_set_text(emptyLabel, "no DCA plans yet");
-  lv_obj_align(emptyLabel, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_align(emptyLabel, LV_ALIGN_CENTER, 0, 24);
   emptyHint = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_MUTED);
-  lv_label_set_text(emptyHint, "open the app to start a DCA plan");
-  lv_obj_align(emptyHint, LV_ALIGN_CENTER, 0, 18);
+  uiThemeTextBounds(emptyHint, 180, 16);
+  lv_obj_set_style_text_align(emptyHint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(emptyHint, "add one above or in the app");
+  lv_obj_align(emptyHint, LV_ALIGN_CENTER, 0, 44);
+
+  uiThemeControlHint(listScr, "open");
 
   // Cards/empty state reflect the plan mirror immediately on build.
   for (size_t i = 0; i < kDcaMaxPlans; i++) {
@@ -542,6 +573,8 @@ bool uiScreenDcaOnList() {
 // the shell is auto-deleted — the two full screens never coexist.
 void uiScreenDcaShrinkList() {
   if (!listScr || !col) return;
+  for (size_t i = 0; i < kDcaMaxPlans; i++) lv_anim_delete(card[i], nullptr);
+  lv_anim_delete(newCard, nullptr);
   lv_obj_delete(col);   // cards + "+ New plan" go with it
   col = nullptr;
   uiGroupSet(nullptr, 0, false);   // no dangling focused objects
@@ -581,19 +614,23 @@ void uiScreenDcaShow() {
 void uiScreenPetShow() {
   if (detailSlot >= 0) detailSlot = -1;
   uiGroupSet(nullptr, 0, false);   // the pet screen has no focusables
-  // Lazy screens (menu / create / portfolio list / lock / ota) free on exit.
+  // Lazy screens (menu / create / portfolio list / lock / ota / connect)
+  // free on exit.
   bool freeMenu = g_ui.menuScreen && lv_screen_active() == g_ui.menuScreen;
   bool freeCreate = g_ui.createScreen && lv_screen_active() == g_ui.createScreen;
   bool freeDca = listScr && lv_screen_active() == listScr;
   bool freeLock = g_ui.lockScreen && lv_screen_active() == g_ui.lockScreen;
   bool freeOta = g_ui.otaScreen && lv_screen_active() == g_ui.otaScreen;
+  bool freeConnect = g_ui.connectScreen && lv_screen_active() == g_ui.connectScreen;
   lv_screen_load_anim(g_ui.petScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0,
-                      freeMenu || freeCreate || freeDca || freeLock || freeOta);
+                      freeMenu || freeCreate || freeDca || freeLock ||
+                      freeOta || freeConnect);
   if (freeMenu) uiScreenMenuFreed();
   if (freeCreate) uiScreenCreateFreed();
   if (freeDca) uiScreenDcaListFreed();
   if (freeLock) uiScreenLockFreed();
   if (freeOta) uiScreenOtaFreed();
+  if (freeConnect) uiScreenConnectFreed();
 }
 
 void uiScreenDcaPlansChanged() {

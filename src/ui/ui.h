@@ -19,24 +19,24 @@ namespace ui {
 // Semantic button actions owned by main.cpp (BLE sync / pet state pushes).
 // Any may be nullptr.
 struct Actions {
-  void (*syncNow)(float nowSec);        // BTN1 short on the pet screen
-  void (*cycleReaction)(float nowSec);  // BTN1 double on the pet screen
+  void (*syncNow)(float nowSec);        // confirm on the pet screen
+  void (*cycleReaction)(float nowSec);  // menu "Play" row
   void (*feedPet)(float nowSec);        // menu "Feed pet" (BLE feed:req)
   void (*cycleItem)();                  // menu accessory row (item: push)
   void (*cycleMood)(float nowSec);      // menu mood row (mood: push)
-  void (*openDca)();                    // menu "Open DCA" (BLE dca:req)
   void (*cycleBackdrop)();              // menu backdrop row (scene theme cycle)
-  void (*togglePause)(uint8_t slot);    // detail double-press (BLE dca:pause:)
+  void (*togglePause)(uint8_t slot);    // detail confirm (BLE dca:pause:)
   // Create-screen confirm; returns true when the request went out (app
   // connected) so the UI can pop back to the portfolio.
   bool (*createPlan)(const char* ticker, float amountSol, uint32_t freqSec);
-  void (*parentalLock)();               // menu "Parental" row (set/remove code)
+  void (*parentalLock)();               // menu "Code lock" row (set/remove code)
   bool (*pinCheck)(uint16_t pin);       // lock screen: validate entered code
   void (*pinStore)(uint16_t pin);       // lock screen: save new code
   void (*pinClear)();                   // lock screen: remove code
   void (*checkUpdate)();                // menu "Update" row + BLE ota:start
   void (*otaConfirm)();                 // OTA confirm screen: push = schedule + reboot
   void (*otaCancel)();                  // OTA confirm screen: cancel (BLE status)
+  uint32_t (*pinLockoutMs)();           // lock screen: ms left in a wrong-code lockout
 };
 
 void begin(TFT_eSPI* tft, FinagotchiPet* pet, const Actions& actions);
@@ -83,6 +83,13 @@ void setCreateTickers(const char* const* tickers, uint8_t n);
 
 // Timed status overlay (center of screen, auto-hides after ms).
 void showOverlay(const char* msg, uint32_t ms);
+void hideOverlay();
+
+// Wi-Fi join progress: spinning arc + caption on lv_layer_top while a
+// provisioning join blocks the loop (processProvision). ui::pump() keeps the
+// spinner animating through the blocking wait loops in main.cpp.
+void showWifiSetup(bool on);
+void pump();   // lv_timer_handler only — safe inside blocking join waits
 
 // Parental lock (optional 4-digit code — main.cpp owns the NVS state).
 // When a code is set the device boots locked: the pet animates but leaving
@@ -92,6 +99,8 @@ void showLock(int mode);
 bool lockActive();               // lock screen is up (input routes to it)
 void setLocked(bool on);         // boot state, from main's NVS load
 void setMenuLock(const char* name);   // "on"/"off" info word cache
+void setMenuWifi(const char* name);   // bounded Wi-Fi state for the menu row
+void setConnectStatus(const char* text);  // Wi-Fi screen provisioning state
 
 // BLE pairing passkey panel; hidden with hidePasskey() once pairing ends.
 void showPasskey(uint32_t passkey);
@@ -106,8 +115,16 @@ void showOtaConfirm(const char* newVersion, uint32_t size);
 // main.cpp's link tracking (noteWifiLink edge detector + WiFi event hook).
 void setWifiOnline(bool online);
 
-// Boot-time recovery chord: true while BOTH buttons are held (called from
-// setup() before begin()). Used to erase stale BLE bonds — see WIRING.md.
-bool bothButtonsHeld();
+// AFK sleep: after AFK_TIMEOUT_MS (build flag, default 60 s) without local
+// input the pet naps — MOOD_SLEEPY with floating "z z z" over the current
+// screen, backlight dimmed + pet scene slowed by main.cpp. The first input
+// after sleep only wakes (afkInput returns true, the action is consumed);
+// toasts also wake so a dca:hit is never missed.
+bool afkActive();
+bool afkInput();   // input.cpp: note activity; true = it consumed a wake
+
+// Boot recovery: both breadboard buttons, or a 4 s crown hold on PCB v1.
+// Used to erase stale BLE bonds and the parental code — see WIRING.md.
+bool recoveryRequested();
 
 } // namespace ui

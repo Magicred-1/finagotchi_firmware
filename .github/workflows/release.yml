@@ -1,13 +1,13 @@
 # Firmware release workflow (OTA.md §7): tag fw-v* -> build all three envs,
 # rename finagotchi-<env>-<version>.bin (version from src/version.h),
 # SHA-256 them, create a GitHub Release with the binaries plus a
-# manifest-snippet.json to paste into the API repo's data/firmware.json.
+# manifest-snippet.json ready to paste into the API repo's data/firmware.json.
 #
-# NOTE: the snippet's url points at the GitHub release asset. The device
-# validates TLS against the pinned ISRG Root X1 (Let's Encrypt) — GitHub's
-# cert chain does not validate against it, so before a release can actually
-# be pulled by devices the binaries must be served from an LE-issued host
-# (api.finagotchi.app proxy, or any LE-fronted bucket). See OTA.md §3.
+# The snippet's url points at the API's /firmware/files/ route (the device
+# pins the ISRG Root X1 CA — a raw GitHub asset URL would fail validation).
+# Publishing a release: upload the .bin files to the API host at
+# data/firmware/<env>/<version>/ and paste the snippet into
+# data/firmware.json, then redeploy the API. See OTA.md §3.
 
 name: firmware release
 
@@ -33,6 +33,12 @@ jobs:
 
       - name: Install PlatformIO
         run: pip install platformio
+
+      # src/config.h is gitignored (local Wi-Fi creds): release builds use
+      # the credential-free example, so no developer network ever ships in a
+      # consumer image and the build doesn't fail on the missing header.
+      - name: Use the credential-free config
+        run: cp src/config.h.example src/config.h
 
       - name: Build all envs
         run: pio run -e esp32-s3 -e esp32-s3-sim -e pcb-v1
@@ -63,8 +69,9 @@ jobs:
             layout — the FIRST flash of this build goes over USB
             (`pio run -e <env> -t upload`). Every flash after that is wireless.
 
-            To publish: paste `manifest-snippet.json` into the API repo's
-            `data/firmware.json` and rehost the binaries on a Let's
-            Encrypt-issued host (the device pins ISRG Root X1) — see
-            OTA.md §3.
+            To publish: copy each finagotchi-<env>-<version>.bin to the API
+            host at `data/firmware/<env>/<version>/` (served at
+            https://api.finagotchi.app/firmware/files/<env>/<version>/…),
+            paste `manifest-snippet.json` into the API repo's
+            `data/firmware.json`, and redeploy the API — see OTA.md §3.
           files: release/*

@@ -28,11 +28,13 @@
 #include "ota.h"
 
 #include <WiFi.h>
+#include <esp_wifi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <Update.h>
 #include <Preferences.h>
 #include <esp_task_wdt.h>
+#include <esp_ota_ops.h>
 #include <mbedtls/sha256.h>
 #include <time.h>
 #include "config.h"
@@ -66,19 +68,29 @@ struct OtaScreen {
 
 OtaScreen scr;
 
+// Round 240 px panel: every line is centered and kept well inside the
+// circle (title at y 64 has a ~212 px chord; font 4 "Updating" is ~110 px).
+// Lines are padded to a fixed width so a shorter string fully overwrites a
+// longer previous one (no ghost characters).
+void drawCentered(const char* text, int y, uint16_t color, int padW) {
+  TFT_eSPI& tft = *scr.tft;
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextColor(color, scr.bg);
+  tft.setTextPadding(padW);
+  tft.drawString(text, tft.width() / 2, y);
+  tft.setTextPadding(0);
+}
+
 void screenStatic(const char* subtitle) {
   TFT_eSPI& tft = *scr.tft;
   tft.fillScreen(scr.bg);
-  tft.setTextDatum(TC_DATUM);
-  tft.setTextFont(4);
   tft.setTextSize(1);
-  tft.setTextColor(scr.text, scr.bg);
-  tft.drawString("finagotchi update", tft.width() / 2, 60);
+  tft.setTextFont(4);
+  drawCentered("Updating", 64, scr.text, 180);
   tft.setTextFont(2);
-  tft.setTextColor(scr.accent, scr.bg);
-  tft.drawString(subtitle, tft.width() / 2, 92);
+  drawCentered(subtitle, 96, scr.accent, 190);
   // Progress bar outline (fill drawn by screenProgress).
-  tft.drawRect(45, 130, 150, 14, scr.muted);
+  tft.drawRoundRect(40, 128, 160, 14, 7, scr.muted);
   scr.lastPct = -1;
 }
 
@@ -86,26 +98,21 @@ void screenProgress(int pct) {
   if (pct == scr.lastPct) return;
   scr.lastPct = pct;
   TFT_eSPI& tft = *scr.tft;
-  tft.fillRect(47, 132, 146 * pct / 100, 10, scr.accent);
-  char line[40];
-  snprintf(line, sizeof(line), "Updating... %d%%", pct);
+  int w = 156 * pct / 100;
+  if (w > 0) tft.fillRoundRect(42, 130, w < 10 ? 10 : w, 10, 5, scr.accent);
+  char line[24];
+  snprintf(line, sizeof(line), "%d%%", pct);
   tft.setTextFont(2);
-  tft.setTextColor(scr.text, scr.bg);
-  tft.drawString(line, tft.width() / 2, 160);
-  tft.setTextColor(scr.muted, scr.bg);
-  tft.drawString("keep on charger", tft.width() / 2, 182);
+  drawCentered(line, 152, scr.text, 80);
+  drawCentered("keep it powered", 174, scr.muted, 170);
 }
 
 void screenMessage(const char* line1, const char* line2, bool isError) {
   TFT_eSPI& tft = *scr.tft;
-  tft.fillRect(0, 110, tft.width(), 90, scr.bg);
+  tft.fillRect(20, 150, tft.width() - 40, 50, scr.bg);
   tft.setTextFont(2);
-  tft.setTextColor(isError ? scr.danger : scr.accent, scr.bg);
-  tft.drawString(line1, tft.width() / 2, 150);
-  if (line2 && line2[0]) {
-    tft.setTextColor(scr.muted, scr.bg);
-    tft.drawString(line2, tft.width() / 2, 172);
-  }
+  drawCentered(line1, 152, isError ? scr.danger : scr.accent, 190);
+  if (line2 && line2[0]) drawCentered(line2, 174, scr.muted, 170);
 }
 
 // --- NVS marker ---------------------------------------------------------------
@@ -122,13 +129,18 @@ void clearMarker() {
   prefs.end();
 }
 
-// Never returns: shows the error, clears the marker, reboots. (Not marked
-// [[noreturn]] — core 2.0.17's ESP.restart() isn't, and the mismatch warns.)
-void fail(const char* line1, const char* line2) {
-  Serial.printf("OTA: FAILED: %s %s\n", line1, line2 ? line2 : "");
+// Never returns: shows the error and reboots. (Not marked [[noreturn]] —
+// core 2.0.17's ESP.restart() isn't, and the mismatch warns.)
+// retry = transient failure (Wi-Fi, clock, network): the marker stays, so
+// the next boot tries again until OTA_MAX_TRIES is spent — a brief Wi-Fi
+// blip no longer silently discards the update the user confirmed. Permanent
+// failures (bad manifest, hash mismatch, flash error) clear it at once.
+void fail(const char* line1, const char* line2, bool retry = false) {
+  Serial.printf("OTA: FAILED (%s): %s %s\n", retry ? "will retry" : "final",
+                line1, line2 ? line2 : "");
   if (Update.isRunning()) Update.abort();
   screenMessage(line1, line2, true);
-  clearMarker();
+  if (!retry) clearMarker();
   delay(ERROR_HOLD_MS);
   ESP.restart();
 }
@@ -165,10 +177,16 @@ void joinWiFi() {
     s = WIFI_SSID;
     p = WIFI_PASS;
   }
-  if (s.length() == 0) fail("no wifi credentials", "provision via the app");
+  if (s.length() == 0) fail("No Wi-Fi saved", "set it up in the app");
 
   WiFi.mode(WIFI_STA);
+  // Same 1-13 channel domain as the normal firmware (main.cpp
+  // wifiRejoinUnlocked): without it a network on channel 12/13 that the
+  // device joins fine normally is invisible in OTA mode.
+  wifi_country_t country = {"01", 1, 13, WIFI_COUNTRY_POLICY_MANUAL};
+  esp_wifi_set_country(&country);
   WiFi.begin(s.c_str(), p.c_str());
+  screenMessage("Connecting to Wi-Fi", "", false);
   Serial.printf("OTA: joining WiFi '%s'\n", s.c_str());
   uint32_t start = millis();
   while (WiFi.status() != WL_CONNECTED && millis() - start < WIFI_JOIN_MS) {
@@ -176,7 +194,7 @@ void joinWiFi() {
     delay(250);
   }
   if (WiFi.status() != WL_CONNECTED)
-    fail("wifi join failed", "check credentials");
+    fail("Wi-Fi join failed", "will retry", true);
 
   // Pinned-CA validation needs a plausible wall clock (cert validity window).
   configTzTime(TZ_POSIX, "pool.ntp.org", "time.nist.gov");
@@ -186,7 +204,7 @@ void joinWiFi() {
     if (getLocalTime(&ti, 200) && ti.tm_year > 120) return;
     esp_task_wdt_reset();
   }
-  fail("clock sync failed", "no ntp, tls would fail");
+  fail("Clock sync failed", "will retry", true);
 }
 
 // --- download + flash -----------------------------------------------------------
@@ -203,28 +221,36 @@ void toHex(const uint8_t* in, size_t n, char* out) {
 // Never returns: every failure path goes through fail() -> ESP.restart(),
 // success ends in Update.end(true) + reboot.
 void downloadAndFlash(const char* url, const char* sha256, uint32_t size) {
+  // HTTPS only: the pinned CA is the transport guarantee; never fall back.
+  if (strncmp(url, "https://", 8) != 0) fail("Bad update link", "not https");
+  screenMessage("Downloading", "", false);
   WiFiClientSecure client;
   client.setCACert(kApiRootCa);   // pinned ISRG Root X1 — never setInsecure()
+  client.setHandshakeTimeout(15);
   HTTPClient http;
   http.setTimeout(15000);
-  if (!http.begin(client, url)) fail("bad url", "");
+  // No redirects: a 3xx to another host must not be followed (it would
+  // fail the pinned CA anyway, but this keeps the failure explicit).
+  http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+  if (!http.begin(client, url)) fail("Bad update link", "");
   int code = http.GET();
   if (code != HTTP_CODE_OK) {
     char msg[32];
-    snprintf(msg, sizeof(msg), "HTTP %d", code);
+    snprintf(msg, sizeof(msg), "server error %d", code);
     http.end();
-    fail("download failed", msg);
+    // 4xx = the file isn't there (permanent); network/5xx = retry.
+    fail("Download failed", msg, code <= 0 || code >= 500);
   }
   int served = http.getSize();
   if (served > 0 && static_cast<uint32_t>(served) != size) {
     http.end();
-    fail("size mismatch", "manifest vs server");
+    fail("Size mismatch", "update rejected");
   }
 
   if (!Update.begin(size)) {
     String err = Update.errorString();
     http.end();
-    fail("update begin failed", err.c_str());
+    fail("Update failed", err.c_str());
   }
 
   mbedtls_sha256_context sha;
@@ -245,14 +271,14 @@ void downloadAndFlash(const char* url, const char* sha256, uint32_t size) {
         mbedtls_sha256_free(&sha);
         String err = Update.errorString();
         http.end();
-        fail("flash write failed", err.c_str());
+        fail("Flash write failed", err.c_str());
       }
       written += static_cast<uint32_t>(rd);
       screenProgress(static_cast<int>(written * 100 / size));
     } else if (millis() - lastProgressAt > STALL_MS) {
       mbedtls_sha256_free(&sha);
       http.end();
-      fail("download stalled", "network drop");
+      fail("Download stalled", "will retry", true);
     }
     esp_task_wdt_reset();   // feed the watchdog each chunk
     yield();
@@ -268,16 +294,17 @@ void downloadAndFlash(const char* url, const char* sha256, uint32_t size) {
   toHex(digest, sizeof(digest), hex);
   if (strcasecmp(hex, sha256) != 0) {
     Serial.printf("OTA: sha256 mismatch\n  got:  %s\n  want: %s\n", hex, sha256);
-    fail("sha256 mismatch", "image rejected");
+    fail("Verification failed", "update rejected");
   }
 
   if (!Update.end(true)) {
     String err = Update.errorString();
-    fail("update end failed", err.c_str());
+    fail("Update failed", err.c_str());
   }
   Serial.printf("OTA: %lu bytes written, sha256 OK — rebooting into new slot\n",
                 static_cast<unsigned long>(written));
-  screenMessage("update complete", "rebooting...", false);
+  screenProgress(100);
+  screenMessage("Update complete", "restarting...", false);
   clearMarker();
   delay(1500);
   ESP.restart();
@@ -312,6 +339,10 @@ void ota::schedule(const char* url, const char* sha256,
 
 void ota::run(TFT_eSPI& tft) {
   disableLoopWDT();   // long TLS/download phases; chunks still feed the TWDT
+  // The running image got far enough to schedule this update, so it works:
+  // confirm it, otherwise Update.begin() refuses to write the other slot
+  // while this one is still PENDING_VERIFY (ESP_ERR_OTA_ROLLBACK_INVALID_STATE).
+  esp_ota_mark_app_valid_cancel_rollback();
 
   scr.tft = &tft;
   scr.bg = tft.color565(0x0B, 0x28, 0x58);
@@ -335,7 +366,7 @@ void ota::run(TFT_eSPI& tft) {
   if (tries >= OTA_MAX_TRIES) {
     Serial.printf("OTA: %u failed attempts, dropping marker\n", tries);
     screenStatic(ver.c_str());
-    screenMessage("update gave up", "booting normal firmware", true);
+    screenMessage("Update failed", "starting normally", true);
     clearMarker();
     delay(ERROR_HOLD_MS);
     ESP.restart();
@@ -345,16 +376,16 @@ void ota::run(TFT_eSPI& tft) {
   prefs.end();
 
   if (url.length() == 0 || sha.length() != 64 || size == 0)
-    fail("bad manifest data", "re-check from the menu");
+    fail("Update data invalid", "check again from menu");
 
   char sub[48];
-  snprintf(sub, sizeof(sub), "version %s  (%.2f MB)", ver.c_str(),
+  snprintf(sub, sizeof(sub), "v%s  %.2f MB", ver.c_str(),
            static_cast<double>(size) / 1048576.0);
   screenStatic(sub);
   screenProgress(0);
 
   if (batteryPercentNow() < OTA_MIN_BATTERY_PCT)
-    fail("battery too low", "charge to 40% first");
+    fail("Battery too low", "charge to 40% first");
 
   joinWiFi();
   downloadAndFlash(url.c_str(), sha.c_str(), size);   // never returns

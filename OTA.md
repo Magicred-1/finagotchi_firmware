@@ -1,7 +1,7 @@
 # Finagotchi Firmware OTA Spec
 
 Over-the-air firmware updates over Wi-Fi. Status: **implemented** (items
-1–6; Tier 1 boot safety only — Tier 2 rollback remains future work, §5).
+1–7; Tier 1 + Tier 2 boot safety, §5).
 
 Implementation notes / deviations from the original spec:
 
@@ -24,9 +24,9 @@ Implementation notes / deviations from the original spec:
 - **Download URL must terminate TLS with a Let's Encrypt cert.** Firmware
   downloads validate against the pinned ISRG Root X1 (`src/api_root_ca.h`),
   so a raw `github.com/.../releases/download/...` asset URL (DigiCert)
-  fails validation. Serve the binaries from api.finagotchi.app (proxy) or
-  any LE-fronted bucket before publishing a manifest entry; the device
-  does not follow redirects to another host.
+  fails validation. The binaries are served from the API itself —
+  `https://api.finagotchi.app/firmware/files/<env>/<version>/…` (§3); the
+  device does not follow redirects to another host.
 
 ## Current state (pre-OTA baseline)
 
@@ -63,12 +63,18 @@ short hash) is injected by the PlatformIO pre-script `tools/version_flags.py`
 `esp32-s3` and `pcb-v1` envs:
 
 ```
-nvs,      data, nvs,     0x9000,   0x6000
-phy_init, data, phy,     0xf000,   0x1000
+nvs,      data, nvs,     0x9000,   0x5000
+otadata,  data, ota,     0xe000,   0x2000
 ota_0,    app,  ota_0,   0x10000,  0x380000   # 3.5 MB
 ota_1,    app,  ota_1,   0x390000, 0x380000   # 3.5 MB
-otadata,  data, ota,     0x710000, 0x2000
+coredump, data, coredump,0x710000, 0x10000
 ```
+
+`otadata` must be at `0xe000`: every USB upload writes `boot_app0.bin`
+there. The first version of this table had NVS covering `0xe000` and
+otadata at `0x710000`, so each USB flash corrupted the last NVS pages and
+never reset the boot slot. Devices flashed with that table need one more
+USB flash of this build (NVS is re-initialised if its pages are damaged).
 
 (Current firmware.bin is ~2.0 MB with LVGL+BLE; 3.5 MB per slot is
 comfortable headroom. NVS offsets stay standard so pet state survives.
@@ -107,16 +113,20 @@ This caveat ships in the release notes of the first OTA-capable version
   `esp32-s3`, `pcb-v1`), loaded once at router creation — a release updates
   the file and redeploys. The CI release workflow emits a ready-to-paste
   `manifest-snippet.json`.
-- Binary hosting: NOT solved by the route — the data file's `url` is just
-  data. Because the device pins ISRG Root X1 (§6), the url must be an
-  LE-issued host: an api.finagotchi.app proxy route or an LE-fronted
-  bucket. Raw GitHub release asset URLs will NOT validate on-device.
-  Tests: `test/firmware.test.ts` covers the 200/204/400/404 cases.
+- Binary hosting: `GET /firmware/files/<env>/<version>/finagotchi-<env>-<version>.bin`
+  on the same API (Let's Encrypt cert — satisfies the §6 pin). Files live
+  at `data/firmware/<env>/<version>/` on the API host (gitignored, uploaded
+  at release time). The route is public like the manifest, answers with the
+  exact bytes + `Content-Length` the device checks, rejects any file name
+  that isn't precisely the release binary (path-traversal guard), and marks
+  responses immutable. Tests: `test/firmware.test.ts` covers the
+  200/204/400/404 manifest cases and the files route (bytes, headers,
+  missing file, wrong name, traversal).
 
 ## 4. Device update flow — DONE (with the reboot-into-OTA-mode deviation)
 
 Trigger (either):
-- On-device: menu apps page → **Update** row (info word = current
+- On-device: menu → **Update** row (info word = current
   `FW_VERSION`; crown scroll, push to select, cancel to abort).
 - From the app: BLE write `ota:start`, with `ota:status:<state>` notifies
   on the state characteristic (`idle | checking | current |
@@ -137,10 +147,10 @@ Flow:
    over the pinned-CA `httpGetJson` path. 204 → "up to date" toast, done.
 2. Confirm screen (`src/ui/screen_ota.cpp`, lazy build + free like the
    menu/lock screens): `v<current> -> v<new>` + size, "push = update /
-   cancel = abort". It rides the existing screen/action plumbing
+   hold = abort" on PCB v1. It rides the existing screen/action plumbing
    (`uiScreenOtaConfirm`/`uiScreenOtaCancel` in input.cpp), so the
-   breadboard (long = update, right-double = abort) and the PCB crown
-   (push = update, cancel = abort) both drive it with no new input code.
+   breadboard (long = update, right short = abort) and the PCB crown
+   (short push = update, long push = abort) both drive it with no new input code.
    The manifest's sha256 must be 64 hex chars and `size` ≤ the slot size —
    anything else is rejected as `error:manifest` and never scheduled.
 3. **DEVIATION (replaces "suspend the LVGL UI task"):** confirm stashes the
@@ -151,7 +161,10 @@ Flow:
    chunk, 30 s stall timeout) → SHA-256 of the written image verified
    against the manifest before `Update.end(true)`.
 5. On success: marker cleared, reboot into the new slot. On any failure:
-   `Update.abort()`, error on the raw screen ~5 s, marker cleared, reboot
+   `Update.abort()`, error on the raw screen ~5 s, reboot. Transient
+   failures (Wi-Fi join, clock, stall, network/5xx) keep the marker so the
+   next boot retries; permanent ones (bad data, 4xx, hash or flash errors)
+   clear it. Either way the marker is dropped after 3 attempts. Then reboot
    into the untouched firmware. After 3 failed attempts the marker is
    dropped (no boot loop on a poisoned manifest).
 
@@ -162,15 +175,13 @@ Flow:
   checksum verifies (and we additionally SHA-256-verify against the
   manifest first). An interrupted or corrupted download can never boot —
   the old app stays selected. This covers network drops and brownouts.
-- **Tier 2 (rollback, needs bootloader support) — FUTURE WORK:** a *valid
-  but broken* image (boots, then crashes) is only auto-recovered if the
-  bootloader has `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`. The stock Arduino
-  core bootloader does not ship with it; getting it means building Arduino
-  as an ESP-IDF component or a custom bootloader. If we take this on, the
-  pattern is: first boot of a new image must call
-  `esp_ota_mark_app_valid_cancel_rollback()` only after a self-check passes
-  (Wi-Fi joins + LVGL ready within N seconds), else the bootloader reverts
-  to the previous slot on the next reset.
+- **Tier 2 (rollback) — SHIPPED:** the core's prebuilt bootloader has
+  `CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`. `main.cpp` overrides the core's
+  weak `verifyRollbackLater()` so a new image stays `PENDING_VERIFY`, and
+  only calls `esp_ota_mark_app_valid_cancel_rollback()` after 30 s of a
+  healthy loop (UI up, heap sane). A crash, watchdog reset or brownout
+  before that makes the bootloader revert to the previous slot. OTA mode
+  marks the running image valid before writing the other slot.
 
 ## 6. Security — DONE
 
@@ -192,10 +203,11 @@ Flow:
 2. Renames outputs `finagotchi-<env>-<version>.bin` (version read from
    `src/version.h`), computes SHA-256 (`SHA256SUMS.txt`)
 3. Creates the GitHub Release with the binaries attached
-4. Attaches `manifest-snippet.json` (`tools/make_manifest.py`) to paste
-   into the API's `data/firmware.json` — the API stays the single source
-   of truth for "what is latest". Remember the url caveat: rehost the
-   binaries on an LE-issued host and adjust the urls before publishing (§3).
+4. Attaches `manifest-snippet.json` (`tools/make_manifest.py`) — its urls
+   already point at the API's `/firmware/files/` route. Publishing = copy
+   each `.bin` to the API host's `data/firmware/<env>/<version>/`, paste
+   the snippet into `data/firmware.json`, redeploy. The API stays the
+   single source of truth for "what is latest".
 
 Channels (stable/beta) can mirror the Expo channel discipline later; v1 is
 a single stable channel.
@@ -206,11 +218,11 @@ a single stable channel.
 |---|------|-------|--------|
 | 1 | `src/version.h` + `tools/version_flags.py` + Update menu row + BLE snapshot `fw:` field | firmware | ✅ done |
 | 2 | `partitions_8mb_ota.csv` on `esp32-s3` + `pcb-v1` (one-time USB reflash per device) | firmware | ✅ done |
-| 3 | `src/routes/firmware.ts` manifest + `data/firmware.json` (binary hosting stays manual — LE host, §3) | API server | ✅ done |
+| 3 | `src/routes/firmware.ts` manifest + `/firmware/files/` binaries route + `data/firmware.json` (binaries uploaded to `data/firmware/<env>/<version>/` at release) | API server | ✅ done |
 | 4 | Update flow: manifest check, reboot-into-OTA-mode download, progress screen, guards | firmware | ✅ done |
 | 5 | `ota:start` / `ota:status:<state>` BLE commands (firmware side; app UI is a mobile-repo follow-up) | firmware | ✅ done |
 | 6 | GitHub Actions release workflow (`fw-v*`) | firmware repo | ✅ done |
-| 7 | Tier-2 rollback (optional follow-up) | firmware | ⬜ future |
+| 7 | Tier-2 rollback (self-test, then mark valid) | firmware | ✅ done |
 
 ## Open questions
 
@@ -223,7 +235,6 @@ a single stable channel.
   `huge_app.csv` — it is never flashed and never OTA-updates.
 - Beta channel: reuse the Expo-style channel concept via
   `?channel=beta` on the manifest, gated by a device flag settable over BLE?
-- Binary hosting: the manifest route and CI snippet are done, but the
-  actual bytes still need an LE-issued home (API proxy route like
-  `/firmware/files/<env>/<version>/firmware.bin` streaming from the GitHub
-  release asset, or an LE-fronted bucket). Which one?
+- ~~Binary hosting~~ — answered: the API's own `/firmware/files/<env>/<version>/`
+  route serves the bytes (LE cert, satisfies the pinned CA); binaries are
+  uploaded to the API host's `data/firmware/` tree at release time (§3, §7).

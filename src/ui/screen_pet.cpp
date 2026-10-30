@@ -11,8 +11,7 @@
   - stats: streak / points / happiness bar (captions over values)
   - gain/reward toasts on lv_layer_top (success green, dca:hit amber)
 
-  No button-hint text anywhere: the control model is dead simple
-  (left = move, right = select) and the UI is instruction-free.
+  Control hints live on the list screens, leaving the pet canvas uncluttered.
 */
 
 #include "ui_internal.h"
@@ -156,6 +155,7 @@ lv_obj_t* uiScreenPetCreate() {
   // colored by level, hidden on USB power.
   battLabel = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_obj_align(battLabel, LV_ALIGN_TOP_RIGHT, -44, 32);
+  lv_obj_set_hidden(battLabel, true);
 
   // Sync spinner + caption (advertising scene). Sits below the badge/track
   // row so the two never overlap on the round panel.
@@ -177,6 +177,8 @@ lv_obj_t* uiScreenPetCreate() {
   uiThemeGlass(chip, true);
   lv_obj_set_style_radius(chip, UI_RADIUS_PILL, 0);
   chipLabel = uiThemeLabel(chip, &lv_font_montserrat_14, UI_COL_TEXT);
+  uiThemeTextBounds(chipLabel, 182, 20);
+  lv_obj_set_style_text_align(chipLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_center(chipLabel);
   lv_obj_set_hidden(chip, true);
 
@@ -220,10 +222,18 @@ void uiScreenPetSyncWait(bool on) {
 void uiScreenPetSetStats(uint32_t streakDays, uint32_t points, uint8_t happiness) {
   char buf[12];
   uiFmtVal(streakDays, buf, sizeof(buf));
-  lv_label_set_text(statVal[0], buf);
+  if (strcmp(lv_label_get_text(statVal[0]), buf) != 0) {
+    lv_label_set_text(statVal[0], buf);
+    uiThemeNudge(statVal[0], -3);
+  }
   uiFmtVal(points, buf, sizeof(buf));
-  lv_label_set_text(statVal[1], buf);
-  lv_bar_set_value(happyBar, happiness > 100 ? 100 : happiness, LV_ANIM_OFF);
+  if (strcmp(lv_label_get_text(statVal[1]), buf) != 0) {
+    lv_label_set_text(statVal[1], buf);
+    uiThemeNudge(statVal[1], -3);
+  }
+  uint8_t next = happiness > 100 ? 100 : happiness;
+  lv_bar_set_value(happyBar, next,
+                   lv_bar_get_value(happyBar) == next ? LV_ANIM_OFF : LV_ANIM_ON);
 }
 
 void uiScreenPetSetSubStage(uint8_t subStage) {
@@ -298,19 +308,6 @@ void uiScreenPetPlansChanged() {
   if (chipSlot >= g_ui.planCount) chipSlot = 0;
   chipFill();
   lv_timer_reset(chipRotateTimer);
-}
-
-void uiScreenPetChipAdvance() {
-  if (g_ui.planCount == 0) return;
-  uint8_t from = chipSlot;
-  for (size_t k = 1; k <= g_ui.planCount; k++) {
-    uint8_t cand = static_cast<uint8_t>((from + k) % g_ui.planCount);
-    if (g_ui.plans[cand].enabled) {
-      chipShow(cand, true);
-      lv_timer_reset(chipRotateTimer);
-      return;
-    }
-  }
 }
 
 void uiScreenPetTick() {

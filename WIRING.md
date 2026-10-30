@@ -59,17 +59,42 @@ the input map:
 | Input | GPIO | Polarity | Action |
 |-------|------|----------|--------|
 | Crown rotate | A=15, B=16 | quadrature, pull-ups | CW = navigate forward, CCW = backward (spins the create wheel, walks cards/rows; rotating past the top of a list backs out of the screen) |
-| Crown push | 4 | active-LOW | confirm / trigger the focused action; double-push = bonus extras (pet reaction, USD ↔ SOL, code-pad cancel) |
-| Cancel | 7 | active-HIGH | single press = universal BACK (same semantics as the breadboard's right-button double-press) |
+| Crown push | 4 | active-LOW | short = immediate confirm/action; long = universal BACK/cancel |
+| Cancel (optional alias) | 7 | active-HIGH | single press = universal BACK; not needed for any flow |
 
-The parental code pad is fully crown-driven: rotate to set a digit
-(CW up / CCW down), push to confirm it, cancel to escape. The boot
-recovery chord (erase BLE bonds + parental code) is **crown push + cancel
-held while powering on**.
+On-board feedback and power (all in `src/feedback.cpp` / `setupBattery()` in
+`src/main.cpp`, compiled only into the `pcb-v1` env):
+
+| Output / sense | GPIO | Driver | Behaviour |
+|----------------|------|--------|-----------|
+| Piezo buzzer BZ1 | 17 | PWM via Q1 (3V3 → BZ1 → Q1) | non-blocking pattern player: detent tick on crown steps, confirm beep on push, low blip on cancel, two-tone chime at boot |
+| Coin motor (J4) | 18 | Q2 (AO3400) low-side switch | tapped with each feedback event (click/confirm/back/chime) |
+| Battery sense | 5 | ADC1, 1:1 divider (VBAT/2) | 5 s EMA gauge in the UI chrome; OTA guard refuses updates under 40% |
+
+The parental code pad is fully crown-driven: rotate to set a digit, short-push
+to confirm it, and long-push to escape. For recovery, **hold only the crown
+push for 4 seconds while the splash is visible** to erase BLE bonds and the
+parental code. SW1/GPIO7 can be disconnected.
 
 If the dial navigates the wrong way on the assembled board, flip
 `CROWN_INVERT` in `src/ui/input.cpp` (or swap the A/B wires) — quadrature
 direction depends on which way the encoder was clocked into the footprint.
+
+### Serial Wi-Fi setup (app-less fallback)
+
+On PCB v1, use the native USB port. On the dev board, native USB and UART0
+both work. Open a 115200-baud monitor and enter the full SSID after `wifi:`,
+then the password on the next line:
+
+```
+wifi:Full SSID With Spaces
+thePassword
+```
+
+Spaces are preserved exactly; do not add quotes. Close the app or disable
+Bluetooth for a serial-only test so the app's automatic BLE write cannot
+replace the manual credentials. The serial log reports credential lengths
+and hidden-character checks, never the password.
 
 ## Buttons
 
@@ -122,18 +147,12 @@ pull-up); pressed = LOW. Active-low is what the firmware expects.
 
 | Button | GPIO | Function |
 |--------|------|----------|
-| Either button | GPIO37 (right), GPIO4 (left) | **Both buttons carry the same mapping** — the unit is flaky (captures have shown each button electrically dead at different times), so the scheme is fully redundant and the UI works with whichever button is alive. **Short press = navigate**: walks everything pet → portfolio → menu → pet (moves card/row focus within portfolio/menu first — the menu is a vertical app list, entered on a back-arrow affordance (→) in the right zone, then the apps top-to-bottom; on the create-plan wheel: next option, wrapping; on a detail view: closes it). **Long press = action** for the current screen: sync on the pet screen, open the focused card on portfolio, **pause/resume the plan on the detail view**, run the focused app on the menu (Feed pet / Accessory / Mood / Open DCA, or the back arrow → pet), confirm the drum / CREATE on the create-plan wheel. **Double press on the detail view** (either button): also pause/resume — a single press still closes. Left-button double extras: cycle reaction on the pet screen, toggle amounts USD ↔ SOL on portfolio |
+| Left | GPIO4 | **Short = next**: pet → portfolio → menu → pet, moving card/row/option focus first; on a detail view it closes the detail. **Long = confirm/action**: sync on pet, open a card, pause/resume on detail, run a menu row, or advance/CREATE in plan creation |
+| Right | GPIO37 | **Short = BACK/cancel**; on the pet screen it opens the menu directly. **Long = confirm/action**, same as left long |
 
-> Redundant scheme: whichever button is alive drives the whole device — short
-> to move, long to act, and screens cycle so home is always a few presses
-> away. The UI shows no button hints — state captions only.
-
-> **Back / cancel:** double-press the RIGHT button (GPIO37) anywhere —
-> closes the detail view, leaves the current screen (the menu's cosmetics
-> page steps back to the apps page first, the create-plan wheel steps back
-> one drum), and cancels the parental code pad. No-op on the pet screen
-> (already home). The LEFT button's double keeps its bonus actions
-> (reaction cycle / USD ↔ SOL / pause toggle).
+> No flow requires a double-press. Reactions and USD/SOL switching have
+> visible **Play** and **Units** menu rows. List footers show the active
+> board's controls, and focused cards/rows scroll into view automatically.
 
 > **Recovery chord:** hold BOTH buttons while powering on to erase all BLE
 > bonds from the device AND clear the parental code (splash shows "bonds +
