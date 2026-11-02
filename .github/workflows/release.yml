@@ -11,6 +11,9 @@
 
 name: firmware release
 
+permissions:
+  contents: write
+
 on:
   push:
     tags: ['fw-v*']
