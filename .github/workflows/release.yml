@@ -41,7 +41,15 @@ jobs:
         run: cp src/config.h.example src/config.h
 
       - name: Build all envs
-        run: pio run -e esp32-s3 -e esp32-s3-sim -e pcb-v1
+        run: |
+          set +e
+          pio run -e esp32-s3 -e esp32-s3-sim -e pcb-v1 > build.log 2>&1
+          STATUS=$?
+          cat build.log
+          if [ "$STATUS" -ne 0 ]; then
+            tail -n 60 build.log | while IFS= read -r LINE; do echo "::error::$LINE"; done
+            exit "$STATUS"
+          fi
 
       - name: Package OTA + USB web-flash binaries and manifests
         env:
