@@ -87,7 +87,7 @@ USB (`pio run -e <env> -t upload`). Every flash after that is wireless.
 This caveat ships in the release notes of the first OTA-capable version
 (the release workflow's release body says it).
 
-## 3. Server side (finagotchi_api_server) — DONE (manifest; hosting manual)
+## 3. Server side (finagotchi_api_server) — DONE
 
 `src/routes/firmware.ts` implements:
 
@@ -114,14 +114,15 @@ This caveat ships in the release notes of the first OTA-capable version
   the file and redeploys. The CI release workflow emits a ready-to-paste
   `manifest-snippet.json`.
 - Binary hosting: `GET /firmware/files/<env>/<version>/finagotchi-<env>-<version>.bin`
-  on the same API (Let's Encrypt cert — satisfies the §6 pin). Files live
-  at `data/firmware/<env>/<version>/` on the API host (gitignored, uploaded
-  at release time). The route is public like the manifest, answers with the
-  exact bytes + `Content-Length` the device checks, rejects any file name
-  that isn't precisely the release binary (path-traversal guard), and marks
-  responses immutable. Tests: `test/firmware.test.ts` covers the
-  200/204/400/404 manifest cases and the files route (bytes, headers,
-  missing file, wrong name, traversal).
+  on the same API relays the immutable asset from the matching GitHub Release.
+  The device still connects only to the API's Let's Encrypt certificate, while
+  the manifest SHA-256 authenticates the exact bytes. This works on Vercel
+  without persistent file storage or a manual binary upload. The route is
+  public like the manifest, answers with the exact bytes + `Content-Length`
+  the device checks, rejects any file name that isn't precisely the release
+  binary, and marks responses immutable. Tests: `test/firmware.test.ts` covers
+  the 200/204/400/404 manifest cases and the file relay (bytes, headers,
+  missing asset, upstream failure, wrong name, traversal).
 
 ## 4. Device update flow — DONE (with the reboot-into-OTA-mode deviation)
 
@@ -201,13 +202,21 @@ Flow:
 `.github/workflows/release.yml`, on tag `fw-v*`:
 1. `pio run -e esp32-s3 -e esp32-s3-sim -e pcb-v1`
 2. Renames outputs `finagotchi-<env>-<version>.bin` (version read from
-   `src/version.h`), computes SHA-256 (`SHA256SUMS.txt`)
-3. Creates the GitHub Release with the binaries attached
+   `src/version.h`), adds the bootloader, partition table and `boot_app0.bin`
+   for both hardware envs, then computes SHA-256 (`SHA256SUMS.txt`)
+3. Creates the GitHub Release with all binaries attached
 4. Attaches `manifest-snippet.json` (`tools/make_manifest.py`) — its urls
-   already point at the API's `/firmware/files/` route. Publishing = copy
-   each `.bin` to the API host's `data/firmware/<env>/<version>/`, paste
-   the snippet into `data/firmware.json`, redeploy. The API stays the
-   single source of truth for "what is latest".
+   already point at the API's `/firmware/files/` route. Publishing OTA means
+   pasting the snippet into `data/firmware.json` and redeploying. The API
+   relays the release assets and stays the single source of truth for "what
+   is latest" on-device.
+5. Attaches `web-manifest-<env>.json` (`tools/make_web_manifest.py`) for
+   `esp32-s3` and `pcb-v1`. The website flasher at
+   `https://finagotchi.app/firmware` discovers the latest stable GitHub Release
+   and ESP Web Tools flashes these four images at `0x0`, `0x8000`, `0xe000`
+   and `0x10000`. A normal update preserves NVS; the installer offers erase as
+   an explicit option and skips Improv Wi-Fi because provisioning belongs to
+   the mobile app. New releases need no website redeploy.
 
 Channels (stable/beta) can mirror the Expo channel discipline later; v1 is
 a single stable channel.
@@ -218,7 +227,7 @@ a single stable channel.
 |---|------|-------|--------|
 | 1 | `src/version.h` + `tools/version_flags.py` + Update menu row + BLE snapshot `fw:` field | firmware | ✅ done |
 | 2 | `partitions_8mb_ota.csv` on `esp32-s3` + `pcb-v1` (one-time USB reflash per device) | firmware | ✅ done |
-| 3 | `src/routes/firmware.ts` manifest + `/firmware/files/` binaries route + `data/firmware.json` (binaries uploaded to `data/firmware/<env>/<version>/` at release) | API server | ✅ done |
+| 3 | `src/routes/firmware.ts` manifest + `/firmware/files/` release-asset relay + `data/firmware.json` | API server | ✅ done |
 | 4 | Update flow: manifest check, reboot-into-OTA-mode download, progress screen, guards | firmware | ✅ done |
 | 5 | `ota:start` / `ota:status:<state>` BLE commands (firmware side; app UI is a mobile-repo follow-up) | firmware | ✅ done |
 | 6 | GitHub Actions release workflow (`fw-v*`) | firmware repo | ✅ done |
@@ -236,5 +245,5 @@ a single stable channel.
 - Beta channel: reuse the Expo-style channel concept via
   `?channel=beta` on the manifest, gated by a device flag settable over BLE?
 - ~~Binary hosting~~ — answered: the API's own `/firmware/files/<env>/<version>/`
-  route serves the bytes (LE cert, satisfies the pinned CA); binaries are
-  uploaded to the API host's `data/firmware/` tree at release time (§3, §7).
+  route relays the GitHub Release bytes through the pinned API certificate,
+  so no persistent file storage is required (§3, §7).

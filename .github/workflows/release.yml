@@ -1,13 +1,13 @@
 # Firmware release workflow (OTA.md §7): tag fw-v* -> build all three envs,
-# rename finagotchi-<env>-<version>.bin (version from src/version.h),
-# SHA-256 them, create a GitHub Release with the binaries plus a
-# manifest-snippet.json ready to paste into the API repo's data/firmware.json.
+# rename finagotchi-<env>-<version>.bin (version from src/version.h), add the
+# extra USB images + per-board ESP Web Tools manifests, SHA-256 everything,
+# and create a GitHub Release with an OTA manifest-snippet.json ready to paste
+# into the API repo's data/firmware.json.
 #
-# The snippet's url points at the API's /firmware/files/ route (the device
-# pins the ISRG Root X1 CA — a raw GitHub asset URL would fail validation).
-# Publishing a release: upload the .bin files to the API host at
-# data/firmware/<env>/<version>/ and paste the snippet into
-# data/firmware.json, then redeploy the API. See OTA.md §3.
+# The snippet's url points at the API's /firmware/files/ route, which relays
+# the GitHub asset through the certificate the device trusts. Publishing OTA
+# means pasting the snippet into data/firmware.json and redeploying the API.
+# See OTA.md §3.
 
 name: firmware release
 
@@ -43,7 +43,7 @@ jobs:
       - name: Build all envs
         run: pio run -e esp32-s3 -e esp32-s3-sim -e pcb-v1
 
-      - name: Package binaries + manifest snippet
+      - name: Package OTA + USB web-flash binaries and manifests
         env:
           GH_REPO: ${{ github.repository }}
           GH_TAG: ${{ github.ref_name }}
@@ -55,9 +55,17 @@ jobs:
           for ENV in esp32-s3 esp32-s3-sim pcb-v1; do
             cp ".pio/build/$ENV/firmware.bin" "release/finagotchi-$ENV-$VERSION.bin"
           done
+          for ENV in esp32-s3 pcb-v1; do
+            cp ".pio/build/$ENV/bootloader.bin" "release/finagotchi-$ENV-$VERSION-bootloader.bin"
+            cp ".pio/build/$ENV/partitions.bin" "release/finagotchi-$ENV-$VERSION-partitions.bin"
+            cp "$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin" "release/finagotchi-$ENV-$VERSION-boot_app0.bin"
+          done
           cd release
           shasum -a 256 *.bin > SHA256SUMS.txt
           python3 ../tools/make_manifest.py "$VERSION" "$GH_REPO" "$GH_TAG" . manifest-snippet.json
+          for ENV in esp32-s3 pcb-v1; do
+            python3 ../tools/make_web_manifest.py "$VERSION" "$GH_REPO" "$GH_TAG" "$ENV" "web-manifest-$ENV.json"
+          done
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -66,12 +74,14 @@ jobs:
           body: |
             One-time migration: devices still on the `huge_app` partition
             table (any pre-OTA build) cannot OTA themselves into the dual-slot
-            layout — the FIRST flash of this build goes over USB
-            (`pio run -e <env> -t upload`). Every flash after that is wireless.
+            layout — the FIRST flash of this build goes over USB. Use
+            https://finagotchi.app/firmware or `pio run -e <env> -t upload`.
+            Every flash after that is wireless.
 
-            To publish: copy each finagotchi-<env>-<version>.bin to the API
-            host at `data/firmware/<env>/<version>/` (served at
-            https://api.finagotchi.app/firmware/files/<env>/<version>/…),
-            paste `manifest-snippet.json` into the API repo's
-            `data/firmware.json`, and redeploy the API — see OTA.md §3.
+            To publish OTA: paste `manifest-snippet.json` into the API repo's
+            `data/firmware.json` and redeploy the API. Its /firmware/files/
+            route relays these release assets through the certificate the
+            device trusts; no binary upload is needed. See OTA.md §3.
+            The web flasher reads `web-manifest-<env>.json` directly from
+            this release; no website deployment is needed for new versions.
           files: release/*

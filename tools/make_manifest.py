@@ -5,14 +5,12 @@
 #
 #   python3 tools/make_manifest.py <version> <repo> <tag> <bin-dir> <out.json>
 #
-# The snippet's url points at the API's own /firmware/files/ route (served
-# from data/firmware/<env>/<version>/ on the API host): devices pin the
-# ISRG Root X1 CA, so the binaries must be fetched from a Let's
-# Encrypt-issued host — a raw GitHub release asset URL fails validation
-# (OTA.md §3). Publishing = upload the .bin files next to the API's
-# data/firmware.json + paste this snippet in. The `repo` arg is kept for
-# CLI stability with the workflow; it no longer feeds the URL. The sim env
-# never OTA-updates and gets no manifest entry.
+# The snippet's url points at the API's own /firmware/files/ route. The API
+# relays the corresponding GitHub Release asset because devices pin the ISRG
+# Root X1 CA and cannot use GitHub's certificate chain. Publishing OTA means
+# pasting this snippet into data/firmware.json and redeploying the API. The
+# `repo` arg is kept for CLI stability with the workflow; it no longer feeds
+# the URL. The sim env never OTA-updates and gets no manifest entry.
 
 import hashlib
 import json
