@@ -13,7 +13,7 @@ OFFSETS = {
 
 def main():
     version, repo, tag, env, out = sys.argv[1:6]
-    board_name = "Finagotchi PCB v1" if env == "pcb-v1" else "Finagotchi ESP32-S3"
+    board_name = "Finagotchi V1" if env == "pcb-v1" else "Finagotchi ESP32-S3"
     parts = []
     for part, offset in OFFSETS.items():
         suffix = "" if part == "firmware" else f"-{part}"
