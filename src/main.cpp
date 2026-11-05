@@ -45,6 +45,12 @@
 #include <sys/time.h>
 #include <esp_sntp.h>   // SNTP sync callback (late NTP -> timeSynced)
 #include <esp_ota_ops.h>   // first-boot self-test after an OTA (rollback)
+#if SHOW_RESET_REASON || LOW_POWER_RADIO_TEST
+#include <esp_bt.h>
+#include <esp_bt_main.h>
+#include <esp_heap_caps.h>
+#include <esp_phy_init.h>
+#endif
 #include <Preferences.h>
 #include <array>
 #include "config.h"
@@ -98,6 +104,12 @@ namespace {
 
 TFT_eSPI tft;
 FinagotchiPet pet;
+
+#ifdef NO_RADIO_DEMO
+constexpr bool kNoRadioDemo = true;
+#else
+constexpr bool kNoRadioDemo = false;
+#endif
 
 // ---------------------------------------------------------------------------
 // BLE
@@ -1043,8 +1055,61 @@ class SrvCallbacks : public BLEServerCallbacks {
   }
 };
 
+void showBootStatus(const char* msg);
+
 void setupBLE(bool wipeBonds) {
+#if RESET_RF_CALIBRATION
+  esp_err_t calErr = esp_phy_erase_cal_data_in_nvs();
+  Serial.printf("RF calibration erased: %s (%d); full recalibration follows\n",
+                esp_err_to_name(calErr), calErr);
+#endif
+#if SHOW_RESET_REASON
+  analogReadResolution(12);
+  analogSetPinAttenuation(5, ADC_11db);
+  uint32_t adcMv = 0;
+  for (int i = 0; i < 8; i++) {
+    adcMv += analogReadMilliVolts(5);
+    delay(5);
+  }
+  Serial.printf("Supply before BLE: VBAT=%.2f V (below 2.50 V means USB-only)\n",
+                static_cast<double>(adcMv / 8 * 2.0f / 1000.0f));
+  Serial.printf("BLE preinit: status=%d heap=%u internal=%u largest=%u\n",
+                static_cast<int>(esp_bt_controller_get_status()), ESP.getFreeHeap(),
+                heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+  if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE) {
+    esp_bt_controller_config_t btConfig = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+#if LOW_POWER_RADIO_TEST
+    btConfig.txpwr_dft = ESP_PWR_LVL_N12;
+#endif
+    esp_err_t err = esp_bt_controller_init(&btConfig);
+    Serial.printf("BLE controller init: %s (%d), status=%d\n", esp_err_to_name(err), err,
+                  static_cast<int>(esp_bt_controller_get_status()));
+    if (err != ESP_OK) {
+      tft.fillScreen(TFT_RED);
+      showBootStatus("BT INIT FAILED");
+      while (true) delay(1000);
+    }
+  }
+#endif
   BLEDevice::init("Finagotchi");
+#if LOW_POWER_RADIO_TEST
+  esp_err_t powerErr = esp_ble_tx_power_set(ESP_BLE_PWR_TYPE_DEFAULT, ESP_PWR_LVL_N12);
+  Serial.printf("LOW POWER RADIO: CPU=%u MHz, BLE TX=-12 dBm (%s)\n",
+                getCpuFrequencyMhz(), esp_err_to_name(powerErr));
+#endif
+#if SHOW_RESET_REASON
+  if (!btStarted() || esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
+    Serial.printf("BLE enable failed: controller=%d bluedroid=%d\n",
+                  static_cast<int>(esp_bt_controller_get_status()),
+                  static_cast<int>(esp_bluedroid_get_status()));
+    tft.fillScreen(TFT_RED);
+    showBootStatus("BT ENABLE FAILED");
+    while (true) delay(1000);
+  }
+#endif
+  tft.fillScreen(TFT_BLUE);
+  showBootStatus("BLE controller");
   if (wipeBonds) eraseBleBonds();   // recovery chord fired at boot
   BLEDevice::setMTU(256);   // 3-field provisioning write + state string exceed 128
 
@@ -1068,9 +1133,13 @@ void setupBLE(bool wipeBonds) {
   uint8_t onlySpecified = ESP_BLE_ONLY_ACCEPT_SPECIFIED_AUTH_ENABLE;
   esp_ble_gap_set_security_param(ESP_BLE_SM_ONLY_ACCEPT_SPECIFIED_SEC_AUTH,
                                  &onlySpecified, sizeof(onlySpecified));
+  tft.fillScreen(TFT_GREEN);
+  showBootStatus("BLE security");
 
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new SrvCallbacks());
+  tft.fillScreen(TFT_YELLOW);
+  showBootStatus("BLE server");
 
   BLEService* pService = pServer->createService(SERVICE_UUID);
   pCharacteristic = pService->createCharacteristic(
@@ -1114,6 +1183,8 @@ void setupBLE(bool wipeBonds) {
   pProvChar->setAccessPermissions(ESP_GATT_PERM_WRITE |
                                   ESP_GATT_PERM_WRITE_ENC_MITM);
   pProvChar->setCallbacks(new ProvCallbacks());
+  tft.fillScreen(TFT_WHITE);
+  showBootStatus("GATT start");
   pService->start();
 
   BLEAdvertising* pAdvertising = BLEDevice::getAdvertising();
@@ -1503,10 +1574,13 @@ volatile bool wifiNotifyPending = false;   // task -> loop: send wifi:ok
 SemaphoreHandle_t wifiJoinMutex = xSemaphoreCreateMutex();
 
 void wifiRejoinUnlocked() {
-  if (!wifiSsid[0]) return;   // no SSID configured: stay fully off Wi-Fi
+  if (kNoRadioDemo || !wifiSsid[0]) return;
   hookWifiEvents();
   lastDisconnectReason = 0;
   WiFi.mode(WIFI_STA);
+#if LOW_POWER_RADIO_TEST
+  WiFi.setTxPower(WIFI_POWER_MINUS_1dBm);
+#endif
   // Channels 12-13: the ESP32's default regulatory domain only scans 1-11, so
   // a mesh that auto-hops its 2.4 GHz band up there becomes invisible and
   // every join reports reason=201 (NO_AP_FOUND). Pin a 1-13 domain.
@@ -1555,6 +1629,10 @@ void noteWifiLink() {
 }
 
 bool setupWiFiTime() {
+  if (kNoRadioDemo) {
+    wifiBootOffline = true;
+    return false;
+  }
   if (!wifiSsid[0]) {
     Serial.println("WiFi: no credentials, running offline.");
     wifiBootOffline = true;
@@ -2542,12 +2620,18 @@ void otaSelfTestPoll() {
 extern "C" bool verifyRollbackLater() { return true; }
 
 void setup() {
+#if LOW_POWER_RADIO_TEST
+  setCpuFrequencyMhz(80);
+#endif
   Serial.begin(115200);
   Serial0.begin(115200);
   delay(200);
   Serial.println("\nfinagotchi_firmware starting...");
   Serial0.println("UART0 Wi-Fi diagnostics ready");
 
+#if DISPLAY_TEST_ONLY
+  Serial.println("DISPLAY TEST: initializing GC9A01, SPI 27 MHz");
+#endif
   tft.init();
 
 #ifdef TFT_BL
@@ -2556,21 +2640,63 @@ void setup() {
 
   tft.setRotation(0);
 
+#if SHOW_RESET_REASON
+  esp_reset_reason_t resetReason = esp_reset_reason();
+  char resetText[24];
+  snprintf(resetText, sizeof(resetText), "RESET REASON %d", resetReason);
+  tft.setTextDatum(TC_DATUM);
+  tft.setTextFont(4);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString(resetText, tft.width() / 2, tft.height() / 2);
+  Serial.printf("BOOT: previous reset reason=%d\n", resetReason);
+  delay(1500);
+#endif
+
+#if DISPLAY_TEST_ONLY
+  Serial.println("DISPLAY TEST: init complete; RED");
+  tft.fillScreen(TFT_RED);
+  delay(1000);
+  Serial.println("DISPLAY TEST: GREEN");
+  tft.fillScreen(TFT_GREEN);
+  delay(1000);
+  Serial.println("DISPLAY TEST: BLUE");
+  tft.fillScreen(TFT_BLUE);
+  delay(1000);
+  Serial.println("DISPLAY TEST: WHITE");
+  tft.fillScreen(TFT_WHITE);
+  Serial.println("DISPLAY TEST: complete; holding white (comment out DISPLAY_TEST_ONLY for the app)");
+  Serial.flush();
+  while (true) delay(1000);
+#endif
+
   // OTA mode: a confirmed update stashed in NVS (ota::schedule) takes over
   // the boot BEFORE splash/WiFi/BLE/LVGL/pet — OTA mode is Serial + raw
   // TFT_eSPI + Wi-Fi only, so the TLS download gets the whole heap. Never
   // returns (every path ends in ESP.restart()).
-  if (ota::pending()) ota::run(tft);
+  if (!kNoRadioDemo && ota::pending()) ota::run(tft);
   otaSelfTestBegin();
 
   showSplash(1500);
 
+#if SHOW_RESET_REASON
+  tft.fillScreen(TFT_GREEN);
+  delay(500);
+#endif
+
   loadStats();               // restore streak/points before BLE advertises them
   loadWiFiCreds();           // app-provisioned credentials override config.h
 
+#if SHOW_RESET_REASON
+  tft.fillScreen(TFT_YELLOW);
+  showBootStatus("recovery check");
+#endif
   // Recovery: both breadboard buttons, or a 4 s crown hold on PCB v1.
   // Erases stale BLE bonds and the parental code without requiring SW1.
+#if DISABLE_RECOVERY_CHECK
+  bool wipeBonds = false;
+#else
   bool wipeBonds = ui::recoveryRequested();
+#endif
   if (wipeBonds) {
     pinSet = false;
     pinCode = 0;
@@ -2584,12 +2710,28 @@ void setup() {
     delay(1200);
   }
 
+#if SHOW_RESET_REASON
+  tft.fillScreen(TFT_MAGENTA);
+  showBootStatus("BLE start");
+#endif
   // BLE FIRST: Bluedroid + the GATT table need a large, contiguous heap
   // slice. Starting BLE before Wi-Fi/the 115 KB pet sprite/LVGL guarantees
   // it gets one — the later allocations all have graceful fallbacks, a
   // half-initialized BLE stack does not (f842b5f boot loop).
-  setupBLE(wipeBonds);
-  Serial.printf("heap after BLE: %u free\n", ESP.getFreeHeap());
+  if (kNoRadioDemo) {
+    Serial.println("NO RADIO DEMO: BLE and Wi-Fi stay disabled");
+#if SHOW_RESET_REASON
+    tft.fillScreen(TFT_CYAN);
+    showBootStatus("NO RADIO DEMO");
+#endif
+  } else {
+    setupBLE(wipeBonds);
+    Serial.printf("heap after BLE: %u free\n", ESP.getFreeHeap());
+#if SHOW_RESET_REASON
+    tft.fillScreen(TFT_CYAN);
+    showBootStatus("BLE ready");
+#endif
+  }
 
   // Wi-Fi joins asynchronously below. A bad saved password must never hold
   // startup on a blocking status screen before the pet and controls exist.
@@ -2597,6 +2739,10 @@ void setup() {
 
   pet.begin(&tft, 88.0f);    // smaller pet, room for the stats bar
   pet.setState(PetState::PET_EGG, millis() / 1000.0f);
+#if SHOW_RESET_REASON
+  tft.fillScreen(TFT_WHITE);
+  showBootStatus("UI begin");
+#endif
 
   // LVGL takes over the display: pet canvas + chrome widgets. Button
   // semantics that touch BLE/pet state stay here as callbacks.
@@ -2610,11 +2756,11 @@ void setup() {
   ui::setSubStage(subStage);
   ui::setLocked(pinSet);                     // parental gate (NVS "fina"/"pinset")
   ui::setMenuLock(pinSet ? "on" : "off");
-  bool wifiUp = WiFi.status() == WL_CONNECTED;
-  ui::setMenuWifi(wifiUp ? "online" : (wifiSsid[0] ? "saved" : "not set"));
-  ui::setConnectStatus(wifiUp ? "online" : "waiting for app");
+  bool wifiUp = !kNoRadioDemo && WiFi.status() == WL_CONNECTED;
+  ui::setMenuWifi(kNoRadioDemo ? "demo" : (wifiUp ? "online" : (wifiSsid[0] ? "saved" : "not set")));
+  ui::setConnectStatus(kNoRadioDemo ? "offline demo" : (wifiUp ? "online" : "waiting for app"));
   ui::setWifiOnline(wifiUp);
-  wifiRejoin();   // non-blocking: keep using the pet while Wi-Fi authenticates
+  if (!kNoRadioDemo) wifiRejoin();
 
   // Create-plan screen: offer the xStocks the device ships mints/logos for.
   static const char* createTickers[sizeof(XSTOCK_MINTS) / sizeof(XSTOCK_MINTS[0])];
@@ -2632,19 +2778,21 @@ void setup() {
   Serial.printf("heap after UI: %u free, %u min-free\n",
                 ESP.getFreeHeap(), ESP.getMinFreeHeap());
   blePushState(pet.state());
-  ui::setSyncWait(true);     // advertise -> waiting scene
+  ui::setSyncWait(!kNoRadioDemo);
 
-  // Standalone DCA mirror: polls the relay + price feeds while the app is
-  // disconnected. 8 KB stacks: TLS handshakes (WiFiClientSecure) peak ~6 KB.
-  // A failed create MUST log — the tasks dying silently (heap too low) is
-  // how the 200px-sprite + resident-driver budget broke standalone sync.
-  if (xTaskCreate(dcaPollTask, "dca", 8192, nullptr, 1, nullptr) != pdPASS)
-    Serial.println("TASK FAIL: dca (heap too low)");
+  if (!kNoRadioDemo) {
+    // Standalone DCA mirror: polls the relay + price feeds while the app is
+    // disconnected. 8 KB stacks: TLS handshakes (WiFiClientSecure) peak ~6 KB.
+    // A failed create MUST log — the tasks dying silently (heap too low) is
+    // how the 200px-sprite + resident-driver budget broke standalone sync.
+    if (xTaskCreate(dcaPollTask, "dca", 8192, nullptr, 1, nullptr) != pdPASS)
+      Serial.println("TASK FAIL: dca (heap too low)");
 
-  // Cloud state sync: same shape as the DCA poll, active only when a device
-  // token was provisioned.
-  if (xTaskCreate(stateSyncTask, "sync", 8192, nullptr, 1, nullptr) != pdPASS)
-    Serial.println("TASK FAIL: sync (heap too low)");
+    // Cloud state sync: same shape as the DCA poll, active only when a device
+    // token was provisioned.
+    if (xTaskCreate(stateSyncTask, "sync", 8192, nullptr, 1, nullptr) != pdPASS)
+      Serial.println("TASK FAIL: sync (heap too low)");
+  }
 
   Serial.printf("heap after tasks: %u free\n", ESP.getFreeHeap());
 
@@ -2664,6 +2812,7 @@ void loop() {
   // adds a small loop idle below (backlight + SPI traffic dominate draw).
   static bool afkWas = false;
   const bool afkNow = ui::afkActive();
+  const bool screenOff = ui::screenSleeping();
   if (afkNow != afkWas) {
     afkWas = afkNow;
     backlightSet(afkNow ? AFK_BL_DUTY : 255);
@@ -2679,7 +2828,7 @@ void loop() {
 
   // Pet scene renders at the FRAME_MS cadence; LVGL (buttons, timers,
   // screen flush) runs every pass. Napping: slow breathing only.
-  if (nowMs - lastFrame >= (afkNow ? AFK_FRAME_MS : FRAME_MS)) {
+  if (!screenOff && nowMs - lastFrame >= (afkNow ? AFK_FRAME_MS : FRAME_MS)) {
     lastFrame = nowMs;
     ui::renderPetFrame(nowSec);
 #if UI_PERF_LOG

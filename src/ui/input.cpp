@@ -10,6 +10,7 @@
 
   PCB v1 needs only the crown; GPIO7 is an optional back alias:
     crown CW/CCW = next/previous, short = confirm, long = back.
+    GPIO7 long = display sleep; any local input wakes without acting.
 
   The menu exposes Play and Units explicitly, so extras never depend on a
   hidden double-press gesture. The focus group only holds visible objects of
@@ -254,13 +255,14 @@ void onNavPrev() {
   }
 }
 
-// Quadrature decode, polled from uiInputUpdate (loop rate is kHz-class —
-// plenty for a thumb wheel). One detent = a full 4-transition quadrature
-// cycle; if the dial feels reversed on the assembled board, flip
-// CROWN_INVERT (or swap the A/B wires).
-uint8_t crownState = 0;   // (A<<1)|B
+// One detent = a full 4-transition quadrature cycle. Impossible jumps reset
+// the partial step, and navigation is paced so LVGL can finish focus/scroll
+// updates without turning contact bounce into a burst of menu moves.
+uint8_t crownState = 0;
+uint32_t crownLastStep = 0;
 int8_t  crownAcc   = 0;
 constexpr int8_t CROWN_TRANSITIONS_PER_STEP = 4;
+constexpr uint32_t CROWN_STEP_INTERVAL_MS = 35;
 constexpr bool   CROWN_INVERT = false;
 // index = (old<<2)|new; 0 = no move, ±1 = single transition
 const int8_t kQem[16] = { 0,-1,1,0, 1,0,0,-1, -1,0,0,1, 0,1,-1,0 };
@@ -274,17 +276,26 @@ void crownStep(int8_t dir) {
 }
 
 void pollCrown() {
+  uint32_t now = millis();
   uint8_t s = (digitalRead(CROWN_A_PIN) << 1) | digitalRead(CROWN_B_PIN);
   if (s == crownState) return;
-  crownAcc += kQem[(crownState << 2) | s];
+
+  int8_t delta = kQem[(crownState << 2) | s];
   crownState = s;
-  if (crownAcc >= CROWN_TRANSITIONS_PER_STEP) {
+  if (!delta) {
     crownAcc = 0;
-    crownStep(+1);
-  } else if (crownAcc <= -CROWN_TRANSITIONS_PER_STEP) {
-    crownAcc = 0;
-    crownStep(-1);
+    return;
   }
+  crownAcc += delta;
+  if (crownAcc > 12) crownAcc = 12;
+  else if (crownAcc < -12) crownAcc = -12;
+
+  if (abs(crownAcc) < CROWN_TRANSITIONS_PER_STEP ||
+      now - crownLastStep < CROWN_STEP_INTERVAL_MS) return;
+  int8_t dir = crownAcc > 0 ? 1 : -1;
+  crownAcc -= dir * CROWN_TRANSITIONS_PER_STEP;
+  crownLastStep = now;
+  crownStep(dir);
 }
 #endif // FINAGOTCHI_PCB_V1
 
@@ -361,7 +372,10 @@ void uiInputUpdate() {
     feedback::back();
     onBack();
   }
-  (void)cancelLong;
+  if (cancelLong && !ui::afkInput()) {
+    feedback::back();
+    ui::screenSleep();
+  }
 #else
   bool long1, long2;
   bool short1 = handleButton(btn1, long1);

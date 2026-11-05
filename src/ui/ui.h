@@ -123,6 +123,11 @@ void setWifiOnline(bool online);
 bool afkActive();
 bool afkInput();   // input.cpp: note activity; true = it consumed a wake
 
+// PCB clone display sleep: long cancel sleeps, any local input wakes. The
+// backlight remains powered by VCC on seven-pin GC9A01 modules.
+void screenSleep();
+bool screenSleeping();
+
 // Boot recovery: both breadboard buttons, or a 4 s crown hold on PCB v1.
 // Used to erase stale BLE bonds and the parental code — see WIRING.md.
 bool recoveryRequested();

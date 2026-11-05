@@ -112,6 +112,7 @@ void secTick(lv_timer_t*) {
 
 uint32_t   afkLastActivity = 0;
 bool       afkOn = false;
+bool       displayOff = false;
 PetMoodId  afkStashMood = PetMoodId::MOOD_CALM;
 lv_obj_t*  afkZzz = nullptr;
 lv_timer_t* afkZzzTimer = nullptr;
@@ -144,6 +145,16 @@ void afkExit() {
   if (afkZzzTimer) { lv_timer_delete(afkZzzTimer); afkZzzTimer = nullptr; }
   if (afkZzz) { lv_obj_delete(afkZzz); afkZzz = nullptr; }
   Serial.println("AFK: awake");
+}
+
+void displayWake() {
+  if (!displayOff) return;
+  displayOff = false;
+  g_ui.tft->writecommand(0x11);   // GC9A01 SLPOUT
+  delay(120);
+  lv_obj_invalidate(lv_screen_active());
+  lv_obj_invalidate(lv_layer_top());
+  Serial.println("DISPLAY: awake");
 }
 
 } // namespace
@@ -187,6 +198,10 @@ void ui::begin(TFT_eSPI* tft, FinagotchiPet* pet, const Actions& actions) {
 
 void ui::update() {
   uiInputUpdate();
+  if (displayOff) {
+    delay(20);
+    return;
+  }
   // Idle -> nap. Never while the pairing passkey panel is up: it must stay
   // readable for the phone, and the backlight dimming would fight it.
   if (!afkOn && millis() - afkLastActivity >= AFK_TIMEOUT_MS &&
@@ -379,9 +394,23 @@ bool ui::afkActive() {
   return afkOn;
 }
 
+void ui::screenSleep() {
+  if (displayOff || !g_ui.ready) return;
+  if (afkOn) afkExit();
+  displayOff = true;
+  g_ui.tft->writecommand(0x10);   // GC9A01 SLPIN; VCC backlight stays on
+  delay(120);
+  Serial.println("DISPLAY: sleeping (VCC backlight remains powered)");
+}
+
+bool ui::screenSleeping() {
+  return displayOff;
+}
+
 bool ui::afkInput() {
   afkLastActivity = millis();
-  if (!afkOn) return false;
-  afkExit();
-  return true;   // this input only woke the device — swallow the action
+  bool woke = displayOff || afkOn;
+  if (displayOff) displayWake();
+  if (afkOn) afkExit();
+  return woke;   // this input only woke the device — swallow the action
 }
