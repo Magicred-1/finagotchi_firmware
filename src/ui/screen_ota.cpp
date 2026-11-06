@@ -91,7 +91,7 @@ void uiScreenOtaShow(const char* newVersion, uint32_t size) {
            static_cast<double>(size) / 1048576.0);
   lv_label_set_text(sizeLabel, buf);
 
-  lv_screen_load_anim(otaScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, freeMenu);
+  lv_screen_load_anim(otaScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 160, 0, freeMenu);
   if (freeMenu) uiScreenMenuFreed();
 }
 

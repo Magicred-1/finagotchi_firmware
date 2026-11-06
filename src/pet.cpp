@@ -338,6 +338,9 @@ void FinagotchiPet::begin(TFT_eSPI* display, float scale) {
   Serial.printf("Pet sprite %dx%d, heap free %u\n", side, side,
                 ESP.getFreeHeap());
   setSceneTheme(0);   // app default background
+  activity = AmbientActivity::NONE;
+  activityMoodOwned = false;
+  nextActivity = 8.0f + rngNext() * 4.0f;
 }
 
 void FinagotchiPet::setSceneTheme(uint8_t id) {
@@ -424,7 +427,13 @@ void FinagotchiPet::clearLook(float nowSec) {
 }
 
 void FinagotchiPet::setMood(PetMoodId m, float nowSec) {
-  if (m >= PetMoodId::MOOD_COUNT || m == curMood) return;
+  if (m >= PetMoodId::MOOD_COUNT) return;
+  if (activityMoodOwned) {
+    activityMoodOwned = false;
+    activity = AmbientActivity::NONE;
+    nextActivity = nowSec + 8.0f + rngNext() * 8.0f;
+  }
+  if (m == curMood) return;
   prevMood = curMood;
   curMood = m;
   moodAtT = nowSec;
@@ -437,8 +446,58 @@ void FinagotchiPet::setItem(PetItem i) {
 
 void FinagotchiPet::react(PetReaction r, float nowSec) {
   if (r > PetReaction::REACT_DANCE) return;
+  if (activity != AmbientActivity::NONE) activityStop(nowSec);
   reaction = r;
   reactT = nowSec;
+}
+
+void FinagotchiPet::activityStop(float nowSec) {
+  if (activityMoodOwned) {
+    activityMoodOwned = false;
+    setMood(activityReturnMood, nowSec);
+  }
+  activity = AmbientActivity::NONE;
+  activityAt = nowSec;
+  nextActivity = nowSec + 8.0f + rngNext() * 8.0f;
+}
+
+void FinagotchiPet::setAmbientActivities(bool enabled, float nowSec) {
+  if (enabled == ambientEnabled) return;
+  ambientEnabled = enabled;
+  if (!enabled && activity != AmbientActivity::NONE) activityStop(nowSec);
+  if (enabled) nextActivity = nowSec + 6.0f + rngNext() * 4.0f;
+}
+
+void FinagotchiPet::updateActivity(float nowSec) {
+  if (!ambientEnabled) return;
+  if (activity != AmbientActivity::NONE) {
+    if (nowSec - activityAt >= 5.0f) activityStop(nowSec);
+    return;
+  }
+  if (reaction != PetReaction::REACT_NONE || nowSec < nextActivity) return;
+
+  float pick = rngNext();
+  if (pick < 0.34f) {
+    activity = AmbientActivity::SLEEP;
+    activityAt = nowSec;
+    activityReturnMood = curMood;
+    setMood(PetMoodId::MOOD_SLEEPY, nowSec);
+    activityMoodOwned = true;
+    Serial.println("Pet activity: nap");
+  } else if (pick < 0.68f) {
+    activity = AmbientActivity::GAME;
+    activityAt = nowSec;
+    activityReturnMood = curMood;
+    setMood(PetMoodId::MOOD_EXCITED, nowSec);
+    activityMoodOwned = true;
+    Serial.println("Pet activity: controller game");
+  } else {
+    reaction = pick < 0.86f ? PetReaction::REACT_DANCE : PetReaction::REACT_JUMP;
+    reactT = nowSec;
+    nextActivity = nowSec + 8.0f + rngNext() * 8.0f;
+    Serial.println(reaction == PetReaction::REACT_DANCE ? "Pet activity: dance"
+                                                       : "Pet activity: jump");
+  }
 }
 
 void FinagotchiPet::setSyncWait(bool on, float nowSec) {
@@ -863,6 +922,37 @@ void FinagotchiPet::drawShirt(float cx, float cy) {
   spr->fillCircle(static_cast<int>(c2x), static_cast<int>(c2y), 1, trim);
 }
 
+void FinagotchiPet::drawActivity(float nowSec, float cx, float cy) {
+  if (activity == AmbientActivity::NONE) return;
+  float age = nowSec - activityAt;
+  if (activity == AmbientActivity::SLEEP) {
+    spr->setTextColor(spr->color565(0x8D, 0xC9, 0xF6));
+    float drift = fmodf(age * 3.0f, 6.0f);
+    for (int i = 0; i < 3; i++) {
+      int x = static_cast<int>(cx + R * 0.55f + i * 8);
+      int y = static_cast<int>(cy - R * 0.45f - i * 8 - drift);
+      spr->drawString("z", x, y, i == 2 ? 4 : 2);
+    }
+    return;
+  }
+
+  int x = static_cast<int>(cx + R * 0.58f);
+  int y = static_cast<int>(cy + R * 0.52f + sinf(age * 5.0f) * 2.0f);
+  uint16_t shell = spr->color565(0x26, 0x68, 0xB8);
+  uint16_t edge = spr->color565(0x9D, 0xCB, 0xFF);
+  spr->fillRoundRect(x - 17, y - 9, 34, 18, 5, shell);
+  spr->drawRoundRect(x - 17, y - 9, 34, 18, 5, edge);
+  spr->drawLine(x - 12, y, x - 5, y, TFT_WHITE);
+  spr->drawLine(x - 8, y - 4, x - 8, y + 4, TFT_WHITE);
+  spr->drawLine(x - 12, y + 1, x - 5, y + 1, TFT_WHITE);
+  spr->drawLine(x - 8, y - 3, x - 8, y + 5, TFT_WHITE);
+  spr->fillCircle(x + 6, y - 3, 2, spr->color565(0xF8, 0xB4, 0x3C));
+  spr->fillCircle(x + 11, y + 2, 2, spr->color565(0xF3, 0x6F, 0x7C));
+  int spark = static_cast<int>(age * 4.0f) % 4;
+  spr->fillRect(x - 12 + spark * 7, y - 18, 3, 3,
+                spark & 1 ? edge : spr->color565(0x7E, 0xD6, 0xA7));
+}
+
 // LevelUpAnimation: sparkle burst on stage-up (700 ms, rises and fades).
 void FinagotchiPet::drawBurst(float nowSec, float cx, float cy) {
   float age = nowSec - burstT;
@@ -886,13 +976,9 @@ void FinagotchiPet::drawBurst(float nowSec, float cx, float cy) {
 
 // ---------------------------------------------------------------------------
 
-// PetCanvas backdrop: sky zone over the whole frame, ground band on the
-// bottom third, tinted per the scene theme (subtle — the creature stays
-// the focus).
+// Solid black backdrop keeps the creature and controls readable.
 void FinagotchiPet::drawBackdrop() {
-  int w = spr->width(), h = spr->height();
-  spr->fillSprite(skyColor);
-  spr->fillRect(0, h * 2 / 3, w, h - h * 2 / 3, groundColor);
+  spr->fillSprite(TFT_BLACK);
 }
 
 // PetCanvas groundShadow: a dark ellipse (#02060C) under the creature.
@@ -921,6 +1007,7 @@ void FinagotchiPet::drawShadow(float nowSec, float cx, float rScale) {
 void FinagotchiPet::render(float nowSec) {
   if (!spr || !spr->created()) return;
 
+  updateActivity(nowSec);
   Pose pose = poseAt(nowSec);
 
   // look morph (engine.ts lookAtTime, 0.24 s)
@@ -1039,6 +1126,7 @@ void FinagotchiPet::render(float nowSec) {
       drawItem(an);
     }
   }
+  drawActivity(nowSec, cx, cy);
   drawBurst(nowSec, cx, cy);
   // No pushSprite: the sprite holds ONLY the pet scene. The LVGL UI layer
   // binds this framebuffer to a canvas and its flush owns the panel.

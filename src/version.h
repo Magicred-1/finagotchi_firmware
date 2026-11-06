@@ -14,4 +14,4 @@
 #define FW_BUILD "dev"
 #endif
 
-constexpr const char* FW_VERSION = "1.0.0";
+constexpr const char* FW_VERSION = "1.1.0";

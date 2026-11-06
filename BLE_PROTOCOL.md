@@ -469,3 +469,32 @@ On disconnect, gaze is cleared and the demo resumes. Once the device is
 server-linked (successful cloud state sync), the demo auto-evolve and the
 local streak tick stay off even while disconnected — the server is then
 authoritative for stage/streak.
+
+## Nearby radar (prototype)
+
+Nearby discovery is separate from the authenticated phone GATT service. It
+uses a short manufacturer-data payload in the BLE scan response; the existing
+`Finagotchi` name and service UUID advertisement remain unchanged. Active
+scanning is therefore required to receive the nearby payload.
+
+Payload (13 bytes): two project-local marker bytes (`0xFF 0xFF`), ASCII `FG`,
+protocol version `1`, a 24-bit device ID derived from the ESP32 MAC, stage,
+mood, item, friendly action, and action sequence. `action=1` is a wave;
+`action=0` means no active action. The marker is project-local and must be
+replaced with an assigned company ID before a public production release.
+MAC-derived IDs are a prototype convenience, not a long-term privacy design.
+
+Peers expire after 15 seconds. RSSI is smoothed and mapped only to broad
+near/mid/far rings: it does not provide direction or reliable distance, so the
+radar never displays meters or coordinates. A wave is deduplicated by device
+ID and sequence and produces a toast/dance on the receiving device.
+
+Nearby packets are unauthenticated and can be spoofed. They carry no Wi-Fi
+credentials, device tokens, DCA plans, points, or commands that change those
+values. Provisioning, lock state, financial operations, and authoritative pet
+updates remain on the existing MITM-secured GATT path.
+
+`NEARBY_SIM=1` supplies three explicitly marked simulated peers for UI testing
+without radio. `NEARBY_BLE=1` enables real scan-response advertising and
+low-duty-cycle active scans, paused while the phone is connected or the display
+sleeps. Real BLE remains disabled until the PCB radio-enable brownout is fixed.

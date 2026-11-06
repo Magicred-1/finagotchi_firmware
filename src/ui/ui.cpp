@@ -10,6 +10,9 @@
 #ifndef AFK_TIMEOUT_MS
 #define AFK_TIMEOUT_MS 60000   // idle time before the pet naps
 #endif
+#ifndef SCREEN_SLEEP_TIMEOUT_MS
+#define SCREEN_SLEEP_TIMEOUT_MS 120000   // idle time before the display sleeps
+#endif
 
 UiState g_ui;
 
@@ -100,6 +103,7 @@ void overlayInit() {
 void secTick(lv_timer_t*) {
   uiScreenPetTick();
   uiScreenDcaTick();
+  uiScreenNearbyTick();
 }
 
 // --- AFK sleep ----------------------------------------------------------------
@@ -208,6 +212,11 @@ void ui::update() {
       lv_obj_is_hidden(passkeyBox)) {
     afkEnter();
   }
+  if (millis() - afkLastActivity >= SCREEN_SLEEP_TIMEOUT_MS &&
+      lv_obj_is_hidden(passkeyBox)) {
+    screenSleep();
+    return;
+  }
   lv_timer_handler();
 }
 
@@ -223,6 +232,11 @@ void ui::setStats(uint32_t streakDays, uint32_t points, uint8_t happiness) {
 void ui::setSubStage(uint8_t subStage) {
   if (!g_ui.ready) return;
   uiScreenPetSetSubStage(subStage);
+}
+
+void ui::setAppConnected(bool connected) {
+  if (!g_ui.ready) return;
+  uiScreenPetSetConnected(connected);
 }
 
 void ui::setBattery(uint8_t pct) {

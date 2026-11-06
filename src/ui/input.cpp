@@ -120,42 +120,37 @@ void keypadRead(lv_indev_t*, lv_indev_data_t* data) {
 
 // --- semantic actions --------------------------------------------------------
 
-// Next moves through the visible focusables, then through the screen cycle.
+// Next moves through visible focusables; menu and portfolio lists wrap.
 void onNavShort() {
   if (uiScreenLockActive()) { uiScreenLockNext(); return; }
   // connect QR prompt: navigate switches the iOS/Android tab
   if (uiScreenConnectActive()) { uiScreenConnectToggle(); return; }
+  if (uiScreenNearbyActive()) { uiScreenNearbyFocusAdvance(); return; }
   lv_obj_t* act = lv_screen_active();
   if (uiScreenDcaDetailOpen()) {
-    uiScreenDcaCloseDetail();
+    return;
   } else if (act == g_ui.petScreen) {
+#ifdef FINAGOTCHI_PCB_V1
+    uiScreenMenuShow();
+    Serial.println("NAV: menu screen (crown rotation)");
+#else
     if (g_ui.locked) {
-      // Parental gate: the portfolio (financial) is SKIPPED while locked —
-      // the cycle becomes pet -> menu -> pet so cosmetics stay reachable.
-      // The financial menu rows ask for the code on activation.
       uiScreenMenuShow();
       Serial.println("NAV: menu screen (locked: portfolio skipped)");
     } else {
       uiScreenDcaShow();
       Serial.println("NAV: portfolio screen");
     }
+#endif
   } else if (act == g_ui.dcaScreen) {
-    if (uiScreenDcaFocusAdvance()) {
-      Serial.println("NAV: focus next card");
-    } else {
-      uiScreenMenuShow();
-      Serial.println("NAV: menu screen");
-    }
+    uiScreenDcaFocusAdvance();
+    Serial.println("NAV: focus next card");
   } else if (act == g_ui.createScreen) {
     uiScreenCreateFocusAdvance();
     Serial.println("NAV: create: next field");
   } else if (act == g_ui.menuScreen) {
-    if (uiScreenMenuFocusAdvance()) {
-      Serial.println("NAV: focus next row");
-    } else {
-      uiScreenPetShow();
-      Serial.println("NAV: pet screen");
-    }
+    uiScreenMenuFocusAdvance();
+    Serial.println("NAV: focus next row");
   }
 }
 
@@ -167,6 +162,7 @@ void onConfirm(float nowSec) {
   if (uiScreenOtaActive()) { uiScreenOtaConfirm(); return; }
   // Connect QR prompt is static: no action while it's up (only back).
   if (uiScreenConnectActive()) return;
+  if (uiScreenNearbyActive()) { uiScreenNearbyActivate(); return; }
   lv_obj_t* act = lv_screen_active();
   Serial.println("ACTION confirm");
   if (uiScreenDcaDetailOpen()) {
@@ -177,14 +173,24 @@ void onConfirm(float nowSec) {
     uiScreenMenuActivate(nowSec);
   } else if (act == g_ui.dcaScreen) {
     pushKey(LV_KEY_ENTER);   // open the focused card (safe no-op when empty)
-  } else if (g_ui.actions.syncNow) {
-    g_ui.actions.syncNow(nowSec);
+  } else if (act == g_ui.petScreen) {
+#ifdef FINAGOTCHI_PCB_V1
+    uiScreenMenuShow();
+    Serial.println("NAV: menu screen (crown press)");
+#else
+    if (g_ui.actions.syncNow) g_ui.actions.syncNow(nowSec);
+#endif
   }
 }
 
 // Back cancels the code pad, closes detail, or leaves the current screen.
 // The breadboard's pet-screen menu shortcut is handled in uiInputUpdate.
 void onBack() {
+  if (uiScreenNearbyActive()) {
+    uiScreenMenuShow();
+    Serial.println("BACK: menu (nearby)");
+    return;
+  }
   if (uiScreenConnectActive()) {
     uiScreenMenuShow();   // QR prompt: back returns to the menu
     Serial.println("BACK: menu (connect QR)");
@@ -207,8 +213,8 @@ void onBack() {
   }
   lv_obj_t* act = lv_screen_active();
   if (act == g_ui.dcaScreen) {
-    uiScreenPetShow();
-    Serial.println("BACK: pet screen");
+    uiScreenMenuShow();
+    Serial.println("BACK: menu screen");
   } else if (act == g_ui.menuScreen) {
     uiScreenMenuBack();
     Serial.println("BACK: menu back");
@@ -219,49 +225,37 @@ void onBack() {
 }
 
 #ifdef FINAGOTCHI_PCB_V1
-// Crown CCW = navigate backward: previous card/row/option; rotating past
-// the top of a list backs out of the screen (menu -> pet, portfolio ->
-// pet, create summary -> previous drum).
+// Crown CCW = previous card/row/option. Lists wrap; Back handles exits.
 void onNavPrev() {
   if (uiScreenLockActive()) { uiScreenLockPrev(); return; }
   // connect QR prompt: either direction toggles the iOS/Android tab
   if (uiScreenConnectActive()) { uiScreenConnectToggle(); return; }
-  if (uiScreenDcaDetailOpen()) {
-    uiScreenDcaCloseDetail();
-    Serial.println("NAV back: close detail");
-    return;
-  }
+  if (uiScreenNearbyActive()) { uiScreenNearbyFocusPrev(); return; }
+  if (uiScreenDcaDetailOpen()) return;
   lv_obj_t* act = lv_screen_active();
   if (act == g_ui.petScreen) {
-    uiScreenMenuShow();   // the cycle backwards: pet <- menu
+    uiScreenMenuShow();
     Serial.println("NAV back: menu screen");
   } else if (act == g_ui.dcaScreen) {
-    if (!uiScreenDcaFocusPrev()) {
-      uiScreenPetShow();
-      Serial.println("NAV back: pet screen");
-    } else {
-      Serial.println("NAV back: focus previous card");
-    }
+    uiScreenDcaFocusPrev();
+    Serial.println("NAV back: focus previous card");
   } else if (act == g_ui.menuScreen) {
-    if (!uiScreenMenuFocusPrev()) {
-      uiScreenMenuBack();
-      Serial.println("NAV back: menu back");
-    } else {
-      Serial.println("NAV back: focus previous row");
-    }
+    uiScreenMenuFocusPrev();
+    Serial.println("NAV back: focus previous row");
   } else if (act == g_ui.createScreen) {
     uiScreenCreateFocusPrev();
     Serial.println("NAV back: create: previous option");
   }
 }
 
-// One detent = a full 4-transition quadrature cycle. Impossible jumps reset
-// the partial step, and navigation is paced so LVGL can finish focus/scroll
-// updates without turning contact bounce into a burst of menu moves.
+// Pet navigation opens on a half-detent; menu moves use a full 4-transition
+// detent. Impossible jumps reset the partial step, and navigation is paced
+// so LVGL can finish focus/scroll updates without a burst of menu moves.
 uint8_t crownState = 0;
 uint32_t crownLastStep = 0;
 int8_t  crownAcc   = 0;
-constexpr int8_t CROWN_TRANSITIONS_PER_STEP = 4;
+constexpr int8_t CROWN_PET_TRANSITIONS_PER_STEP = 2;
+constexpr int8_t CROWN_MENU_TRANSITIONS_PER_STEP = 4;
 constexpr uint32_t CROWN_STEP_INTERVAL_MS = 35;
 constexpr bool   CROWN_INVERT = false;
 // index = (old<<2)|new; 0 = no move, ±1 = single transition
@@ -290,10 +284,12 @@ void pollCrown() {
   if (crownAcc > 12) crownAcc = 12;
   else if (crownAcc < -12) crownAcc = -12;
 
-  if (abs(crownAcc) < CROWN_TRANSITIONS_PER_STEP ||
-      now - crownLastStep < CROWN_STEP_INTERVAL_MS) return;
+  bool petScreen = lv_screen_active() == g_ui.petScreen;
+  int8_t needed = petScreen ? CROWN_PET_TRANSITIONS_PER_STEP
+                            : CROWN_MENU_TRANSITIONS_PER_STEP;
+  if (abs(crownAcc) < needed || now - crownLastStep < CROWN_STEP_INTERVAL_MS) return;
   int8_t dir = crownAcc > 0 ? 1 : -1;
-  crownAcc -= dir * CROWN_TRANSITIONS_PER_STEP;
+  crownAcc = petScreen ? 0 : crownAcc - dir * needed;
   crownLastStep = now;
   crownStep(dir);
 }

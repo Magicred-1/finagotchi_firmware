@@ -11,8 +11,8 @@
 
 #include <lvgl.h>
 
-// --- landing-blue color tokens ---
-#define UI_COL_BG             lv_color_hex(0x0B2858)
+// --- black surfaces with blue accents ---
+#define UI_COL_BG             lv_color_hex(0x000000)
 #define UI_COL_DEEP_BLUE      lv_color_hex(0x123D77)
 #define UI_COL_BLUE           lv_color_hex(0x2668B8)
 #define UI_COL_LIGHT_BLUE     lv_color_hex(0x91BEE9)
@@ -27,8 +27,8 @@
 #define UI_COL_TEXT           lv_color_hex(0xF6FAFF)
 #define UI_COL_MUTED          lv_color_hex(0xE0EBF8)
 #define UI_COL_EYEBROW        lv_color_hex(0xB2D8F8)
-#define UI_COL_INK            lv_color_hex(0x173D6A)
-#define UI_COL_INK_MUTED      lv_color_hex(0x4D6C91)
+#define UI_COL_INK            lv_color_hex(0xF6FAFF)
+#define UI_COL_INK_MUTED      lv_color_hex(0xB2C4D8)
 #define UI_COL_DANGER         lv_color_hex(0xF36F7C)
 #define UI_COL_WARNING        lv_color_hex(0xE9B846)
 #define UI_COL_SUCCESS        lv_color_hex(0x7ED6A7)
@@ -47,24 +47,23 @@ constexpr int32_t UI_SP4 = 24;
 // Safe margin inside the round display's inscribed circle.
 constexpr int32_t UI_SAFE = 20;
 
-// Control-hint band: bottom offset + max width that stays inside the circle
-// (glyphs land at y ~201..210, where the chord is >= 160 px wide).
-constexpr int32_t UI_HINT_BOTTOM = 26;
-constexpr int32_t UI_HINT_W = 156;
+// Control-hint band: centered near y216, where the circle is ~140 px wide.
+constexpr int32_t UI_HINT_BOTTOM = 16;
+constexpr int32_t UI_HINT_W = 140;
 
 // Re-init the default theme with the app palette (call after uiDisplayInit).
 void uiThemeInit();
 
-// Five-stop landing gradient, scrolling off (chrome is hand-placed).
+// Solid black screen, scrolling off (chrome is hand-placed).
 void uiThemeScreen(lv_obj_t* scr);
 
-// Transparent landing glass; active remains readable over the frost stop.
+// Dark glass controls with bright borders.
 void uiThemeGlass(lv_obj_t* obj, bool active = true);
 
 // Glass card with a light-blue focus ring.
 void uiThemeCard(lv_obj_t* obj);
 
-// Opaque navy -> deep-blue dialog surface.
+// Opaque black dialog surface.
 void uiThemeDialog(lv_obj_t* obj);
 
 lv_obj_t* uiThemeLabel(lv_obj_t* parent, const lv_font_t* font, lv_color_t color);

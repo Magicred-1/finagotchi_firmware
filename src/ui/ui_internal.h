@@ -24,6 +24,7 @@ struct UiState {
   lv_obj_t*   lockScreen = nullptr;
   lv_obj_t*   otaScreen = nullptr;
   lv_obj_t*   connectScreen = nullptr;
+  lv_obj_t*   nearbyScreen = nullptr;
   lv_group_t* group = nullptr;
   bool        locked = false;      // parental gate: pet screen only until unlocked
 
@@ -68,6 +69,7 @@ void uiScreenPetFrame(float nowSec);     // pet.render + canvas invalidate
 void uiScreenPetSyncWait(bool on);
 void uiScreenPetSetStats(uint32_t streakDays, uint32_t points, uint8_t happiness);
 void uiScreenPetSetSubStage(uint8_t subStage);
+void uiScreenPetSetConnected(bool connected);
 void uiScreenPetSetBattery(int pct);     // <0 hides (USB power)
 void uiScreenPetSetWifiOnline(bool online);  // Wi-Fi glyph, top-right
 void uiScreenPetToast(const char* text, bool reward); // toasts ride lv_layer_top()
@@ -109,12 +111,12 @@ void uiScreenCreateSetTickers(const char* const* tickers, uint8_t n);
 const lv_image_dsc_t* uiTokenLogoDsc(const char* ticker);
 
 // screen_menu.cpp (launcher app list) — lazy build + free, same pattern
-void uiScreenMenuShow();                 // after the last portfolio card
+void uiScreenMenuShow();                 // restores the previous row
 void uiScreenMenuShrink();               // free rows before building a child screen
 void uiScreenMenuFreed();                // screen object deleted (auto_del)
-void uiScreenMenuActivate(float nowSec); // long press: run the focused row
-bool uiScreenMenuFocusAdvance();         // false: no more rows -> pet screen
-bool uiScreenMenuFocusPrev();            // crown CCW; false: top of list -> back
+void uiScreenMenuActivate(float nowSec); // crown push: run the focused row
+bool uiScreenMenuFocusAdvance();         // wraps last -> first
+bool uiScreenMenuFocusPrev();            // wraps first -> last
 void uiScreenMenuSetAccessory(const char* name);
 void uiScreenMenuSetMood(const char* name);
 void uiScreenMenuSetBackdrop(const char* name);
@@ -154,3 +156,12 @@ void uiScreenConnectFreed();             // screen object deleted (auto_del)
 bool uiScreenConnectActive();            // connect screen is the active screen
 void uiScreenConnectToggle();            // switch the iOS/Android tab
 void uiScreenConnectSetStatus(const char* text);  // cached provisioning state
+
+// screen_nearby.cpp — BLE proximity radar, lazy build + free.
+void uiScreenNearbyShow();
+void uiScreenNearbyFreed();
+bool uiScreenNearbyActive();
+void uiScreenNearbyFocusAdvance();
+void uiScreenNearbyFocusPrev();
+void uiScreenNearbyActivate();
+void uiScreenNearbyTick();

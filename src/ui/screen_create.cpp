@@ -59,6 +59,7 @@ lv_obj_t* optText[MAX_OPTIONS];
 lv_obj_t* sumAmount;
 lv_obj_t* sumPlan;
 lv_obj_t* createRow;
+lv_obj_t* controlHint;
 
 uint8_t page = PAGE_TOKEN;
 uint8_t optCount = 0;
@@ -181,6 +182,10 @@ void showPage(uint8_t p) {
   lv_obj_set_hidden(sumAmount, !summary);
   lv_obj_set_hidden(sumPlan, !summary);
   lv_obj_set_hidden(createRow, !summary);
+#ifdef FINAGOTCHI_PCB_V1
+  lv_label_set_text(controlHint, summary ? "push create  " LV_SYMBOL_BULLET "  hold back"
+                                         : "push next  " LV_SYMBOL_BULLET "  hold back");
+#endif
 
   static const char* STEPS[] = { "TOKEN  1/3", "AMOUNT  2/3", "FREQUENCY  3/3", "SUMMARY" };
   lv_label_set_text(stepLabel, STEPS[page]);
@@ -309,7 +314,7 @@ lv_obj_t* buildCreateScreen() {
   lv_label_set_text(crLabel, "CREATE " LV_SYMBOL_RIGHT);
   lv_obj_center(crLabel);
 
-  uiThemeControlHint(createScr, "next");
+  controlHint = uiThemeControlHint(createScr, "next");
 
   return createScr;
 }
@@ -333,7 +338,7 @@ void uiScreenCreateShow() {
   if (freeDca) uiScreenDcaShrinkList();
   if (!createScr) g_ui.createScreen = buildCreateScreen();   // lazy build
   showPage(PAGE_TOKEN);
-  lv_screen_load_anim(createScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, freeDca);
+  lv_screen_load_anim(createScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 160, 0, freeDca);
   if (freeDca) uiScreenDcaListFreed();
   Serial.printf("Create: ready, heap free %u\n", ESP.getFreeHeap());
 }

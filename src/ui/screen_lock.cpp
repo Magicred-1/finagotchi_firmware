@@ -180,7 +180,7 @@ void uiScreenLockShow(int m) {
   const char* title = m == 1 ? "set code" : m == 3 ? "remove code" : "enter code";
   showMode(static_cast<uint8_t>(m == 1 || m == 3 || m == 0 ? m : 0), title);
   waitRefresh();
-  lv_screen_load_anim(lockScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 200, 0, false);
+  lv_screen_load_anim(lockScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 160, 0, false);
 }
 
 void uiScreenLockFreed() {

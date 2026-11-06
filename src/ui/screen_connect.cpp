@@ -60,16 +60,20 @@ lv_obj_t* buildConnectScreen() {
 
   qr = lv_image_create(connScr);
   lv_image_set_src(qr, &qr_ios);
-  lv_image_set_scale(qr, 228);   // 144 -> 128 px: quiet zone stays on the round panel
+  lv_image_set_scale(qr, 206);   // 144 -> 116 px, including its quiet zone
   lv_obj_align(qr, LV_ALIGN_TOP_MID, 0, 62);
 
-  // Bottom band of the circle: the chord at y ~200 is ~178 px, so the
-  // status stays within 160 px (longest: "connected - share Wi-Fi").
   statusLabel = uiThemeLabel(connScr, &lv_font_montserrat_12, UI_COL_INK);
   uiThemeTextBounds(statusLabel, 160, 16);
   lv_obj_set_style_text_align(statusLabel, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(statusLabel, statusText);
-  lv_obj_align(statusLabel, LV_ALIGN_BOTTOM_MID, 0, -26);
+  lv_obj_align(statusLabel, LV_ALIGN_BOTTOM_MID, 0, -34);
+
+  lv_obj_t* hint = uiThemeLabel(connScr, &lv_font_montserrat_12, UI_COL_PRIMARY);
+  uiThemeTextBounds(hint, 140, 16);
+  lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(hint, "rotate platform  " LV_SYMBOL_BULLET "  hold back");
+  lv_obj_align(hint, LV_ALIGN_BOTTOM_MID, 0, -16);
 
   return connScr;
 }
@@ -86,7 +90,7 @@ void uiScreenConnectShow() {
   // Fade transitions need a large temporary opacity layer on ESP32-S3;
   // when that allocation fails the old menu shell stays visible and the QR
   // never appears. A transform-only slide needs no extra framebuffer.
-  lv_screen_load_anim(connScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 200, 0, freeMenu);
+  lv_screen_load_anim(connScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 160, 0, freeMenu);
   if (freeMenu) uiScreenMenuFreed();
 }
 

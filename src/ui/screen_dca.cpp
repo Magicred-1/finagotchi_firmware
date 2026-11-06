@@ -149,7 +149,9 @@ lv_obj_t* dPrice;
 lv_obj_t* dStatVal[4];               // BUY / BUYS / HELD / VALUE
 lv_obj_t* nbCap;
 lv_obj_t* dCountdown;
-lv_obj_t* dBar;
+lv_obj_t* pauseBtn;
+lv_obj_t* pauseLabel;
+lv_obj_t* detailHint;
 
 lv_obj_t* newCard;                   // trailing "+ New plan" card
 
@@ -326,42 +328,30 @@ void detailFill() {
   fmtValue(p, buf, sizeof(buf));
   lv_label_set_text(dStatVal[3], buf);
 
+  lv_label_set_text(pauseLabel, paused ? LV_SYMBOL_PLAY "  Resume" : LV_SYMBOL_PAUSE "  Pause");
+  lv_label_set_text(detailHint, paused ? "push resume  " LV_SYMBOL_BULLET "  back"
+                                      : "push pause  " LV_SYMBOL_BULLET "  back");
   if (paused) {
-    // Big PAUSED instead of countdown + progress (en=0 / epoch=0 plans).
     lv_label_set_text(nbCap, "STATUS");
     lv_label_set_text(dCountdown, "PAUSED");
     lv_obj_set_style_text_color(dCountdown, UI_COL_WARNING, 0);
-    lv_obj_set_hidden(dBar, true);
     return;
   }
   lv_label_set_text(nbCap, "NEXT BUY");
-  lv_obj_set_hidden(dBar, false);
 
   char cd[12];
   uiFmtCountdown(p.nextBuyEpoch, g_ui.epoch, cd, sizeof(cd));
   lv_label_set_text(dCountdown, cd);
   lv_obj_set_style_text_color(dCountdown, od ? UI_COL_WARNING : UI_COL_TEXT, 0);
-
-  bool unknown = (g_ui.epoch == 0 || p.nextBuyEpoch == 0);
-  int32_t rem = unknown ? 0 : static_cast<int32_t>(p.nextBuyEpoch - g_ui.epoch);
-  int32_t pct;
-  if (od) pct = 100;
-  else if (unknown) pct = 0;
-  else {
-    float frac = 1.0f - static_cast<float>(rem) / (7.0f * 86400.0f);
-    if (frac < 0.0f) frac = 0.0f;
-    if (frac > 1.0f) frac = 1.0f;
-    pct = static_cast<int32_t>(frac * 100.0f);
-  }
-  lv_bar_set_value(dBar, pct, LV_ANIM_OFF);
-  lv_obj_set_style_bg_color(dBar, od ? UI_COL_WARNING : UI_COL_PRIMARY, LV_PART_INDICATOR);
 }
 
 void openDetail(uint8_t slot) {
   if (!detailScr) buildDetailScreen();
   detailSlot = static_cast<int8_t>(slot);
   detailFill();
-  lv_screen_load_anim(detailScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0, false);
+  lv_obj_t* one[1] = { pauseBtn };
+  uiGroupSet(one, 1, false);
+  lv_screen_load_anim(detailScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 160, 0, false);
 }
 
 lv_obj_t* buildDetailScreen() {
@@ -399,7 +389,7 @@ lv_obj_t* buildDetailScreen() {
 
   static const char* STAT_CAPTIONS[4] = { "BUY", "BUYS", "HELD", "VALUE" };
   const int statX[4] = { 26, 124, 26, 124 };
-  const int statY[4] = { 100, 100, 136, 136 };
+  const int statY[4] = { 100, 100, 130, 130 };
   for (int i = 0; i < 4; i++) {
     lv_obj_t* cap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
     lv_label_set_text(cap, STAT_CAPTIONS[i]);
@@ -409,22 +399,31 @@ lv_obj_t* buildDetailScreen() {
     lv_obj_align(dStatVal[i], LV_ALIGN_TOP_LEFT, statX[i], statY[i] + 15);
   }
 
-  // Next-buy row + bar sit higher and narrower than the square layout: at
-  // y ~190 the visible chord is only ~190 px.
   nbCap = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_MUTED);
   lv_label_set_text(nbCap, "NEXT BUY");
-  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 40, 176);
+  lv_obj_align(nbCap, LV_ALIGN_TOP_LEFT, 40, 168);
 
   dCountdown = uiThemeLabel(detailScr, &lv_font_montserrat_14, UI_COL_TEXT);
   uiThemeTextBounds(dCountdown, 96, 18);
   lv_obj_set_style_text_align(dCountdown, LV_TEXT_ALIGN_RIGHT, 0);
-  lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -40, 174);
+  lv_obj_align(dCountdown, LV_ALIGN_TOP_RIGHT, -40, 160);
 
-  dBar = lv_bar_create(detailScr);
-  lv_obj_set_size(dBar, 140, 6);
-  lv_obj_align(dBar, LV_ALIGN_TOP_MID, 0, 198);
-  lv_bar_set_range(dBar, 0, 100);
-  lv_obj_set_style_bg_color(dBar, UI_COL_BORDER, 0);
+  pauseBtn = lv_obj_create(detailScr);
+  lv_obj_set_size(pauseBtn, 140, 28);
+  lv_obj_align(pauseBtn, LV_ALIGN_BOTTOM_MID, 0, -32);
+  uiThemeButton(pauseBtn);
+  lv_obj_set_style_border_width(pauseBtn, 3, LV_STATE_FOCUSED);
+  lv_obj_set_style_border_color(pauseBtn, UI_COL_TEXT, LV_STATE_FOCUSED);
+  lv_obj_set_clickable(pauseBtn, true);
+  pauseLabel = uiThemeLabel(pauseBtn, &lv_font_montserrat_14, UI_COL_TEXT);
+  lv_label_set_text(pauseLabel, "Pause plan");
+  lv_obj_center(pauseLabel);
+
+  detailHint = uiThemeLabel(detailScr, &lv_font_montserrat_12, UI_COL_PRIMARY);
+  uiThemeTextBounds(detailHint, 130, 16);
+  lv_obj_set_style_text_align(detailHint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(detailHint, "push pause  " LV_SYMBOL_BULLET "  back");
+  lv_obj_align(detailHint, LV_ALIGN_BOTTOM_MID, 0, -16);
 
   return detailScr;
 }
@@ -454,11 +453,9 @@ lv_obj_t* buildListScreen() {
   lv_obj_align(totalSol, LV_ALIGN_TOP_MID, 0, 56);
   lv_obj_set_hidden(totalSol, true);
 
-  // The focused card scrolls into view above the reserved control-hint row.
-  // 200 px wide: at the column's bottom edge (y 194) the chord is ~189 px,
-  // so wider cards had their corners shaved off by the bezel.
+  // The column and cards stay inside the circle's ~180 px bottom chord.
   col = lv_obj_create(listScr);
-  lv_obj_set_size(col, 200, 118);
+  lv_obj_set_size(col, 190, 110);
   lv_obj_align(col, LV_ALIGN_TOP_MID, 0, 76);
   lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(col, 0, 0);
@@ -475,7 +472,7 @@ lv_obj_t* buildListScreen() {
 
   for (size_t i = 0; i < kDcaMaxPlans; i++) {
     card[i] = lv_obj_create(col);
-    lv_obj_set_size(card[i], 192, 56);
+    lv_obj_set_size(card[i], 182, 56);
     uiThemeCard(card[i]);
     lv_obj_set_clickable(card[i], true);
     lv_obj_set_user_data(card[i], reinterpret_cast<void*>(static_cast<intptr_t>(i)));
@@ -483,8 +480,7 @@ lv_obj_t* buildListScreen() {
     lv_obj_add_event_cb(card[i], cardFocused, LV_EVENT_FOCUSED, nullptr);
     // NOT added to the focus group here — groupSetCards() tracks visibility.
 
-    // Card zones (192 px): logo 6..44 | ticker 52..118 | countdown 120..184,
-    // value + sub line 52..184. Sized for "GOOGLX" / "in 23h 59m".
+    // Card zones are bounded for the 182 px card and its countdown column.
     cardLogo[i] = lv_image_create(card[i]);
     lv_obj_align(cardLogo[i], LV_ALIGN_LEFT_MID, 0, 0);
     lv_image_set_scale(cardLogo[i], 204);   // 48 -> 38 px inside the compact card
@@ -498,19 +494,19 @@ lv_obj_t* buildListScreen() {
     lv_obj_set_style_pad_top(cardChip[i], 10, 0);
 
     cardTicker[i] = uiThemeLabel(card[i], &lv_font_montserrat_14, UI_COL_TEXT);
-    uiThemeTextBounds(cardTicker[i], 66, 18);
+    uiThemeTextBounds(cardTicker[i], 60, 18);
     lv_obj_align(cardTicker[i], LV_ALIGN_TOP_LEFT, 52, 4);
 
     cardValue[i] = uiThemeLabel(card[i], &lv_font_montserrat_16, UI_COL_TEXT);
-    uiThemeTextBounds(cardValue[i], 132, 18);
+    uiThemeTextBounds(cardValue[i], 122, 18);
     lv_obj_align(cardValue[i], LV_ALIGN_TOP_LEFT, 52, 21);
 
     cardSub[i] = uiThemeLabel(card[i], &lv_font_montserrat_12, UI_COL_MUTED);
-    uiThemeTextBounds(cardSub[i], 132, 15);
+    uiThemeTextBounds(cardSub[i], 122, 15);
     lv_obj_align(cardSub[i], LV_ALIGN_TOP_LEFT, 52, 39);
 
     cardCountdown[i] = uiThemeLabel(card[i], &lv_font_montserrat_12, UI_COL_MUTED);
-    uiThemeTextBounds(cardCountdown[i], 66, 15);
+    uiThemeTextBounds(cardCountdown[i], 60, 15);
     lv_obj_set_style_text_align(cardCountdown[i], LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_align(cardCountdown[i], LV_ALIGN_TOP_RIGHT, -8, 6);
 
@@ -519,7 +515,7 @@ lv_obj_t* buildListScreen() {
 
   // Trailing "+ New plan" card: always visible, sits after the last plan.
   newCard = lv_obj_create(col);
-  lv_obj_set_size(newCard, 192, 44);
+  lv_obj_set_size(newCard, 182, 44);
   uiThemeCard(newCard);
   lv_obj_set_clickable(newCard, true);
   lv_obj_add_event_cb(newCard, newCardClicked, LV_EVENT_CLICKED, nullptr);
@@ -528,13 +524,13 @@ lv_obj_t* buildListScreen() {
   lv_label_set_text(plus, LV_SYMBOL_PLUS "  New plan");
   lv_obj_center(plus);
 
-  emptyLabel = uiThemeLabel(listScr, &lv_font_montserrat_14, UI_COL_MUTED);
-  lv_label_set_text(emptyLabel, "no DCA plans yet");
+  emptyLabel = uiThemeLabel(listScr, &lv_font_montserrat_14, UI_COL_PRIMARY);
+  lv_label_set_text(emptyLabel, LV_SYMBOL_LIST "  no plans yet");
   lv_obj_align(emptyLabel, LV_ALIGN_CENTER, 0, 24);
   emptyHint = uiThemeLabel(listScr, &lv_font_montserrat_12, UI_COL_MUTED);
   uiThemeTextBounds(emptyHint, 180, 16);
   lv_obj_set_style_text_align(emptyHint, LV_TEXT_ALIGN_CENTER, 0);
-  lv_label_set_text(emptyHint, "add one above or in the app");
+  lv_label_set_text(emptyHint, "start with " LV_SYMBOL_PLUS " New plan");
   lv_obj_align(emptyHint, LV_ALIGN_CENTER, 0, 44);
 
   uiThemeControlHint(listScr, "open");
@@ -569,7 +565,7 @@ bool uiScreenDcaOnList() {
 }
 
 // Free the card column but keep the screen shell (header stays up during
-// the 250 ms exit animation): lets the create wheel build its drum before
+// the 160 ms exit animation): lets the create wheel build its drum before
 // the shell is auto-deleted — the two full screens never coexist.
 void uiScreenDcaShrinkList() {
   if (!listScr || !col) return;
@@ -605,7 +601,7 @@ void uiScreenDcaShow() {
   groupSetCards(false);
   // Lazy screens (menu / create) free their widgets on exit via auto_del.
   bool freeMenu = g_ui.menuScreen && lv_screen_active() == g_ui.menuScreen;
-  lv_screen_load_anim(listScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 250, 0,
+  lv_screen_load_anim(listScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 160, 0,
                       fromCreate || freeMenu);
   if (fromCreate) uiScreenCreateFreed();
   if (freeMenu) uiScreenMenuFreed();
@@ -622,15 +618,17 @@ void uiScreenPetShow() {
   bool freeLock = g_ui.lockScreen && lv_screen_active() == g_ui.lockScreen;
   bool freeOta = g_ui.otaScreen && lv_screen_active() == g_ui.otaScreen;
   bool freeConnect = g_ui.connectScreen && lv_screen_active() == g_ui.connectScreen;
-  lv_screen_load_anim(g_ui.petScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0,
+  bool freeNearby = g_ui.nearbyScreen && lv_screen_active() == g_ui.nearbyScreen;
+  lv_screen_load_anim(g_ui.petScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 160, 0,
                       freeMenu || freeCreate || freeDca || freeLock ||
-                      freeOta || freeConnect);
+                      freeOta || freeConnect || freeNearby);
   if (freeMenu) uiScreenMenuFreed();
   if (freeCreate) uiScreenCreateFreed();
   if (freeDca) uiScreenDcaListFreed();
   if (freeLock) uiScreenLockFreed();
   if (freeOta) uiScreenOtaFreed();
   if (freeConnect) uiScreenConnectFreed();
+  if (freeNearby) uiScreenNearbyFreed();
 }
 
 void uiScreenDcaPlansChanged() {
@@ -676,7 +674,8 @@ bool uiScreenDcaDetailOpen() {
 
 void uiScreenDcaCloseDetail() {
   detailSlot = -1;
-  lv_screen_load_anim(listScr, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 250, 0, false);
+  groupSetCards(true);
+  lv_screen_load_anim(listScr, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 160, 0, false);
 }
 
 void uiScreenDcaToggleAmountUnit() {
@@ -689,33 +688,19 @@ void uiScreenDcaToggleAmountUnit() {
 bool uiScreenDcaFocusAdvance() {
   if (!listScr) return false;
   lv_obj_t* f = lv_group_get_focused(g_ui.group);
-  if (f && f != newCard) {   // the "+ New plan" card is always last
-    lv_group_focus_next(g_ui.group);
-    return true;
-  }
-  if (!f) {   // nothing focused yet (e.g. after a refresh): focus the first
-    lv_group_focus_obj(g_ui.planCount > 0 ? card[0] : newCard);
-    return true;
-  }
-  return false;   // on the last card: caller moves to the next screen
+  lv_obj_t* first = g_ui.planCount > 0 ? card[0] : newCard;
+  if (!f || f == newCard) lv_group_focus_obj(first);
+  else lv_group_focus_next(g_ui.group);
+  return true;
 }
 
-// Crown CCW (PCB v1) = previous card. The "+ New plan" card is always
-// last, so the first entry is card[0] with plans, else newCard itself;
-// rotating past it backs out to the pet screen (the caller's job).
 bool uiScreenDcaFocusPrev() {
   if (!listScr) return false;
   lv_obj_t* f = lv_group_get_focused(g_ui.group);
   lv_obj_t* first = g_ui.planCount > 0 ? card[0] : newCard;
-  if (f && f != first) {
-    lv_group_focus_prev(g_ui.group);
-    return true;
-  }
-  if (!f) {   // nothing focused yet (e.g. after a refresh): land on the last
-    lv_group_focus_obj(newCard);
-    return true;
-  }
-  return false;
+  if (!f || f == first) lv_group_focus_obj(newCard);
+  else lv_group_focus_prev(g_ui.group);
+  return true;
 }
 
 void uiScreenDcaTogglePause() {

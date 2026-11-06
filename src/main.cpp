@@ -61,6 +61,7 @@
 #include "ota.h"
 #include "pet.h"
 #include "feedback.h"
+#include "nearby.h"
 #include "ui/ui.h"
 
 // Defaults so older config.h copies (pre-DCA) still build.
@@ -2638,7 +2639,10 @@ void setup() {
   backlightSet(255);   // full brightness (PWM, so AFK can dim it later)
 #endif
 
-  tft.setRotation(0);
+#ifndef TFT_ROTATION
+#define TFT_ROTATION 0
+#endif
+  tft.setRotation(TFT_ROTATION);
 
 #if SHOW_RESET_REASON
   esp_reset_reason_t resetReason = esp_reset_reason();
@@ -2775,6 +2779,7 @@ void setup() {
 
   setupBattery();
   feedback::begin();          // PCB v1: buzzer GPIO17 + haptic GPIO18 (no-op off-PCB)
+  nearbyBegin();
   Serial.printf("heap after UI: %u free, %u min-free\n",
                 ESP.getFreeHeap(), ESP.getMinFreeHeap());
   blePushState(pet.state());
@@ -2807,6 +2812,15 @@ void setup() {
 void loop() {
   uint32_t nowMs = millis();
   float nowSec = nowMs / 1000.0f;
+
+  nearbyUpdate(appConnected, ui::screenSleeping(), pet.state(), pet.mood(), pet.item());
+  uint32_t waveFrom;
+  if (nearbyTakeWave(waveFrom)) {
+    char waveText[24];
+    snprintf(waveText, sizeof(waveText), "%03X waved", static_cast<unsigned>(waveFrom & 0xFFF));
+    ui::enqueueToast(waveText);
+    pet.react(PetReaction::REACT_DANCE, nowSec);
+  }
 
   // AFK nap edges drive the backlight; the nap also slows the pet scene and
   // adds a small loop idle below (backlight + SPI traffic dominate draw).
@@ -2882,6 +2896,8 @@ void loop() {
   if (linkUiPending) {
     linkUiPending = false;
     bool up = appConnected;
+    ui::setAppConnected(up);
+    pet.setAmbientActivities(!up, nowSec);
     ui::setSyncWait(!up);
     ui::setConnectStatus(up ? "connected - share Wi-Fi" : "waiting for app");
     if (!up) pet.clearLook(nowSec);

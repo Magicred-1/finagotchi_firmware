@@ -114,6 +114,7 @@ public:
   void setMood(PetMoodId mood, float nowSec);
   void setItem(PetItem item);
   void react(PetReaction reaction, float nowSec);
+  void setAmbientActivities(bool enabled, float nowSec);
   PetMoodId mood() const { return curMood; }
   PetItem item() const { return curItem; }
 
@@ -192,6 +193,14 @@ private:
   float     reactT = -10.0f;
   float     burstT = -10.0f;
 
+  enum class AmbientActivity : uint8_t { NONE, SLEEP, GAME };
+  bool      ambientEnabled = true;
+  AmbientActivity activity = AmbientActivity::NONE;
+  float     activityAt = -10.0f;
+  float     nextActivity = 10.0f;
+  PetMoodId activityReturnMood = PetMoodId::MOOD_CALM;
+  bool      activityMoodOwned = false;
+
   // Waiting-for-sync mood side-effect
   bool      syncWait = false;
   PetMoodId preSyncMood = PetMoodId::MOOD_CALM;
@@ -231,4 +240,7 @@ private:
   void  drawBurst(float nowSec, float cx, float cy);
   void  drawBackdrop();               // sky/ground zones (scene theme)
   void  drawShadow(float nowSec, float cx, float rScale);  // PetCanvas groundShadow
+  void  activityStop(float nowSec);
+  void  updateActivity(float nowSec);
+  void  drawActivity(float nowSec, float cx, float cy);
 };

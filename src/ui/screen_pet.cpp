@@ -27,11 +27,22 @@ lv_obj_t* spinner;
 lv_obj_t* spinnerCaption;
 lv_obj_t* chip;
 lv_obj_t* chipLabel;
-lv_obj_t* statVal[2];
-lv_obj_t* happyBar;
+lv_obj_t* statsLabel;
+lv_obj_t* menuHint;
 lv_timer_t* chipRotateTimer;
 
 uint8_t chipSlot = 0;
+uint8_t petSubStage = 1;
+bool petConnected = false;
+
+void badgeFill() {
+  const char* name = petConnected ? "Finagotchi" : uiStageName(petSubStage);
+  lv_label_set_text(badgeLabel, name);
+  lv_obj_set_hidden(badgeLabel, !name[0]);
+  lv_bar_set_value(stageTrack,
+                   petSubStage < 1 ? 1 : (petSubStage > 12 ? 12 : petSubStage),
+                   LV_ANIM_ON);
+}
 
 // --- next-buy chip -----------------------------------------------------------
 
@@ -104,7 +115,7 @@ lv_obj_t* uiScreenPetCreate() {
   lv_obj_t* scr = lv_obj_create(nullptr);
   uiThemeScreen(scr);
 
-  // Rounded navy portrait frame around the existing 160px RGB565 canvas.
+  // Borderless black portrait backdrop around the 160px RGB565 canvas.
   // Slightly smaller than the square layout and nudged down: frees a clean
   // chrome band at the top (badge / Wi-Fi / battery) on the round panel.
   lv_obj_t* portrait = lv_obj_create(scr);
@@ -113,9 +124,7 @@ lv_obj_t* uiScreenPetCreate() {
   lv_obj_set_style_bg_color(portrait, UI_COL_BG, 0);
   lv_obj_set_style_bg_opa(portrait, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(portrait, UI_RADIUS_CARD, 0);
-  lv_obj_set_style_border_width(portrait, 1, 0);
-  lv_obj_set_style_border_color(portrait, UI_COL_BORDER, 0);
-  lv_obj_set_style_border_opa(portrait, LV_OPA_30, 0);
+  lv_obj_set_style_border_width(portrait, 0, 0);
   lv_obj_set_style_pad_all(portrait, 0, 0);
   lv_obj_set_scrollable(portrait, false);
 
@@ -170,10 +179,10 @@ lv_obj_t* uiScreenPetCreate() {
   lv_obj_set_hidden(spinner, true);
   lv_obj_set_hidden(spinnerCaption, true);
 
-  // Next-buy chip (pill, above the stats rows).
+  // Next-buy chip, raised to leave room for one-line stats and the menu hint.
   chip = lv_obj_create(scr);
   lv_obj_set_size(chip, 196, 30);
-  lv_obj_align(chip, LV_ALIGN_BOTTOM_MID, 0, -56);
+  lv_obj_align(chip, LV_ALIGN_BOTTOM_MID, 0, -68);
   uiThemeGlass(chip, true);
   lv_obj_set_style_radius(chip, UI_RADIUS_PILL, 0);
   chipLabel = uiThemeLabel(chip, &lv_font_montserrat_14, UI_COL_TEXT);
@@ -182,28 +191,17 @@ lv_obj_t* uiScreenPetCreate() {
   lv_obj_center(chipLabel);
   lv_obj_set_hidden(chip, true);
 
-  // Bottom stats sit over the frost stop, so they use the app's ink tokens.
-  static const char* CAPTIONS[3] = { "streak", "points", "happy" };
-  const int cols[3] = { -44, 0, 44 };
-  for (int i = 0; i < 3; i++) {
-    lv_obj_t* cap = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_INK_MUTED);
-    lv_label_set_text(cap, CAPTIONS[i]);
-    lv_obj_align(cap, LV_ALIGN_BOTTOM_MID, cols[i], -34);
-    if (i < 2) {
-      statVal[i] = uiThemeLabel(scr, &lv_font_montserrat_14, UI_COL_INK);
-      lv_label_set_text(statVal[i], "0");
-      lv_obj_align(statVal[i], LV_ALIGN_BOTTOM_MID, cols[i], -19);
-    }
-  }
-  // Happiness shows as a small bar (app's HappinessBar pattern) instead of
-  // a raw number; same rose accent the app uses for the heart.
-  happyBar = lv_bar_create(scr);
-  lv_obj_set_size(happyBar, 38, 6);
-  lv_obj_align(happyBar, LV_ALIGN_BOTTOM_MID, cols[2], -23);
-  lv_bar_set_range(happyBar, 0, 100);
-  lv_obj_set_style_bg_color(happyBar, UI_COL_INK_MUTED, 0);
-  lv_obj_set_style_bg_opa(happyBar, LV_OPA_20, 0);
-  lv_obj_set_style_bg_color(happyBar, UI_COL_DANGER, LV_PART_INDICATOR);
+  statsLabel = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_INK);
+  uiThemeTextBounds(statsLabel, 176, 16);
+  lv_obj_set_style_text_align(statsLabel, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(statsLabel, "0d  " LV_SYMBOL_BULLET "  0 pts  " LV_SYMBOL_BULLET "  50% :)");
+  lv_obj_align(statsLabel, LV_ALIGN_BOTTOM_MID, 0, -32);
+
+  menuHint = uiThemeLabel(scr, &lv_font_montserrat_12, UI_COL_PRIMARY);
+  uiThemeTextBounds(menuHint, 140, 16);
+  lv_obj_set_style_text_align(menuHint, LV_TEXT_ALIGN_CENTER, 0);
+  lv_label_set_text(menuHint, LV_SYMBOL_LIST " rotate / push");
+  lv_obj_align(menuHint, LV_ALIGN_BOTTOM_MID, 0, -16);
 
   chipRotateTimer = lv_timer_create(chipRotate, 4000, nullptr);
   return scr;
@@ -220,28 +218,25 @@ void uiScreenPetSyncWait(bool on) {
 }
 
 void uiScreenPetSetStats(uint32_t streakDays, uint32_t points, uint8_t happiness) {
-  char buf[12];
-  uiFmtVal(streakDays, buf, sizeof(buf));
-  if (strcmp(lv_label_get_text(statVal[0]), buf) != 0) {
-    lv_label_set_text(statVal[0], buf);
-    uiThemeNudge(statVal[0], -3);
+  char streak[12], pts[12], buf[56];
+  uiFmtVal(streakDays, streak, sizeof(streak));
+  uiFmtVal(points, pts, sizeof(pts));
+  snprintf(buf, sizeof(buf), "%sd  " LV_SYMBOL_BULLET "  %s pts  " LV_SYMBOL_BULLET "  %u%% :)",
+           streak, pts, static_cast<unsigned>(happiness > 100 ? 100 : happiness));
+  if (strcmp(lv_label_get_text(statsLabel), buf) != 0) {
+    lv_label_set_text(statsLabel, buf);
+    uiThemeNudge(statsLabel, -2);
   }
-  uiFmtVal(points, buf, sizeof(buf));
-  if (strcmp(lv_label_get_text(statVal[1]), buf) != 0) {
-    lv_label_set_text(statVal[1], buf);
-    uiThemeNudge(statVal[1], -3);
-  }
-  uint8_t next = happiness > 100 ? 100 : happiness;
-  lv_bar_set_value(happyBar, next,
-                   lv_bar_get_value(happyBar) == next ? LV_ANIM_OFF : LV_ANIM_ON);
 }
 
 void uiScreenPetSetSubStage(uint8_t subStage) {
-  const char* name = uiStageName(subStage);
-  lv_label_set_text(badgeLabel, name);
-  lv_obj_set_hidden(badgeLabel, !name[0]);
-  lv_bar_set_value(stageTrack, subStage < 1 ? 1 : (subStage > 12 ? 12 : subStage),
-                   LV_ANIM_ON);
+  petSubStage = subStage;
+  badgeFill();
+}
+
+void uiScreenPetSetConnected(bool connected) {
+  petConnected = connected;
+  badgeFill();
 }
 
 void uiScreenPetSetWifiOnline(bool online) {
@@ -266,16 +261,21 @@ void uiScreenPetSetBattery(int pct) {
 }
 
 void uiScreenPetToast(const char* text, bool reward) {
-  lv_color_t col = reward ? UI_COL_REWARD : UI_COL_SUCCESS;
-  lv_obj_t* t = uiThemeLabel(lv_layer_top(), &lv_font_montserrat_16, col);
-  lv_label_set_text(t, text);
+  lv_color_t accent = reward ? UI_COL_REWARD : UI_COL_PRIMARY;
+  lv_obj_t* t = uiThemeLabel(lv_layer_top(), &lv_font_montserrat_14, UI_COL_TEXT);
+  char msg[96];
+  snprintf(msg, sizeof(msg), "%s  %s", reward ? LV_SYMBOL_PLUS : LV_SYMBOL_OK, text);
+  lv_label_set_text(t, msg);
+  uiThemeTextBounds(t, 180, 28);
+  lv_obj_set_style_text_align(t, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_size(t, 200, 36);
   lv_obj_set_style_bg_color(t, UI_COL_SURFACE, 0);
   lv_obj_set_style_bg_opa(t, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(t, UI_RADIUS_PILL, 0);
-  lv_obj_set_style_border_width(t, 1, 0);
-  lv_obj_set_style_border_color(t, col, 0);
-  lv_obj_set_style_pad_hor(t, 10, 0);
-  lv_obj_set_style_pad_ver(t, 5, 0);
+  lv_obj_set_style_border_width(t, 2, 0);
+  lv_obj_set_style_border_color(t, accent, 0);
+  lv_obj_set_style_border_opa(t, LV_OPA_COVER, 0);
+  lv_obj_set_style_pad_all(t, 4, 0);
   lv_obj_align(t, LV_ALIGN_CENTER, 0, 48);
 
   // Float up ~40 px over 1.2 s (ease out), hold, then slide out and

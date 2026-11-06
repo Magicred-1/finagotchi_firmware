@@ -46,8 +46,9 @@ void renderPetFrame(float nowSec); // pet scene -> LVGL canvas; FRAME_MS cadence
 // Bottom stats bar: streak days / points / happiness (0-100).
 void setStats(uint32_t streakDays, uint32_t points, uint8_t happiness);
 
-// 12-stage badge (1-12), shown top-left on the pet screen.
+// 12-stage badge on the pet screen; shows the device name while app-connected.
 void setSubStage(uint8_t subStage);
+void setAppConnected(bool connected);
 
 // Top-right battery indicator (0-100). clearBattery() hides it (USB power).
 void setBattery(uint8_t pct);
@@ -123,7 +124,8 @@ void setWifiOnline(bool online);
 bool afkActive();
 bool afkInput();   // input.cpp: note activity; true = it consumed a wake
 
-// PCB clone display sleep: long cancel sleeps, any local input wakes. The
+// Display sleep: automatic after SCREEN_SLEEP_TIMEOUT_MS (default 120 s), or
+// immediately on long cancel. Any local input wakes without acting. The
 // backlight remains powered by VCC on seven-pin GC9A01 modules.
 void screenSleep();
 bool screenSleeping();
