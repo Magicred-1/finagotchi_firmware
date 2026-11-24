@@ -104,9 +104,12 @@ manual attempt. Serial diagnostics report lengths, edge-space flags and
 non-printable-byte counts, never the password.
 
 Joins are serialized so a background poll cannot restart the WPA handshake
-during provisioning. After a failed normal join, the device scans using an
-exact SSID comparison and retries the strongest matching access point on its
-own BSSID/channel. Disconnect reasons 2 (`AUTH_EXPIRE`) and 204
+during provisioning. A central scheduler retries saved credentials every
+10 seconds while offline, whether the app is connected or not, so leaving and
+returning to the access point's range recovers without another provisioning
+write. After a failed normal join, the device scans using an exact SSID
+comparison and retries the strongest matching access point on its own
+BSSID/channel. Disconnect reasons 2 (`AUTH_EXPIRE`) and 204
 (`HANDSHAKE_TIMEOUT`) occur during router authentication; they are not SSID
 space-parsing errors.
 
@@ -267,6 +270,7 @@ truncated away.
 | `stage:egg` / `coinling` / `hodler` / `whale` | Morph to stage (easeOutQuint) |
 | `stage:<1-12>` | Numeric stage; maps to base shape (1 egg, 2-7 coinling, 8-9 hodler, 10-12 whale) |
 | `substage:<1-12>` | Set the visible 12-stage name badge without changing the base shape |
+| `name:<1-24 chars>` | Set the pet name shown on the pet screen while the app is connected. Sent with every full sync and after renames; not persisted. Control characters and semicolons are replaced with spaces by the app. Long names need a negotiated payload large enough to hold the command |
 | `mood:<0-5>` | Blend to emotion (0.45 s ease) |
 | `item:<0-5>` | Equip collectible (instant) |
 | `bg:<name>` | Set the scene backdrop theme: `default` / `aurora` / `sunset` / `midnight` / `galaxy` / `gold` (mirrors the app's background picker). Optional — old apps never send it, unknown names are ignored; not persisted (the app is authoritative and can re-push on connect) |

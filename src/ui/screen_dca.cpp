@@ -610,8 +610,8 @@ void uiScreenDcaShow() {
 void uiScreenPetShow() {
   if (detailSlot >= 0) detailSlot = -1;
   uiGroupSet(nullptr, 0, false);   // the pet screen has no focusables
-  // Lazy screens (menu / create / portfolio list / lock / ota / connect)
-  // free on exit.
+  // Lazy screens (menu / create / portfolio / lock / ota / connect / nearby /
+  // style picker / games) free on exit.
   bool freeMenu = g_ui.menuScreen && lv_screen_active() == g_ui.menuScreen;
   bool freeCreate = g_ui.createScreen && lv_screen_active() == g_ui.createScreen;
   bool freeDca = listScr && lv_screen_active() == listScr;
@@ -619,9 +619,11 @@ void uiScreenPetShow() {
   bool freeOta = g_ui.otaScreen && lv_screen_active() == g_ui.otaScreen;
   bool freeConnect = g_ui.connectScreen && lv_screen_active() == g_ui.connectScreen;
   bool freeNearby = g_ui.nearbyScreen && lv_screen_active() == g_ui.nearbyScreen;
+  bool freeStyle = g_ui.styleScreen && lv_screen_active() == g_ui.styleScreen;
+  bool freeGames = g_ui.gamesScreen && lv_screen_active() == g_ui.gamesScreen;
   lv_screen_load_anim(g_ui.petScreen, LV_SCR_LOAD_ANIM_MOVE_RIGHT, 160, 0,
                       freeMenu || freeCreate || freeDca || freeLock ||
-                      freeOta || freeConnect || freeNearby);
+                      freeOta || freeConnect || freeNearby || freeStyle || freeGames);
   if (freeMenu) uiScreenMenuFreed();
   if (freeCreate) uiScreenCreateFreed();
   if (freeDca) uiScreenDcaListFreed();
@@ -629,6 +631,8 @@ void uiScreenPetShow() {
   if (freeOta) uiScreenOtaFreed();
   if (freeConnect) uiScreenConnectFreed();
   if (freeNearby) uiScreenNearbyFreed();
+  if (freeStyle) uiScreenStyleFreed();
+  if (freeGames) uiScreenGamesFreed();
 }
 
 void uiScreenDcaPlansChanged() {

@@ -7,10 +7,11 @@
   The coin motor sits between 3V3 and J4 pad 2 (MOTOR_NEG), switched to
   GND by Q2 (AO3400) from GPIO18 — GPIO18 HIGH = motor on.
 
-  Both drivers are non-blocking: each call queues a short pattern of
-  (freq, ms, motor) steps and update() walks it with millis(). The piezo
-  is driven with a 50% square wave at ~4 kHz (its resonant frequency) via
-  ledc channel 0 (Arduino-ESP32 core 2.x API).
+  Both drivers are non-blocking: each call queues a short buzzer pattern and
+  an independent 80%-duty motor pulse. Repeated events cannot extend a pulse
+  or bypass its rest period, so rapid crown rotation cannot hold the motor on
+  and drag down the 3V3 rail. Both outputs use the Arduino-ESP32 core 2.x
+  LEDC API, with separate timers for the buzzer and motor.
 */
 
 #include "feedback.h"
@@ -23,31 +24,45 @@ namespace {
 
 constexpr uint8_t BUZZER_PIN = 17;   // Q1 base (piezo low side)
 constexpr uint8_t MOTOR_PIN  = 18;   // Q2 gate (motor low side)
-constexpr uint8_t BUZZ_CH    = 0;    // ledc channel
-constexpr int     BUZZ_RES   = 10;   // 10-bit duty
+constexpr uint8_t BUZZ_CH    = 0;
+constexpr uint8_t MOTOR_CH   = 2;   // timer 1; channels 0/1 share the buzzer timer
+constexpr int     BUZZ_RES   = 10;
+constexpr int     MOTOR_RES  = 8;
+constexpr uint32_t MOTOR_FREQ = 20000;
+constexpr uint8_t MOTOR_DUTY = 204;  // 80% average drive
+constexpr uint32_t MOTOR_REST_MS = 120;
 
-struct Step { uint16_t freq; uint8_t ms; bool motor; };
+struct Step { uint16_t freq; uint8_t ms; };
 
 // steps per event (freq 0 = silence gap); patterns end with ms==0
-const Step PAT_CLICK[]   = { {4000, 8, true},  {0, 17, true},  {0, 0, false} };
-const Step PAT_CONFIRM[] = { {2600, 35, true}, {0, 40, true},  {0, 0, false} };
-const Step PAT_BACK[]    = { {1800, 30, true}, {0, 0, false} };
-const Step PAT_CHIME[]   = { {2620, 60, true}, {3300, 60, true}, {0, 0, false} };
+const Step PAT_CLICK[]   = { {4000, 8},  {0, 17},  {0, 0} };
+const Step PAT_CONFIRM[] = { {2600, 35}, {0, 40},  {0, 0} };
+const Step PAT_BACK[]    = { {1800, 30}, {0, 0} };
+const Step PAT_CHIME[]   = { {2620, 60}, {3300, 60}, {0, 0} };
 
 const Step* active = nullptr;
 uint8_t  stepIdx = 0;
 uint32_t stepEnd = 0;
+uint32_t motorPulseEnd = 0;
+uint32_t motorNextStart = 0;
+bool motorOn = false;
 
-void play(const Step* pat) {
+void play(const Step* pat, uint8_t motorMs) {
   active = pat;
   stepIdx = 0;
   stepEnd = 0;      // update() applies step 0 on the next loop pass
+
+  uint32_t now = millis();
+  if (!motorMs || motorOn || static_cast<int32_t>(now - motorNextStart) < 0) return;
+  ledcWrite(MOTOR_CH, MOTOR_DUTY);
+  motorOn = true;
+  motorPulseEnd = now + motorMs;
+  motorNextStart = motorPulseEnd + MOTOR_REST_MS;
 }
 
 void applyStep(const Step& s) {
   if (s.freq) ledcWriteTone(BUZZ_CH, s.freq);   // 50% square at freq
   else        ledcWrite(BUZZ_CH, 0);            // silent
-  digitalWrite(MOTOR_PIN, s.motor ? HIGH : LOW);
 }
 
 } // namespace
@@ -57,20 +72,26 @@ namespace feedback {
 void begin() {
   pinMode(MOTOR_PIN, OUTPUT);
   digitalWrite(MOTOR_PIN, LOW);
+  ledcSetup(MOTOR_CH, MOTOR_FREQ, MOTOR_RES);
+  ledcAttachPin(MOTOR_PIN, MOTOR_CH);
+  ledcWrite(MOTOR_CH, 0);
   ledcSetup(BUZZ_CH, 4000, BUZZ_RES);
   ledcAttachPin(BUZZER_PIN, BUZZ_CH);
   ledcWrite(BUZZ_CH, 0);
-  Serial.println("Feedback: buzzer GPIO17 + haptic GPIO18 (PCB v1)");
+  Serial.println("Feedback: buzzer GPIO17 + haptic GPIO18 (80% PWM, 120 ms rest)");
 }
 
 void update() {
-  if (!active) return;
   uint32_t now = millis();
-  if (now < stepEnd) return;
+  if (motorOn && static_cast<int32_t>(now - motorPulseEnd) >= 0) {
+    ledcWrite(MOTOR_CH, 0);
+    motorOn = false;
+  }
+
+  if (!active || now < stepEnd) return;
   const Step& s = active[stepIdx];
-  if (s.ms == 0) {               // pattern over: everything off
+  if (s.ms == 0) {
     ledcWrite(BUZZ_CH, 0);
-    digitalWrite(MOTOR_PIN, LOW);
     active = nullptr;
     return;
   }
@@ -79,10 +100,10 @@ void update() {
   stepIdx++;
 }
 
-void click()   { play(PAT_CLICK); }
-void confirm() { play(PAT_CONFIRM); }
-void back()    { play(PAT_BACK); }
-void chime()   { play(PAT_CHIME); }
+void click()   { play(PAT_CLICK, 18); }
+void confirm() { play(PAT_CONFIRM, 35); }
+void back()    { play(PAT_BACK, 25); }
+void chime()   { play(PAT_CHIME, 50); }
 
 } // namespace feedback
 

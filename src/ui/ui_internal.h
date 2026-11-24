@@ -25,6 +25,8 @@ struct UiState {
   lv_obj_t*   otaScreen = nullptr;
   lv_obj_t*   connectScreen = nullptr;
   lv_obj_t*   nearbyScreen = nullptr;
+  lv_obj_t*   styleScreen = nullptr;
+  lv_obj_t*   gamesScreen = nullptr;
   lv_group_t* group = nullptr;
   bool        locked = false;      // parental gate: pet screen only until unlocked
 
@@ -69,6 +71,7 @@ void uiScreenPetFrame(float nowSec);     // pet.render + canvas invalidate
 void uiScreenPetSyncWait(bool on);
 void uiScreenPetSetStats(uint32_t streakDays, uint32_t points, uint8_t happiness);
 void uiScreenPetSetSubStage(uint8_t subStage);
+void uiScreenPetSetName(const char* name);
 void uiScreenPetSetConnected(bool connected);
 void uiScreenPetSetBattery(int pct);     // <0 hides (USB power)
 void uiScreenPetSetWifiOnline(bool online);  // Wi-Fi glyph, top-right
@@ -165,3 +168,22 @@ void uiScreenNearbyFocusAdvance();
 void uiScreenNearbyFocusPrev();
 void uiScreenNearbyActivate();
 void uiScreenNearbyTick();
+
+// screen_style.cpp — clothes and mood picker dialogs, lazy build + free.
+enum class StylePicker : uint8_t { Clothes, Mood };
+void uiScreenStyleShow(StylePicker picker);
+void uiScreenStyleFreed();
+bool uiScreenStyleActive();
+void uiScreenStyleNext();
+void uiScreenStylePrev();
+void uiScreenStyleActivate(float nowSec);
+void uiScreenStyleBack();
+
+// screen_games.cpp — crown-controlled mini-games, lazy build + free.
+void uiScreenGamesShow();
+void uiScreenGamesFreed();
+bool uiScreenGamesActive();
+void uiScreenGamesNext();
+void uiScreenGamesPrev();
+void uiScreenGamesActivate();
+void uiScreenGamesBack();

@@ -21,10 +21,9 @@ void uiThemeScreen(lv_obj_t* scr) {
 
 void uiThemeGlass(lv_obj_t* obj, bool active) {
   lv_obj_set_style_bg_color(obj, UI_COL_SURFACE, 0);
-  lv_obj_set_style_bg_opa(obj, active ? LV_OPA_60 : LV_OPA_30, 0);
-  lv_obj_set_style_border_width(obj, 1, 0);
+  lv_obj_set_style_bg_opa(obj, active ? LV_OPA_COVER : LV_OPA_60, 0);
+  lv_obj_set_style_border_width(obj, 0, 0);
   lv_obj_set_style_border_color(obj, UI_COL_BORDER, 0);
-  lv_obj_set_style_border_opa(obj, active ? LV_OPA_60 : LV_OPA_30, 0);
   lv_obj_set_style_pad_all(obj, 0, 0);
   lv_obj_set_scrollable(obj, false);
 }
@@ -32,22 +31,20 @@ void uiThemeGlass(lv_obj_t* obj, bool active) {
 void uiThemeCard(lv_obj_t* obj) {
   uiThemeGlass(obj, true);
   lv_obj_set_style_radius(obj, UI_RADIUS_CARD, 0);
-  lv_obj_set_style_bg_color(obj, UI_COL_SURFACE, LV_STATE_FOCUSED);
-  lv_obj_set_style_bg_opa(obj, LV_OPA_60, LV_STATE_FOCUSED);
-  lv_obj_set_style_bg_color(obj, UI_COL_SURFACE, LV_STATE_PRESSED);
-  lv_obj_set_style_bg_opa(obj, LV_OPA_60, LV_STATE_PRESSED);
+  lv_obj_set_style_bg_color(obj, UI_COL_DIALOG_DEEP, LV_STATE_FOCUSED);
+  lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, LV_STATE_FOCUSED);
+  lv_obj_set_style_bg_color(obj, UI_COL_DIALOG_DEEP, LV_STATE_PRESSED);
+  lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, LV_STATE_PRESSED);
   lv_obj_set_style_border_color(obj, UI_COL_PRIMARY, LV_STATE_FOCUSED);
   lv_obj_set_style_border_opa(obj, LV_OPA_COVER, LV_STATE_FOCUSED);
   lv_obj_set_style_border_width(obj, 2, LV_STATE_FOCUSED);
 }
 
 void uiThemeDialog(lv_obj_t* obj) {
-  lv_obj_set_style_bg_color(obj, UI_COL_BG, 0);
+  lv_obj_set_style_bg_color(obj, UI_COL_SURFACE, 0);
   lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
   lv_obj_set_style_radius(obj, UI_RADIUS_CARD, 0);
-  lv_obj_set_style_border_width(obj, 1, 0);
-  lv_obj_set_style_border_color(obj, UI_COL_BORDER, 0);
-  lv_obj_set_style_border_opa(obj, LV_OPA_30, 0);
+  lv_obj_set_style_border_width(obj, 0, 0);
   lv_obj_set_scrollable(obj, false);
 }
 
@@ -73,7 +70,7 @@ lv_obj_t* uiThemeControlHint(lv_obj_t* parent, const char* action) {
 #else
   snprintf(text, sizeof(text), "hold %s " LV_SYMBOL_BULLET " R back", action);
 #endif
-  lv_obj_t* hint = uiThemeLabel(parent, &lv_font_montserrat_12, UI_COL_INK);
+  lv_obj_t* hint = uiThemeLabel(parent, &lv_font_montserrat_12, UI_COL_MUTED);
   uiThemeTextBounds(hint, UI_HINT_W, 16);
   lv_obj_set_style_text_align(hint, LV_TEXT_ALIGN_CENTER, 0);
   lv_label_set_text(hint, text);
@@ -84,14 +81,12 @@ lv_obj_t* uiThemeControlHint(lv_obj_t* parent, const char* action) {
 void uiThemeButton(lv_obj_t* obj, bool primary) {
   uiThemeGlass(obj, true);
   lv_obj_set_style_radius(obj, UI_RADIUS_PILL, 0);
-  lv_obj_set_style_bg_color(obj, primary ? UI_COL_PRIMARY : UI_COL_BLUE, 0);
+  lv_obj_set_style_bg_color(obj, primary ? UI_COL_PRIMARY : UI_COL_SURFACE, 0);
   lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
-  lv_obj_set_style_bg_color(obj, primary ? UI_COL_PRIMARY_PRESSED : UI_COL_SURFACE,
+  lv_obj_set_style_bg_color(obj, primary ? UI_COL_PRIMARY_PRESSED : UI_COL_DIALOG_DEEP,
                             LV_STATE_PRESSED);
   lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, LV_STATE_PRESSED);
-  lv_obj_set_style_border_width(obj, 2, 0);
-  lv_obj_set_style_border_color(obj, primary ? UI_COL_PRIMARY : UI_COL_BORDER, 0);
-  lv_obj_set_style_border_opa(obj, LV_OPA_COVER, 0);
+  lv_obj_set_style_border_width(obj, 0, 0);
 }
 
 // Interaction feedback is deliberately LAYER-FREE: transform_scale (and

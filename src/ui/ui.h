@@ -20,10 +20,10 @@ namespace ui {
 // Any may be nullptr.
 struct Actions {
   void (*syncNow)(float nowSec);        // confirm on the pet screen
-  void (*cycleReaction)(float nowSec);  // menu "Play" row
+  void (*cycleReaction)(float nowSec);  // random pet reaction action
   void (*feedPet)(float nowSec);        // menu "Feed pet" (BLE feed:req)
-  void (*cycleItem)();                  // menu accessory row (item: push)
-  void (*cycleMood)(float nowSec);      // menu mood row (mood: push)
+  void (*selectItem)(uint8_t idx);      // clothes picker (item: push)
+  void (*selectMood)(uint8_t idx, float nowSec);  // mood picker (mood: push)
   void (*cycleBackdrop)();              // menu backdrop row (scene theme cycle)
   void (*togglePause)(uint8_t slot);    // detail confirm (BLE dca:pause:)
   // Create-screen confirm; returns true when the request went out (app
@@ -46,8 +46,9 @@ void renderPetFrame(float nowSec); // pet scene -> LVGL canvas; FRAME_MS cadence
 // Bottom stats bar: streak days / points / happiness (0-100).
 void setStats(uint32_t streakDays, uint32_t points, uint8_t happiness);
 
-// 12-stage badge on the pet screen; shows the device name while app-connected.
+// 12-stage badge on the pet screen; shows the app-provided name while connected.
 void setSubStage(uint8_t subStage);
+void setPetName(const char* name);
 void setAppConnected(bool connected);
 
 // Top-right battery indicator (0-100). clearBattery() hides it (USB power).

@@ -68,7 +68,7 @@ On-board feedback and power (all in `src/feedback.cpp` / `setupBattery()` in
 | Output / sense | GPIO | Driver | Behaviour |
 |----------------|------|--------|-----------|
 | Piezo buzzer BZ1 | 17 | PWM via Q1 (3V3 → BZ1 → Q1) | non-blocking pattern player: detent tick on crown steps, confirm beep on push, low blip on cancel, two-tone chime at boot |
-| Coin motor (J4) | 18 | Q2 (AO3400) low-side switch | tapped with each feedback event (click/confirm/back/chime) |
+| Coin motor (J4) | 18 | Q2 (AO3400) low-side switch | 80% PWM taps with each feedback event; a 120 ms rest prevents rapid crown rotation from holding the motor on and overloading 3V3 |
 | Battery sense | 5 | ADC1, 1:1 divider (VBAT/2) | 5 s EMA gauge in the UI chrome; OTA guard refuses updates under 40% |
 
 The parental code pad is fully crown-driven: rotate to set a digit, short-push

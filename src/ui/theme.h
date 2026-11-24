@@ -1,40 +1,40 @@
 /*
   theme.h — Finagotchi app design tokens applied to the LVGL UI layer.
 
-  Palette and metrics mirror the mobile app (finagotchi_mobile_app/DESIGN.md).
-  Montserrat stands in for DM Sans (closest LVGL built-in). The display is a
-  240x240 ROUND panel: the corners are not visible, so critical content must
-  stay inside the inscribed circle (UI_SAFE margin).
+  The watch-inspired palette pairs black/graphite surfaces with vivid accents.
+  Montserrat provides bold, glanceable type with the LVGL built-in fonts. The
+  display is a 240x240 ROUND panel: the corners are not visible, so critical
+  content must stay inside the inscribed circle (UI_SAFE margin).
 */
 
 #pragma once
 
 #include <lvgl.h>
 
-// --- black surfaces with blue accents ---
+// --- watch-style black, graphite and vivid system accents ---
 #define UI_COL_BG             lv_color_hex(0x000000)
-#define UI_COL_DEEP_BLUE      lv_color_hex(0x123D77)
-#define UI_COL_BLUE           lv_color_hex(0x2668B8)
-#define UI_COL_LIGHT_BLUE     lv_color_hex(0x91BEE9)
-#define UI_COL_FROST          lv_color_hex(0xC2D9EF)
-#define UI_COL_SURFACE        lv_color_hex(0x143766)
-#define UI_COL_DIALOG_DEEP    lv_color_hex(0x1D5592)
-#define UI_COL_BORDER         lv_color_hex(0x9DCBFF)
-#define UI_COL_PRIMARY        lv_color_hex(0x8DC9F6)
-#define UI_COL_PRIMARY_PRESSED lv_color_hex(0xB6DCF9)
-#define UI_COL_ON_PRIMARY     lv_color_hex(0x102E55)
-#define UI_COL_REWARD         lv_color_hex(0xF8B43C)
-#define UI_COL_TEXT           lv_color_hex(0xF6FAFF)
-#define UI_COL_MUTED          lv_color_hex(0xE0EBF8)
-#define UI_COL_EYEBROW        lv_color_hex(0xB2D8F8)
-#define UI_COL_INK            lv_color_hex(0xF6FAFF)
-#define UI_COL_INK_MUTED      lv_color_hex(0xB2C4D8)
-#define UI_COL_DANGER         lv_color_hex(0xF36F7C)
-#define UI_COL_WARNING        lv_color_hex(0xE9B846)
-#define UI_COL_SUCCESS        lv_color_hex(0x7ED6A7)
+#define UI_COL_DEEP_BLUE      lv_color_hex(0x0A3A6E)
+#define UI_COL_BLUE           lv_color_hex(0x0A84FF)
+#define UI_COL_LIGHT_BLUE     lv_color_hex(0x64D2FF)
+#define UI_COL_FROST          lv_color_hex(0xC7E9FF)
+#define UI_COL_SURFACE        lv_color_hex(0x1C1C1E)
+#define UI_COL_DIALOG_DEEP    lv_color_hex(0x2C2C2E)
+#define UI_COL_BORDER         lv_color_hex(0x48484A)
+#define UI_COL_PRIMARY        lv_color_hex(0x0A84FF)
+#define UI_COL_PRIMARY_PRESSED lv_color_hex(0x409CFF)
+#define UI_COL_ON_PRIMARY     lv_color_hex(0xFFFFFF)
+#define UI_COL_REWARD         lv_color_hex(0xFFD60A)
+#define UI_COL_TEXT           lv_color_hex(0xF5F5F7)
+#define UI_COL_MUTED          lv_color_hex(0x98989F)
+#define UI_COL_EYEBROW        lv_color_hex(0x64D2FF)
+#define UI_COL_INK            lv_color_hex(0xF5F5F7)
+#define UI_COL_INK_MUTED      lv_color_hex(0x98989F)
+#define UI_COL_DANGER         lv_color_hex(0xFF453A)
+#define UI_COL_WARNING        lv_color_hex(0xFFD60A)
+#define UI_COL_SUCCESS        lv_color_hex(0x30D158)
 
 // --- radius tokens ---
-constexpr int32_t UI_RADIUS_CARD  = 16;
+constexpr int32_t UI_RADIUS_CARD  = 18;
 constexpr int32_t UI_RADIUS_PILL  = 999;
 constexpr int32_t UI_RADIUS_SMALL = 10;
 
@@ -57,13 +57,13 @@ void uiThemeInit();
 // Solid black screen, scrolling off (chrome is hand-placed).
 void uiThemeScreen(lv_obj_t* scr);
 
-// Dark glass controls with bright borders.
+// Borderless graphite control surface.
 void uiThemeGlass(lv_obj_t* obj, bool active = true);
 
-// Glass card with a light-blue focus ring.
+// Graphite card with a blue focus ring.
 void uiThemeCard(lv_obj_t* obj);
 
-// Opaque black dialog surface.
+// Opaque graphite dialog surface.
 void uiThemeDialog(lv_obj_t* obj);
 
 lv_obj_t* uiThemeLabel(lv_obj_t* parent, const lv_font_t* font, lv_color_t color);

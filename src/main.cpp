@@ -411,6 +411,10 @@ void handleCommand(const char* cmd) {
     ui::setSubStage(subStage);
     blePushState(pet.state());
   }
+  else if (strncmp(cmd, "name:", 5) == 0) {
+    ui::setPetName(cmd + 5);
+    Serial.println("BLE: pet name updated");
+  }
   else if (strncmp(cmd, "react:", 6) == 0) {
     const char* name = cmd + 6;
     PetReaction r = PetReaction::REACT_NONE;
@@ -1210,13 +1214,6 @@ const std::array<PetReaction, 4> REACT_CYCLE = {
 };
 uint8_t reactCycleIdx = 0;
 
-// Mood cycle for BTN1 long-press
-const std::array<PetMoodId, 5> MOOD_CYCLE = {
-  PetMoodId::MOOD_CALM, PetMoodId::MOOD_HAPPY, PetMoodId::MOOD_EXCITED,
-  PetMoodId::MOOD_SLEEPY, PetMoodId::MOOD_SAD
-};
-uint8_t moodCycleIdx = 0;
-
 // BTN1 short on the pet screen: sync now. With the app connected it is
 // authoritative, so ask it to resend state + plans ("sync:req"); standalone,
 // run the Wi-Fi sync (relay + prices) on the poll task.
@@ -1259,23 +1256,22 @@ void actionFeedPet(float nowSec) {
   }
 }
 
-// Menu accessory row: cycle the collectible locally and mirror it in the
-// notify snapshot (works offline — local only then).
-void actionCycleItem() {
-  item = static_cast<uint8_t>((item + 1) % kItemCount);
+// Clothes and mood pickers update the same local + BLE-mirrored state as the
+// mobile app. Both work offline; a connected phone receives the new snapshot.
+void actionSelectItem(uint8_t idx) {
+  if (idx >= kItemCount) return;
+  item = idx;
   pet.setItem(static_cast<PetItem>(item));
   blePushState(pet.state());
-  Serial.printf("Menu: item=%u (%s)\n", item, ITEM_NAMES[item]);
+  Serial.printf("Style: item=%u (%s)\n", item, ITEM_NAMES[item]);
 }
 
-// Menu mood row (absorbs the old BTN1-long mood cycle).
-void actionCycleMood(float nowSec) {
-  PetMoodId m = MOOD_CYCLE[moodCycleIdx];
-  moodCycleIdx = (moodCycleIdx + 1) % MOOD_CYCLE.size();
-  mood = static_cast<uint8_t>(m);
-  pet.setMood(m, nowSec);
+void actionSelectMood(uint8_t idx, float nowSec) {
+  if (idx >= kMoodCount) return;
+  mood = idx;
+  pet.setMood(static_cast<PetMoodId>(mood), nowSec);
   blePushState(pet.state());
-  Serial.printf("Menu: mood=%u (%s)\n", mood, MOOD_NAMES[mood]);
+  Serial.printf("Style: mood=%u (%s)\n", mood, MOOD_NAMES[mood]);
 }
 
 // Menu backdrop row: cycle the PetCanvas scene theme locally. Cosmetic
@@ -1573,10 +1569,18 @@ bool wifiBootOffline = false;   // set when the boot attempt fails/skips
 bool wifiWasUp = false;         // link edge detector (rejoin notify)
 volatile bool wifiNotifyPending = false;   // task -> loop: send wifi:ok
 SemaphoreHandle_t wifiJoinMutex = xSemaphoreCreateMutex();
+constexpr uint32_t WIFI_AUTO_RECONNECT_MS = 10000;
+uint32_t lastWifiJoinAttempt = 0;
+bool wifiJoinAttempted = false;
 
 void wifiRejoinUnlocked() {
   if (kNoRadioDemo || !wifiSsid[0]) return;
   hookWifiEvents();
+  // One scheduler owns retries so the driver and multiple poll tasks cannot
+  // start competing association attempts.
+  WiFi.setAutoReconnect(false);
+  lastWifiJoinAttempt = millis();
+  wifiJoinAttempted = true;
   lastDisconnectReason = 0;
   WiFi.mode(WIFI_STA);
 #if LOW_POWER_RADIO_TEST
@@ -1608,6 +1612,13 @@ void wifiRejoin() {
   xSemaphoreTake(wifiJoinMutex, portMAX_DELAY);
   wifiRejoinUnlocked();
   xSemaphoreGive(wifiJoinMutex);
+}
+
+void serviceWifiReconnect(uint32_t nowMs) {
+  if (kNoRadioDemo || !wifiSsid[0] || WiFi.status() == WL_CONNECTED) return;
+  if (wifiJoinAttempted && nowMs - lastWifiJoinAttempt < WIFI_AUTO_RECONNECT_MS) return;
+  Serial.println("WiFi: auto-reconnect attempt");
+  wifiRejoin();
 }
 
 // Link edge detector, called from the poll tasks' connected branches: on a
@@ -2628,6 +2639,7 @@ void setup() {
   Serial0.begin(115200);
   delay(200);
   Serial.println("\nfinagotchi_firmware starting...");
+  Serial.printf("BOOT: reset reason=%d\n", static_cast<int>(esp_reset_reason()));
   Serial0.println("UART0 Wi-Fi diagnostics ready");
 
 #if DISPLAY_TEST_ONLY
@@ -2751,7 +2763,7 @@ void setup() {
   // LVGL takes over the display: pet canvas + chrome widgets. Button
   // semantics that touch BLE/pet state stay here as callbacks.
   ui::Actions actions = { actionSyncNow, actionCycleReaction, actionFeedPet,
-                          actionCycleItem, actionCycleMood,
+                          actionSelectItem, actionSelectMood,
                           actionCycleBackdrop, actionTogglePause, actionCreatePlan,
                           actionParentalLock, actionPinCheck, actionPinStore,
                           actionPinClear, actionCheckUpdate, actionOtaConfirmed,
@@ -2840,8 +2852,8 @@ void loop() {
   uint32_t p0 = micros();
 #endif
 
-  // Pet scene renders at the FRAME_MS cadence; LVGL (buttons, timers,
-  // screen flush) runs every pass. Napping: slow breathing only.
+  // The visible pet scene renders at the FRAME_MS cadence; hidden screens do
+  // no sprite work. LVGL runs every pass. Napping: slow breathing only.
   if (!screenOff && nowMs - lastFrame >= (afkNow ? AFK_FRAME_MS : FRAME_MS)) {
     lastFrame = nowMs;
     ui::renderPetFrame(nowSec);
@@ -2876,6 +2888,7 @@ void loop() {
   pollSerial();               // serial Wi-Fi provisioning (app-less setup)
   if (cmdPending()) processCommand();
   if (provPending) processProvision();
+  serviceWifiReconnect(nowMs);
   // OTA check (menu row / BLE ota:start): deferred ~50 ms so the "checking"
   // overlay renders before the blocking manifest fetch.
   if (otaResultPending) applyOtaResult();

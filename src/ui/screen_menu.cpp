@@ -40,7 +40,7 @@ const RowDef ROWS[ROW_COUNT] = {
   { "Play",      LV_SYMBOL_PLAY,      false, 0xF8B43C, "random trick" },
   { "Nearby",    LV_SYMBOL_GPS,       false, 0x69D6CD, "find pets" },
   { "Portfolio", LV_SYMBOL_LIST,      false, 0x8DC9F6, "view plans" },
-  { "Accessory", LV_SYMBOL_IMAGE,     false, 0xC4B5FD, "change look" },
+  { "Clothes",   LV_SYMBOL_IMAGE,     false, 0xC4B5FD, "choose outfit" },
   { "Mood",      ":)",                false, 0xF36F7C, "change mood" },
   { "Units",     LV_SYMBOL_REFRESH,   false, 0x69D6CD, "USD or SOL" },
   { "Wi-Fi",     LV_SYMBOL_WIFI,      false, 0x91BEE9, "pair + setup" },
@@ -67,21 +67,16 @@ lv_obj_t* rowInfo[ROW_COUNT];
 
 const lv_font_t* CHIP_FONT = &lv_font_montserrat_16;
 
-// Round-panel carousel: the focused bubble always sits on the screen's
-// horizontal center line (the widest chord of the circle), with the previous
-// and next bubbles peeking above and below. The list's top/bottom padding
-// lets the first and last rows reach the center too. The 180 px pills stay
-// inside the circle's bottom chord; narrow text zones prevent clipping.
-constexpr int32_t ROW_W     = 180;
-constexpr int32_t ROW_H     = 44;
-constexpr int32_t ROW_GAP   = 8;
+// A watchOS-like app list: one bold centered row, quiet graphite neighbours,
+// and colorful squircle app icons. Padding lets every row reach the center.
+constexpr int32_t ROW_W     = 184;
+constexpr int32_t ROW_H     = 48;
+constexpr int32_t ROW_GAP   = 6;
 constexpr int32_t ROW_PITCH = ROW_H + ROW_GAP;
-constexpr int32_t MENU_LIST_H    = 156;   // focused row + both neighbours
+constexpr int32_t MENU_LIST_H    = 156;
 constexpr int32_t MENU_LIST_PAD  = (MENU_LIST_H - ROW_H) / 2;
-// Text zones inside a row: chip 8..36, name 42..(42+NAME_W), info ends 12 px
-// from the right edge. NAME_W + INFO_W + 42 + 12 + 4 (gap) == ROW_W.
-constexpr int32_t ROW_NAME_W = 68;
-constexpr int32_t ROW_INFO_W = 54;
+constexpr int32_t ROW_NAME_W = 76;
+constexpr int32_t ROW_INFO_W = 48;
 
 lv_obj_t* focusedRow() {
   return lv_group_get_focused(g_ui.group);
@@ -105,28 +100,25 @@ void infoFill() {
   }
 }
 
-// Focused bubble lights up solid; children need manual color swaps (LV_STATE
-// propagation stops at the row itself).
+// Focused rows invert to system blue; children need manual color swaps.
 void rowPaint(uint8_t i, bool focused) {
   lv_obj_set_style_text_color(rowName[i], focused ? UI_COL_ON_PRIMARY : UI_COL_TEXT, 0);
   lv_obj_set_style_text_color(rowInfo[i], focused ? UI_COL_ON_PRIMARY : UI_COL_MUTED, 0);
   lv_color_t accent = lv_color_hex(ROWS[i].accent);
-  // Focused rows invert; resting rows keep a small pool of their accent color.
   lv_obj_set_style_bg_color(rowChip[i], focused ? UI_COL_ON_PRIMARY : accent, 0);
   lv_obj_set_style_bg_opa(rowChip[i],
       (focused || ROWS[i].primary) ? LV_OPA_COVER : LV_OPA_40, 0);
   lv_obj_set_style_text_color(rowGlyph[i],
       focused ? UI_COL_PRIMARY
               : (ROWS[i].primary ? UI_COL_ON_PRIMARY : accent), 0);
-  // Neighbour rows recede so the focused one reads as "the" choice.
-  lv_obj_set_style_text_opa(rowName[i], focused ? LV_OPA_COVER : LV_OPA_70, 0);
+  lv_obj_set_style_text_opa(rowName[i], focused ? LV_OPA_COVER : LV_OPA_80, 0);
   lv_obj_set_style_text_opa(rowInfo[i], focused ? LV_OPA_COVER : LV_OPA_60, 0);
 }
 
 void counterFill(uint8_t i) {
   if (!counter) return;
   char buf[32];
-  snprintf(buf, sizeof(buf), "%u/%u  " LV_SYMBOL_BULLET "  %s",
+  snprintf(buf, sizeof(buf), "%u of %u  " LV_SYMBOL_BULLET "  %s",
            static_cast<unsigned>(i + 1), static_cast<unsigned>(ROW_COUNT), ROWS[i].hint);
   lv_label_set_text(counter, buf);
 }
@@ -136,14 +128,9 @@ void rowFocused(lv_event_t* e) {
   uint8_t i = static_cast<uint8_t>(
       reinterpret_cast<intptr_t>(lv_obj_get_user_data(f)));
   menuFocusIdx = i;
-  // Center the focused bubble (MENU_LIST_PAD makes row i's centered scroll
-  // offset exactly i * ROW_PITCH). Rows have SCROLL_ON_FOCUS cleared, so
-  // this is the only scroll animation — two competing ones made the list
-  // jitter.
   lv_obj_scroll_to_y(list, static_cast<int32_t>(i) * ROW_PITCH, LV_ANIM_ON);
   rowPaint(i, true);
   counterFill(i);
-  uiThemeFocusPop(f);
   uiThemeNudge(rowGlyph[i], -2);
 }
 
@@ -166,10 +153,7 @@ void activate(uint8_t idx, float nowSec) {
       if (a.feedPet) a.feedPet(nowSec);
       uiScreenPetShow();
       break;
-    case ROW_PLAY:
-      if (a.cycleReaction) a.cycleReaction(nowSec);
-      uiScreenPetShow();
-      break;
+    case ROW_PLAY:      uiScreenGamesShow(); break;
     case ROW_NEARBY:    uiScreenNearbyShow(); break;
     case ROW_PORTFOLIO: uiScreenDcaShow(); break;
     case ROW_UNITS:
@@ -181,8 +165,8 @@ void activate(uint8_t idx, float nowSec) {
         ui::enqueueToast("SOL price unavailable");
       }
       break;
-    case ROW_ACCESSORY: if (a.cycleItem) a.cycleItem(); break;
-    case ROW_MOOD:      if (a.cycleMood) a.cycleMood(nowSec); break;
+    case ROW_ACCESSORY: uiScreenStyleShow(StylePicker::Clothes); break;
+    case ROW_MOOD:      uiScreenStyleShow(StylePicker::Mood); break;
     case ROW_WIFI:      uiScreenConnectShow(); break;
     case ROW_UPDATE:    if (a.checkUpdate) a.checkUpdate(); break;
     case ROW_LOCK:      if (a.parentalLock) a.parentalLock(); break;
@@ -209,14 +193,12 @@ lv_obj_t* buildMenuScreen() {
   uiThemeScreen(menuScr);
   snprintf(fwInfo, sizeof(fwInfo), "v%s", FW_VERSION);
 
-  lv_obj_t* title = uiThemeLabel(menuScr, &lv_font_montserrat_14, UI_COL_EYEBROW);
-  lv_obj_set_style_text_letter_space(title, 2, 0);
-  lv_label_set_text(title, "MENU");
-  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 12);
+  lv_obj_t* title = uiThemeLabel(menuScr, &lv_font_montserrat_16, UI_COL_TEXT);
+  lv_label_set_text(title, "Apps");
+  lv_obj_align(title, LV_ALIGN_TOP_MID, 0, 10);
 
   counter = uiThemeLabel(menuScr, &lv_font_montserrat_12, UI_COL_MUTED);
-  lv_obj_set_style_text_opa(counter, LV_OPA_70, 0);
-  lv_obj_align(counter, LV_ALIGN_TOP_MID, 0, 28);
+  lv_obj_align(counter, LV_ALIGN_TOP_MID, 0, 30);
 
   list = lv_obj_create(menuScr);
   lv_obj_set_size(list, ROW_W + 8, MENU_LIST_H);
@@ -229,17 +211,15 @@ lv_obj_t* buildMenuScreen() {
   lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
   lv_obj_set_scroll_dir(list, LV_DIR_VER);
-  // No scrollbar: on the round panel it would sit in the clipped edge; the
-  // row counter carries the position instead.
   lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
   lv_obj_set_scroll_elastic(list, false);
 
   for (uint8_t i = 0; i < ROW_COUNT; i++) {
     row[i] = lv_obj_create(list);
     lv_obj_set_size(row[i], ROW_W, ROW_H);
-    lv_obj_set_scroll_on_focus(row[i], false);   // rowFocused scrolls
+    lv_obj_set_scroll_on_focus(row[i], false);
     uiThemeGlass(row[i], true);
-    lv_obj_set_style_radius(row[i], LV_RADIUS_CIRCLE, 0);   // bubble, not card
+    lv_obj_set_style_radius(row[i], UI_RADIUS_CARD, 0);
     lv_obj_set_style_bg_color(row[i], UI_COL_PRIMARY, LV_STATE_FOCUSED);
     lv_obj_set_style_bg_opa(row[i], LV_OPA_COVER, LV_STATE_FOCUSED);
     lv_obj_set_style_border_width(row[i], 0, LV_STATE_FOCUSED);
@@ -250,12 +230,10 @@ lv_obj_t* buildMenuScreen() {
     lv_obj_add_event_cb(row[i], rowDefocused, LV_EVENT_DEFOCUSED, nullptr);
 
     rowChip[i] = lv_obj_create(row[i]);
-    lv_obj_set_size(rowChip[i], 28, 28);
+    lv_obj_set_size(rowChip[i], 32, 32);
     lv_obj_align(rowChip[i], LV_ALIGN_LEFT_MID, 8, 0);
-    lv_obj_set_style_radius(rowChip[i], LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(rowChip[i], 1, 0);
-    lv_obj_set_style_border_opa(rowChip[i], LV_OPA_30, 0);
-    lv_obj_set_style_border_color(rowChip[i], UI_COL_BORDER, 0);
+    lv_obj_set_style_radius(rowChip[i], UI_RADIUS_SMALL, 0);
+    lv_obj_set_style_border_width(rowChip[i], 0, 0);
     lv_obj_set_style_pad_all(rowChip[i], 0, 0);
     lv_obj_set_scrollable(rowChip[i], false);
     lv_obj_set_clickable(rowChip[i], false);
@@ -264,16 +242,15 @@ lv_obj_t* buildMenuScreen() {
     lv_label_set_text(rowGlyph[i], ROWS[i].glyph);
     lv_obj_center(rowGlyph[i]);
 
-    // Name and info zones never overlap (see ROW_NAME_W / ROW_INFO_W).
-    rowName[i] = uiThemeLabel(row[i], &lv_font_montserrat_14, UI_COL_TEXT);
-    uiThemeTextBounds(rowName[i], ROW_NAME_W, 18);
+    rowName[i] = uiThemeLabel(row[i], &lv_font_montserrat_16, UI_COL_TEXT);
+    uiThemeTextBounds(rowName[i], ROW_NAME_W, 20);
     lv_label_set_text(rowName[i], ROWS[i].name);
-    lv_obj_align(rowName[i], LV_ALIGN_LEFT_MID, 42, 0);
+    lv_obj_align(rowName[i], LV_ALIGN_LEFT_MID, 46, 0);
 
     rowInfo[i] = uiThemeLabel(row[i], &lv_font_montserrat_12, UI_COL_MUTED);
     uiThemeTextBounds(rowInfo[i], ROW_INFO_W, 16);
     lv_obj_set_style_text_align(rowInfo[i], LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_align(rowInfo[i], LV_ALIGN_RIGHT_MID, -12, 0);
+    lv_obj_align(rowInfo[i], LV_ALIGN_RIGHT_MID, -10, 0);
 
     rowPaint(i, false);
   }
@@ -298,12 +275,16 @@ void uiScreenMenuShow() {
   bool freeOta = g_ui.otaScreen && cur == g_ui.otaScreen;
   bool freeConnect = g_ui.connectScreen && cur == g_ui.connectScreen;
   bool freeNearby = g_ui.nearbyScreen && cur == g_ui.nearbyScreen;
+  bool freeStyle = g_ui.styleScreen && cur == g_ui.styleScreen;
+  bool freeGames = g_ui.gamesScreen && cur == g_ui.gamesScreen;
   lv_screen_load_anim(menuScr, LV_SCR_LOAD_ANIM_MOVE_LEFT, 160, 0,
-                      freeDca || freeOta || freeConnect || freeNearby);
+                      freeDca || freeOta || freeConnect || freeNearby || freeStyle || freeGames);
   if (freeDca) uiScreenDcaListFreed();
   if (freeOta) uiScreenOtaFreed();
   if (freeConnect) uiScreenConnectFreed();
   if (freeNearby) uiScreenNearbyFreed();
+  if (freeStyle) uiScreenStyleFreed();
+  if (freeGames) uiScreenGamesFreed();
 }
 
 void uiScreenMenuShrink() {

@@ -122,6 +122,8 @@ void keypadRead(lv_indev_t*, lv_indev_data_t* data) {
 
 // Next moves through visible focusables; menu and portfolio lists wrap.
 void onNavShort() {
+  if (uiScreenGamesActive()) { uiScreenGamesNext(); return; }
+  if (uiScreenStyleActive()) { uiScreenStyleNext(); return; }
   if (uiScreenLockActive()) { uiScreenLockNext(); return; }
   // connect QR prompt: navigate switches the iOS/Android tab
   if (uiScreenConnectActive()) { uiScreenConnectToggle(); return; }
@@ -156,6 +158,8 @@ void onNavShort() {
 
 // Breadboard long press / PCB short push = the current screen's action.
 void onConfirm(float nowSec) {
+  if (uiScreenGamesActive()) { uiScreenGamesActivate(); return; }
+  if (uiScreenStyleActive()) { uiScreenStyleActivate(nowSec); return; }
   if (uiScreenLockActive()) { uiScreenLockConfirm(); return; }
   // OTA confirm screen: push/long = schedule the update + reboot into OTA
   // mode (nothing else on that screen to act on).
@@ -186,6 +190,16 @@ void onConfirm(float nowSec) {
 // Back cancels the code pad, closes detail, or leaves the current screen.
 // The breadboard's pet-screen menu shortcut is handled in uiInputUpdate.
 void onBack() {
+  if (uiScreenGamesActive()) {
+    uiScreenGamesBack();
+    Serial.println("BACK: games");
+    return;
+  }
+  if (uiScreenStyleActive()) {
+    uiScreenStyleBack();
+    Serial.println("BACK: apps (style picker)");
+    return;
+  }
   if (uiScreenNearbyActive()) {
     uiScreenMenuShow();
     Serial.println("BACK: menu (nearby)");
@@ -227,6 +241,8 @@ void onBack() {
 #ifdef FINAGOTCHI_PCB_V1
 // Crown CCW = previous card/row/option. Lists wrap; Back handles exits.
 void onNavPrev() {
+  if (uiScreenGamesActive()) { uiScreenGamesPrev(); return; }
+  if (uiScreenStyleActive()) { uiScreenStylePrev(); return; }
   if (uiScreenLockActive()) { uiScreenLockPrev(); return; }
   // connect QR prompt: either direction toggles the iOS/Android tab
   if (uiScreenConnectActive()) { uiScreenConnectToggle(); return; }
@@ -248,18 +264,31 @@ void onNavPrev() {
   }
 }
 
-// Pet navigation opens on a half-detent; menu moves use a full 4-transition
-// detent. Impossible jumps reset the partial step, and navigation is paced
-// so LVGL can finish focus/scroll updates without a burst of menu moves.
-uint8_t crownState = 0;
+// Capture every quadrature edge even while LVGL is flushing over SPI. The
+// main loop consumes the edge count, so LVGL and feedback stay out of the ISR.
+portMUX_TYPE crownMux = portMUX_INITIALIZER_UNLOCKED;
+volatile uint8_t crownState = 0;
+volatile int16_t crownEdges = 0;
 uint32_t crownLastStep = 0;
-int8_t  crownAcc   = 0;
+int16_t crownAcc = 0;
 constexpr int8_t CROWN_PET_TRANSITIONS_PER_STEP = 2;
 constexpr int8_t CROWN_MENU_TRANSITIONS_PER_STEP = 4;
-constexpr uint32_t CROWN_STEP_INTERVAL_MS = 35;
+constexpr uint32_t CROWN_STEP_INTERVAL_MS = 24;
 constexpr bool   CROWN_INVERT = false;
 // index = (old<<2)|new; 0 = no move, ±1 = single transition
-const int8_t kQem[16] = { 0,-1,1,0, 1,0,0,-1, -1,0,0,1, 0,1,-1,0 };
+DRAM_ATTR const int8_t kQem[16] = { 0,-1,1,0, 1,0,0,-1, -1,0,0,1, 0,1,-1,0 };
+
+void IRAM_ATTR crownEdge() {
+  portENTER_CRITICAL_ISR(&crownMux);
+  uint8_t s = (digitalRead(CROWN_A_PIN) << 1) | digitalRead(CROWN_B_PIN);
+  int8_t delta = kQem[(crownState << 2) | s];
+  crownState = s;
+  if (delta) {
+    int16_t next = crownEdges + delta;
+    crownEdges = next > 32 ? 32 : (next < -32 ? -32 : next);
+  }
+  portEXIT_CRITICAL_ISR(&crownMux);
+}
 
 void crownStep(int8_t dir) {
   if (ui::afkInput()) return;   // first detent after a nap only wakes
@@ -271,18 +300,19 @@ void crownStep(int8_t dir) {
 
 void pollCrown() {
   uint32_t now = millis();
-  uint8_t s = (digitalRead(CROWN_A_PIN) << 1) | digitalRead(CROWN_B_PIN);
-  if (s == crownState) return;
+  portENTER_CRITICAL(&crownMux);
+  int16_t edges = crownEdges;
+  crownEdges = 0;
+  portEXIT_CRITICAL(&crownMux);
 
-  int8_t delta = kQem[(crownState << 2) | s];
-  crownState = s;
-  if (!delta) {
-    crownAcc = 0;
-    return;
+  if (edges) {
+    // A reversal starts a fresh partial detent instead of cancelling old
+    // fractions and making the first reverse click feel unresponsive.
+    if (crownAcc && ((edges > 0) != (crownAcc > 0))) crownAcc = 0;
+    crownAcc += edges;
+    if (crownAcc > 32) crownAcc = 32;
+    else if (crownAcc < -32) crownAcc = -32;
   }
-  crownAcc += delta;
-  if (crownAcc > 12) crownAcc = 12;
-  else if (crownAcc < -12) crownAcc = -12;
 
   bool petScreen = lv_screen_active() == g_ui.petScreen;
   int8_t needed = petScreen ? CROWN_PET_TRANSITIONS_PER_STEP
@@ -329,6 +359,8 @@ void uiInputInit() {
   pinMode(btnPush.pin, INPUT_PULLUP);
   pinMode(btnCancel.pin, INPUT_PULLDOWN);
   crownState = (digitalRead(CROWN_A_PIN) << 1) | digitalRead(CROWN_B_PIN);
+  attachInterrupt(CROWN_A_PIN, crownEdge, CHANGE);
+  attachInterrupt(CROWN_B_PIN, crownEdge, CHANGE);
 #else
   pinMode(btn1.pin, INPUT_PULLUP);
   pinMode(btn2.pin, INPUT_PULLUP);

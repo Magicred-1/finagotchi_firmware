@@ -151,6 +151,19 @@ dca:hit:<n>:<TICKER>
   may pop a toast: not `next_buy_epoch` changes, not amount edits, not
   reconnect itself.
 
+### 3.5 Pet name
+
+```
+name:<name>
+```
+
+Sent with every connect snapshot and immediately after a rename. Names are
+1–24 Unicode characters; the app replaces control characters and semicolons
+with spaces and falls back to `Finny` when empty. The device displays the name
+only while the app is connected and does not persist it. A long name may need
+the negotiated MTU; on a 20-byte ATT link the app drops only an oversized name
+command and still sends the normal state snapshot.
+
 ## 4. Standalone operation
 
 While the app is away, the hardware operates standalone (the firmware owns its

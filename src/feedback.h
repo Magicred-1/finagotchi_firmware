@@ -11,9 +11,10 @@ namespace feedback {
 void begin();     // pin/channel setup — call from setup()
 void update();    // pattern player — call every loop()
 
-void click();     // crown detent tick: 4 kHz blip + 25 ms motor tap
+void click();     // crown detent tick: 4 kHz blip + short PWM motor tap
 void confirm();   // crown push / action: mid beep + tap
 void back();      // crown long-push or optional cancel switch: low short blip
 void chime();     // boot/wake: two-tone up-chime + tap
+// Motor taps use 80% PWM and cannot restart within the 120 ms rest period.
 
 } // namespace feedback

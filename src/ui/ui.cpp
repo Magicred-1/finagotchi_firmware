@@ -234,6 +234,11 @@ void ui::setSubStage(uint8_t subStage) {
   uiScreenPetSetSubStage(subStage);
 }
 
+void ui::setPetName(const char* name) {
+  if (!g_ui.ready) return;
+  uiScreenPetSetName(name);
+}
+
 void ui::setAppConnected(bool connected) {
   if (!g_ui.ready) return;
   uiScreenPetSetConnected(connected);
